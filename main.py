@@ -1,4 +1,9 @@
-"""Portrait Image Breakdown - Photography Analysis & Reverse Engineering"""
+"""Portrait Image Breakdown - Photography Analysis & Reverse Engineering
+
+Two-phase architecture:
+  Phase 1 (Fast Analysis): Pose -> Orientation -> Action -> Camera -> Composition -> Suggestions
+  Phase 2 (Full RE):       Image + Pose + Composition -> ReverseEngineeringEngine (background)
+"""
 import sys
 import os
 import argparse
@@ -27,11 +32,15 @@ def run_cli(image_path, verbose=False):
     from core.pose_detector import PoseDetector
     from core.orientation import analyze_orientation
     from core.action_classifier import classify_action
+    from core.camera_analyzer import analyze_camera
+    from core.composition import analyze_composition
+    from core.suggestion import generate_suggestions
     from reverse_engineering.engine import ReverseEngineeringEngine
 
     image = cv2.imread(image_path)
     if image is None:
-        print(f"Error: cannot read {image_path}"); sys.exit(1)
+        print(f"Error: cannot read {image_path}")
+        sys.exit(1)
     print(f"Analyzing: {image_path}")
     print(f"Image size: {image.shape[1]}x{image.shape[0]}")
     print("=" * 60)
@@ -41,7 +50,8 @@ def run_cli(image_path, verbose=False):
     try:
         pose = det.detect(image)
         if pose is None:
-            print("No person detected"); sys.exit(1)
+            print("No person detected")
+            sys.exit(1)
         vis = sum(1 for lm in pose.landmarks[:17] if lm.visibility > 0.4)
         print(f"Skeleton: {pose.detection_confidence:.0%} confidence, {vis}/17 visible keypoints")
 
@@ -51,6 +61,20 @@ def run_cli(image_path, verbose=False):
         action = classify_action(pose)
         print(f"Action: {action.category.value} ({action.confidence:.0%})")
 
+        camera = analyze_camera(pose)
+        print(f"Camera: {camera.shot_type.value}, {camera.camera_angle.value}, subject={camera.subject_ratio:.1%}")
+
+        composition = analyze_composition(image, pose)
+        print(f"Composition: {composition.primary_type.value}, thirds={composition.thirds_alignment:.0%}")
+
+        suggestions = generate_suggestions(action, orient, camera, composition)
+        print(f"\nSuggestions ({len(suggestions.suggestions)}):")
+        for s in suggestions.suggestions[:5]:
+            print(f"  [{s.priority.value}] {s.title}: {s.description}")
+        print(f"\nNext actions: {', '.join(suggestions.next_actions)}")
+        print(f"Creative: {suggestions.creative_direction}")
+
+        print("\n--- Reverse Engineering ---")
         result = engine.analyze(image, pose, pose.bbox)
         print(result.report())
 

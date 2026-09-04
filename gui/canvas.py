@@ -1,5 +1,12 @@
-"""
-图像画布组件 — 显示图像并叠加骨架/构图辅助线
+"""ImageCanvas — displays image with skeleton/composition overlays (light theme)
+
+Supports overlays:
+  skeleton       — body skeleton lines + keypoints
+  thirds         — 3x3 rule-of-thirds grid (always drawable, no composition needed)
+  center         — image center crosshair
+  bbox           — subject bounding box
+  visual_weight  — visual weight center marker
+  headroom       — headroom horizontal guide line
 """
 
 from __future__ import annotations
@@ -10,30 +17,30 @@ import cv2
 import numpy as np
 from PySide6.QtCore import Qt, QRect, QPoint
 from PySide6.QtGui import QImage, QPixmap, QPainter, QPen, QColor, QFont, QBrush
-from PySide6.QtWidgets import QWidget, QLabel, QVBoxLayout
+from PySide6.QtWidgets import QWidget
 
 from core.pose_detector import PoseResult, POSE_CONNECTIONS, LandmarkIndex as LI
 from core.camera_analyzer import CameraResult
 from core.composition import CompositionResult
 
+# ── Overlay colors (light-theme friendly) ──
+COLOR_SKELETON = QColor(34, 197, 94)        # Green
+COLOR_KEYPOINT = QColor(239, 68, 68)        # Red
+COLOR_KEYPOINT_LOW = QColor(156, 163, 175)  # Gray
+COLOR_THIRDS = QColor(37, 99, 235, 60)      # Semi-transparent blue
+COLOR_CENTER = QColor(251, 146, 60, 80)     # Semi-transparent orange
+COLOR_BBOX = QColor(245, 158, 11, 160)      # Amber
+COLOR_SUBJECT_MARK = QColor(168, 85, 247)   # Purple
+COLOR_HEADROOM = QColor(20, 184, 166, 100)  # Teal
+COLOR_VWEIGHT = QColor(244, 63, 94, 120)    # Rose
 
-# ── 颜色定义 ──
-COLOR_SKELETON = QColor(0, 255, 128)       # 骨架线条 - 绿色
-COLOR_KEYPOINT = QColor(255, 80, 80)       # 关键点 - 红色
-COLOR_KEYPOINT_LOW = QColor(128, 128, 128) # 低置信度关键点 - 灰色
-COLOR_THIRDS = QColor(255, 255, 0, 80)     # 三分法线 - 半透明黄
-COLOR_CENTER = QColor(0, 200, 255, 60)     # 中心线 - 半透明蓝
-COLOR_BBOX = QColor(255, 165, 0, 120)      # 人体包围框 - 橙色
+# Light theme canvas background
+CANVAS_BG = QColor(250, 251, 252)           # #FAFBFC
+CANVAS_TEXT = QColor(107, 114, 128)         # #6B7280
 
 
 class ImageCanvas(QWidget):
-    """
-    图像显示画布, 支持:
-    - 自适应缩放
-    - 骨架叠加绘制
-    - 构图辅助线(三分法/中心线)
-    - 人体包围框
-    """
+    """Image display canvas with overlay support."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -43,19 +50,26 @@ class ImageCanvas(QWidget):
         self._pose: Optional[PoseResult] = None
         self._camera: Optional[CameraResult] = None
         self._composition: Optional[CompositionResult] = None
+
+        # Overlay flags
         self._show_skeleton = True
         self._show_thirds = True
+        self._show_center = True
         self._show_bbox = True
+        self._show_visual_weight = False
+        self._show_headroom = False
+
+        # Drawing state
         self._scale = 1.0
         self._offset = QPoint(0, 0)
 
+    # ── Data setters ──
     def set_image(self, image: np.ndarray):
-        """设置要显示的BGR图像"""
+        """Set the BGR image to display."""
         self._original_image = image.copy()
         self._update_pixmap()
 
     def set_pose(self, pose: Optional[PoseResult]):
-        """设置骨架检测结果"""
         self._pose = pose
         self.update()
 
@@ -67,17 +81,29 @@ class ImageCanvas(QWidget):
         self._composition = composition
         self.update()
 
-    def set_overlay_options(self, skeleton=True, thirds=True, bbox=True):
+    # ── Overlay options (unified API) ──
+    def set_overlay_options(
+        self,
+        skeleton: bool = True,
+        thirds: bool = True,
+        center: bool = True,
+        bbox: bool = True,
+        visual_weight: bool = False,
+        headroom: bool = False,
+    ):
         self._show_skeleton = skeleton
         self._show_thirds = thirds
+        self._show_center = center
         self._show_bbox = bbox
+        self._show_visual_weight = visual_weight
+        self._show_headroom = headroom
         self.update()
 
+    # ── Pixmap conversion ──
     def _update_pixmap(self):
         if self._original_image is None:
             self._pixmap = None
             return
-
         rgb = cv2.cvtColor(self._original_image, cv2.COLOR_BGR2RGB)
         h, w, ch = rgb.shape
         bytes_per_line = ch * w
@@ -85,20 +111,23 @@ class ImageCanvas(QWidget):
         self._pixmap = QPixmap.fromImage(qimg)
         self.update()
 
+    # ── Paint ──
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
 
-        # 背景
-        painter.fillRect(self.rect(), QColor(30, 30, 30))
+        # Light background
+        painter.fillRect(self.rect(), CANVAS_BG)
 
         if self._pixmap is None:
-            painter.setPen(QColor(150, 150, 150))
+            painter.setPen(CANVAS_TEXT)
             painter.setFont(QFont("Microsoft YaHei", 14))
-            painter.drawText(self.rect(), Qt.AlignCenter, "拖入图片或点击「打开图片」")
+            painter.drawText(self.rect(), Qt.AlignCenter,
+                             "Drag an image here or click Open Image")
+            painter.end()
             return
 
-        # 计算缩放和偏移以适应窗口
+        # Calculate fit-to-window scaling
         pw = self._pixmap.width()
         ph = self._pixmap.height()
         ww = self.width()
@@ -112,79 +141,156 @@ class ImageCanvas(QWidget):
         draw_h = int(ph * self._scale)
         self._offset = QPoint((ww - draw_w) // 2, (wh - draw_h) // 2)
 
-        # 绘制图像
+        # Draw image
         target = QRect(self._offset.x(), self._offset.y(), draw_w, draw_h)
         painter.drawPixmap(target, self._pixmap)
 
-        # ── 叠加层 ──
-        sx = self._scale
-        sy = self._scale
+        # Overlay origin
         ox = self._offset.x()
         oy = self._offset.y()
 
-        # 三分法辅助线
-        if self._show_thirds and self._composition:
-            pen = QPen(COLOR_THIRDS, 1, Qt.DashLine)
-            painter.setPen(pen)
-            for frac in [1/3, 2/3]:
-                # 垂直线
-                x = ox + int(draw_w * frac)
-                painter.drawLine(x, oy, x, oy + draw_h)
-                # 水平线
-                y = oy + int(draw_h * frac)
-                painter.drawLine(ox, y, ox + draw_w, y)
-
-            # 主体位置标记
-            px, py = self._composition.subject_position
-            mark_x = ox + int(draw_w * px)
-            mark_y = oy + int(draw_h * py)
-            pen = QPen(QColor(255, 0, 255, 180), 2)
-            painter.setPen(pen)
-            painter.drawEllipse(QPoint(mark_x, mark_y), 8, 8)
-            painter.drawLine(mark_x - 12, mark_y, mark_x + 12, mark_y)
-            painter.drawLine(mark_x, mark_y - 12, mark_x, mark_y + 12)
-
-        # 中心线
+        # 3x3 Rule-of-thirds grid (always draws if flag set, no composition needed)
         if self._show_thirds:
-            pen = QPen(COLOR_CENTER, 1, Qt.DotLine)
-            painter.setPen(pen)
-            cx = ox + draw_w // 2
-            cy = oy + draw_h // 2
-            painter.drawLine(cx, oy, cx, oy + draw_h)
-            painter.drawLine(ox, cy, ox + draw_w, cy)
+            self._draw_thirds_grid(painter, ox, oy, draw_w, draw_h)
 
-        # 骨架
+        # Center crosshair
+        if self._show_center:
+            self._draw_center_cross(painter, ox, oy, draw_w, draw_h)
+
+        # Subject center marker (from composition or computed from pose)
+        if self._show_thirds:
+            self._draw_subject_marker(painter, ox, oy, draw_w, draw_h)
+
+        # Headroom guide
+        if self._show_headroom:
+            self._draw_headroom_guide(painter, ox, oy, draw_w, draw_h)
+
+        # Skeleton
         if self._show_skeleton and self._pose:
-            self._draw_skeleton(painter, ox, oy, sx, sy)
+            self._draw_skeleton(painter, ox, oy, draw_w, draw_h)
 
-        # 人体包围框
+        # Bounding box
         if self._show_bbox and self._pose:
-            self._draw_bbox(painter, ox, oy, sx, sy)
+            self._draw_bbox(painter, ox, oy, draw_w, draw_h)
+
+        # Visual weight marker
+        if self._show_visual_weight and self._composition:
+            vw_x, vw_y = self._composition.visual_weight
+            mx = ox + int(draw_w * vw_x)
+            my = oy + int(draw_h * vw_y)
+            pen = QPen(COLOR_VWEIGHT, 2)
+            painter.setPen(pen)
+            painter.setBrush(QBrush(COLOR_VWEIGHT))
+            painter.drawEllipse(QPoint(mx, my), 6, 6)
 
         painter.end()
 
-    def _draw_skeleton(self, painter: QPainter, ox, oy, sx, sy):
-        """绘制骨架"""
+    # ── Overlay drawing methods ──
+    def _draw_thirds_grid(self, painter: QPainter, ox, oy, dw, dh):
+        """Draw 3x3 rule-of-thirds grid. No dependency on composition result."""
+        pen = QPen(COLOR_THIRDS, 1, Qt.DashLine)
+        painter.setPen(pen)
+        for frac in [1 / 3, 2 / 3]:
+            x = ox + int(dw * frac)
+            painter.drawLine(x, oy, x, oy + dh)
+            y = oy + int(dh * frac)
+            painter.drawLine(ox, y, ox + dw, y)
+
+        # Draw intersection point indicators
+        for fx in [1 / 3, 2 / 3]:
+            for fy in [1 / 3, 2 / 3]:
+                ix = ox + int(dw * fx)
+                iy = oy + int(dh * fy)
+                pen = QPen(COLOR_THIRDS, 1)
+                painter.setPen(pen)
+                painter.drawEllipse(QPoint(ix, iy), 4, 4)
+
+    def _draw_center_cross(self, painter: QPainter, ox, oy, dw, dh):
+        """Draw image center crosshair."""
+        pen = QPen(COLOR_CENTER, 1, Qt.DotLine)
+        painter.setPen(pen)
+        cx = ox + dw // 2
+        cy = oy + dh // 2
+        painter.drawLine(cx, oy, cx, oy + dh)
+        painter.drawLine(ox, cy, ox + dw, cy)
+        # Small center dot
+        painter.setBrush(QBrush(COLOR_CENTER))
+        painter.drawEllipse(QPoint(cx, cy), 3, 3)
+
+    def _draw_subject_marker(self, painter: QPainter, ox, oy, dw, dh):
+        """Draw subject center point.
+
+        Uses composition.subject_position if available,
+        otherwise computes from visible pose landmarks.
+        """
+        if self._composition:
+            px, py = self._composition.subject_position
+        elif self._pose:
+            px, py = self._compute_subject_center()
+        else:
+            return
+
+        mx = ox + int(dw * px)
+        my = oy + int(dh * py)
+
+        # Outer ring
+        pen = QPen(COLOR_SUBJECT_MARK, 2)
+        painter.setPen(pen)
+        painter.setBrush(Qt.NoBrush)
+        painter.drawEllipse(QPoint(mx, my), 10, 10)
+
+        # Inner dot
+        painter.setBrush(QBrush(COLOR_SUBJECT_MARK))
+        painter.drawEllipse(QPoint(mx, my), 4, 4)
+
+        # Crosshair
+        pen = QPen(COLOR_SUBJECT_MARK, 1, Qt.DashDotLine)
+        painter.setPen(pen)
+        painter.drawLine(mx - 16, my, mx + 16, my)
+        painter.drawLine(mx, my - 16, mx, my + 16)
+
+    def _draw_headroom_guide(self, painter: QPainter, ox, oy, dw, dh):
+        """Draw headroom horizontal guide."""
+        if self._composition:
+            headroom_y = self._composition.headroom
+        elif self._pose and self._pose.is_visible(LI.NOSE):
+            headroom_y = self._pose.landmarks[LI.NOSE].world_y
+        else:
+            return
+
+        y = oy + int(dh * headroom_y)
+        pen = QPen(COLOR_HEADROOM, 1, Qt.DashLine)
+        painter.setPen(pen)
+        painter.drawLine(ox, y, ox + dw, y)
+
+        # Label
+        font = QFont("Consolas", 8)
+        painter.setFont(font)
+        painter.setPen(COLOR_HEADROOM)
+        painter.drawText(ox + 4, y - 4, "headroom")
+
+    def _draw_skeleton(self, painter: QPainter, ox, oy, dw, dh):
+        """Draw skeleton overlay using normalized coordinates."""
         pose = self._pose
         if pose is None:
             return
 
-        # 获取像素坐标
         pts = {}
         for i, lm in enumerate(pose.landmarks):
             if lm.visibility > 0.3:
-                px = ox + int(lm.world_x * pose.image_width * sx)
-                py = oy + int(lm.world_y * pose.image_height * sy)
+                # world_x/y are normalized [0,1] — map directly to drawn image rect
+                px = ox + int(lm.world_x * dw)
+                py = oy + int(lm.world_y * dh)
                 pts[i] = QPoint(px, py)
 
-        # 绘制连接线
+        # Connection lines
         pen = QPen(COLOR_SKELETON, 2, Qt.SolidLine)
         painter.setPen(pen)
         for a, b in POSE_CONNECTIONS:
             if a in pts and b in pts:
                 painter.drawLine(pts[a], pts[b])
 
-        # 绘制关键点
+        # Keypoints
         for idx, pt in pts.items():
             lm = pose.landmarks[idx]
             if lm.visibility > 0.6:
@@ -195,41 +301,40 @@ class ImageCanvas(QWidget):
                 painter.setBrush(QBrush(COLOR_KEYPOINT_LOW))
                 painter.setPen(QPen(COLOR_KEYPOINT_LOW, 1))
                 r = 3
-
             painter.drawEllipse(pt, r, r)
 
-        # 标注主要关节名称
+        # Joint labels
         font = QFont("Consolas", 8)
         painter.setFont(font)
-        painter.setPen(QColor(255, 255, 255, 180))
+        painter.setPen(QColor(31, 41, 55, 180))  # Dark text on light bg
         label_map = {
-            LI.LEFT_SHOULDER.value: "L-肩",
-            LI.RIGHT_SHOULDER.value: "R-肩",
-            LI.LEFT_ELBOW.value: "L-肘",
-            LI.RIGHT_ELBOW.value: "R-肘",
-            LI.LEFT_WRIST.value: "L-腕",
-            LI.RIGHT_WRIST.value: "R-腕",
-            LI.LEFT_HIP.value: "L-髋",
-            LI.RIGHT_HIP.value: "R-髋",
-            LI.LEFT_KNEE.value: "L-膝",
-            LI.RIGHT_KNEE.value: "R-膝",
+            LI.LEFT_SHOULDER.value: "L-Shoulder",
+            LI.RIGHT_SHOULDER.value: "R-Shoulder",
+            LI.LEFT_ELBOW.value: "L-Elbow",
+            LI.RIGHT_ELBOW.value: "R-Elbow",
+            LI.LEFT_WRIST.value: "L-Wrist",
+            LI.RIGHT_WRIST.value: "R-Wrist",
+            LI.LEFT_HIP.value: "L-Hip",
+            LI.RIGHT_HIP.value: "R-Hip",
+            LI.LEFT_KNEE.value: "L-Knee",
+            LI.RIGHT_KNEE.value: "R-Knee",
         }
         for idx_val, label in label_map.items():
             if idx_val in pts:
                 pt = pts[idx_val]
                 painter.drawText(pt.x() + 6, pt.y() - 6, label)
 
-    def _draw_bbox(self, painter: QPainter, ox, oy, sx, sy):
-        """绘制人体包围框"""
+    def _draw_bbox(self, painter: QPainter, ox, oy, dw, dh):
+        """Draw subject bounding box using normalized coordinates."""
         pose = self._pose
         if pose is None:
             return
 
         visible_pts = []
-        for lm in pose.landmarks[:17]:  # only COCO 17 points
+        for lm in pose.landmarks[:17]:
             if lm.visibility > 0.4:
-                px = ox + int(lm.world_x * pose.image_width * sx)
-                py = oy + int(lm.world_y * pose.image_height * sy)
+                px = ox + int(lm.world_x * dw)
+                py = oy + int(lm.world_y * dh)
                 visible_pts.append((px, py))
 
         if len(visible_pts) < 4:
@@ -237,7 +342,6 @@ class ImageCanvas(QWidget):
 
         xs = [p[0] for p in visible_pts]
         ys = [p[1] for p in visible_pts]
-
         margin = 15
         x1, y1 = min(xs) - margin, min(ys) - margin
         x2, y2 = max(xs) + margin, max(ys) + margin
@@ -246,3 +350,19 @@ class ImageCanvas(QWidget):
         painter.setPen(pen)
         painter.setBrush(Qt.NoBrush)
         painter.drawRect(x1, y1, x2 - x1, y2 - y1)
+
+    # ── Helpers ──
+    def _compute_subject_center(self) -> tuple[float, float]:
+        """Compute subject center from visible pose landmarks."""
+        if self._pose is None:
+            return 0.5, 0.5
+        visible = [
+            (lm.world_x, lm.world_y)
+            for lm in self._pose.landmarks[:17]
+            if lm.visibility > 0.4
+        ]
+        if not visible:
+            return 0.5, 0.5
+        cx = float(np.mean([p[0] for p in visible]))
+        cy = float(np.mean([p[1] for p in visible]))
+        return cx, cy
