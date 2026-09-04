@@ -1,0 +1,197 @@
+[
+  {
+    "file": "HKLcKc9a8AAQ_uL.jpg",
+    "pose_confidence": 0.948,
+    "orientation": "右侧",
+    "action": "站立",
+    "action_confidence": 0.6,
+    "shot_type": "中景",
+    "camera_angle": "平视",
+    "composition": "对称构图",
+    "next_actions": [
+      "行走",
+      "转身",
+      "抬手"
+    ]
+  },
+  {
+    "file": "HKLcnKebIAAwfXA.jpg",
+    "pose_confidence": 0.919,
+    "orientation": "右侧",
+    "action": "蹲/半蹲",
+    "action_confidence": 0.7,
+    "shot_type": "中景",
+    "camera_angle": "仰拍",
+    "composition": "对称构图",
+    "next_actions": [
+      "站起",
+      "蹲走",
+      "伸展"
+    ]
+  },
+  {
+    "file": "HLrASuZaIAA8zaZ.jpg",
+    "pose_confidence": 0.904,
+    "orientation": "右侧",
+    "action": "行走",
+    "action_confidence": 0.7,
+    "shot_type": "中景",
+    "camera_angle": "平视",
+    "composition": "对称构图",
+    "next_actions": [
+      "跑步",
+      "停步回望",
+      "转身"
+    ]
+  },
+  {
+    "file": "HQ-prsxa8AAE04n.jpg",
+    "pose_confidence": 0.871,
+    "orientation": "右侧",
+    "action": "行走",
+    "action_confidence": 0.7,
+    "shot_type": "特写",
+    "camera_angle": "仰拍",
+    "composition": "三分法",
+    "next_actions": [
+      "跑步",
+      "停步回望",
+      "转身"
+    ]
+  },
+  {
+    "file": "HQ-prszbgAAPZ6r.jpg",
+    "pose_confidence": 0.891,
+    "orientation": "右侧",
+    "action": "站立",
+    "action_confidence": 0.4,
+    "shot_type": "中景",
+    "camera_angle": "仰拍",
+    "composition": "对称构图",
+    "next_actions": [
+      "行走",
+      "转身",
+      "抬手"
+    ]
+  },
+  {
+    "file": "HQ7xXcVbUAAPSlt.jpg",
+    "pose_confidence": 0.86,
+    "orientation": "右侧",
+    "action": "蹲/半蹲",
+    "action_confidence": 0.9,
+    "shot_type": "中景",
+    "camera_angle": "仰拍",
+    "composition": "对称构图",
+    "next_actions": [
+      "站起",
+      "蹲走",
+      "伸展"
+    ]
+  },
+  {
+    "file": "HQ9n-YAbcAAE84B.jpg",
+    "pose_confidence": 0.948,
+    "orientation": "右侧",
+    "action": "跑步",
+    "action_confidence": 0.4,
+    "shot_type": "中景",
+    "camera_angle": "仰拍",
+    "composition": "对称构图",
+    "next_actions": [
+      "跳跃",
+      "急停",
+      "转弯"
+    ]
+  },
+  {
+    "file": "HQPIRRUbsAESQu3.jpg",
+    "pose_confidence": 0.941,
+    "orientation": "右侧",
+    "action": "行走",
+    "action_confidence": 0.7,
+    "shot_type": "中景",
+    "camera_angle": "平视",
+    "composition": "对称构图",
+    "next_actions": [
+      "跑步",
+      "停步回望",
+      "转身"
+    ]
+  },
+  {
+    "file": "HRAf1bObsAAJ_5k.jpg",
+    "pose_confidence": 0.881,
+    "orientation": "右侧",
+    "action": "指向",
+    "action_confidence": 0.4,
+    "shot_type": "中景",
+    "camera_angle": "平视",
+    "composition": "对称构图",
+    "next_actions": [
+      "站立",
+      "行走",
+      "转身"
+    ]
+  },
+  {
+    "file": "HRAzNsgaYAAP23s.jpg",
+    "pose_confidence": 0.899,
+    "orientation": "右侧",
+    "action": "行走",
+    "action_confidence": 0.7,
+    "shot_type": "中景",
+    "camera_angle": "平视",
+    "composition": "对称构图",
+    "next_actions": [
+      "跑步",
+      "停步回望",
+      "转身"
+    ]
+  },
+  {
+    "file": "HRB-YXLaYAAUOr9.jpg",
+    "pose_confidence": 0.943,
+    "orientation": "右侧",
+    "action": "站立",
+    "action_confidence": 0.6,
+    "shot_type": "中景",
+    "camera_angle": "平视",
+    "composition": "对称构图",
+    "next_actions": [
+      "行走",
+      "转身",
+      "抬手"
+    ]
+  },
+  {
+    "file": "HRBrPlTbwAEUhD0.jpg",
+    "pose_confidence": 0.952,
+    "orientation": "右侧",
+    "action": "站立",
+    "action_confidence": 0.6,
+    "shot_type": "中全景",
+    "camera_angle": "荷兰角(倾斜)",
+    "composition": "三分法",
+    "next_actions": [
+      "行走",
+      "转身",
+      "抬手"
+    ]
+  },
+  {
+    "file": "HRBrQdqbMAAMkIP.jpg",
+    "pose_confidence": 0.891,
+    "orientation": "右侧",
+    "action": "蹲/半蹲",
+    "action_confidence": 0.9,
+    "shot_type": "中景",
+    "camera_angle": "仰拍",
+    "composition": "对称构图",
+    "next_actions": [
+      "站起",
+      "蹲走",
+      "伸展"
+    ]
+  }
+]
