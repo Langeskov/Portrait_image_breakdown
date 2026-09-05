@@ -2,209 +2,182 @@
 
 Photography Analysis & Reverse Engineering System
 
-Based on YOLOv26 Pose, this system analyzes a portrait photograph to reverse-engineer shooting parameters, composition intent, and photographic techniques.
+A native PySide6 desktop tool for analyzing portrait photographs and exploring plausible camera configurations.
 
-## Two-Phase Analysis Architecture
+## Analysis Architecture
 
-The system operates in two distinct phases for optimal responsiveness:
+### Phase 1: Fast 2D Analysis
 
-### Phase 1: Fast Analysis (automatic, ~1-2 seconds)
-
-```
-Image → PoseDetector → Orientation → ActionClassifier → CameraAnalyzer
-      → CompositionAnalyzer → SuggestionEngine → UI
+```text
+Image → PoseDetector → Orientation → Action → Camera
+      → Composition → Suggestions → 2D Workspace
 ```
 
-All 2D analysis completes quickly and populates the UI panels immediately:
-- **Skeleton** — 17 COCO keypoints with confidence scores
-- **Body Orientation** — facing direction, tilt, rotation angle
-- **Action Category** — 15 pose types (standing, walking, squatting, etc.) with joint angles
-- **Camera Analysis** — shot type, camera angle, subject ratio, dutch angle
-- **Composition Analysis** — rule-of-thirds alignment, symmetry, headroom, balance
-- **Suggestions** — next action recommendations, detailed tips, creative direction
+Provides:
+- Skeleton detection — YOLO Pose 17 keypoints
+- Body orientation — facing direction, tilt, rotation angle
+- Action recognition — pose types and joint angles
+- Camera analysis — shot type, camera angle, subject ratio
+- Composition — rule-of-thirds, symmetry, headroom, balance
+- Next-action suggestions
 
-### Phase 2: Full Reverse Engineering (background, non-blocking)
+### Phase 2: Reverse Engineering
 
+```text
+Image + Pose + Composition
+        ↓
+ReverseEngineeringEngine
+        ↓
+Perspective + Camera Geometry + Candidate Solutions
+        ↓
+2D Evidence Overlay / 3D Reverse Workspace / Results
 ```
-Image + Pose + Composition → ReverseEngineeringEngine → UI / Results / 3D Workspace
+
+The reverse-engineering layer includes:
+- Perspective analysis and observed line segments
+- Vanishing-point evidence
+- Camera height / distance / orientation estimates with uncertainty
+- Focal-length family estimation
+- Depth-of-field analysis
+- Motion-blur analysis
+- Shooting-technique classification
+- Camera-action recommendations
+- Multiple plausible camera solutions instead of a single forced answer
+
+## Important Interpretation Rule
+
+A single 2D photograph normally does not uniquely determine focal length, camera distance, sensor format, or camera height. The system therefore distinguishes:
+
+- **Observed** — image measurements such as keypoints, line segments, and vanishing-point candidates
+- **Estimated** — quantities inferred from geometry or heuristics
+- **Unknown** — quantities that remain under-constrained
+
+Candidate solutions are displayed explicitly in the 3D workspace rather than presenting one candidate as ground truth.
+
+## 2D Workspace
+
+The 2D workspace is the evidence view. It focuses on the original photograph and analysis results without mixing in 3D controls.
+
+Overlay controls include:
+
+| Overlay | Purpose |
+|---|---|
+| Skeleton | Pose skeleton and keypoints |
+| 3x3 Grid | Rule-of-thirds reference |
+| Center | Image center crosshair |
+| BBox | Subject bounding box |
+| Visual Weight | Visual-weight center |
+| Headroom | Headroom guide |
+| Reverse Evidence | Perspective lines, vanishing points, estimated camera axis |
+
+Reverse Evidence is a single explicit toggle so the 2D view remains readable.
+
+## 3D Reverse Engineering Workspace
+
+The first-stage 3D workspace is a lightweight native desktop viewer built with QPainter. It intentionally avoids introducing a second 3D framework while the scene/data model is being stabilized.
+
+It displays:
+
+```text
+Ground Grid
+Subject Proxy
+Camera
+Camera Direction
+Camera Frustum
+Candidate Cameras
 ```
 
-Runs in the background without blocking the UI:
-- **Perspective Analysis** — vanishing points, line convergence, perspective strength
-- **Camera Position** — height, distance, pitch, yaw, roll (with confidence ranges)
-- **Focal Length Estimation** — wide/normal/telephoto classification + 35mm equivalent
-- **Depth of Field** — DOF type, aperture estimation, foreground/background blur
-- **Motion Blur** — blur type, direction, shutter speed estimation
-- **Shooting Techniques** — 17 photography technique classifications
-- **Camera Actions** — MOVE_FORWARD, ZOOM_IN, etc. with reasoning
+Interaction:
+- Drag with the mouse to orbit the 3D view
+- Mouse wheel to zoom the view
+- Select a candidate solution
+- Edit camera distance, height, yaw, pitch, roll and focal length
 
-### Performance Design
+The first-stage 3D viewer is a visualization/validation tool, not a photogrammetric reconstruction engine.
 
-- Original high-resolution photos are used only for display
-- Analysis runs on resized images (max 1600px side) for speed
-- MonocularDepthProvider is lightweight (gradient-based, no deep learning)
-- Simulation engine is disabled by default (use `enable_simulation=True` for full optimization)
-- Results are cached by image hash — reopening the same image is instant
+## Candidate Solution Model
 
-## Features
+Focal length and subject distance are treated as coupled variables. For a portrait with insufficient scene scale, the engine can keep several plausible combinations, for example:
 
-### Core Analysis (core/)
-- **Skeleton Detection** — YOLOv26 Pose 17 keypoints + interpolated extension points
-- **Body Orientation** — front/back/left/right + tilt angle
-- **Action Recognition** — 15 action types with joint angle measurements
-- **Camera Analysis** — shot type, camera angle, subject ratio
-- **Composition Analysis** — rule-of-thirds, symmetry, leading lines, headroom
-- **Next Action Suggestions** — intelligent recommendations based on current state
+```text
+#1  50 mm / 2.9 m
+#2  70 mm / 4.1 m
+#3  85 mm / 5.0 m
+```
 
-### Photography Reverse Engineering (reverse_engineering/)
-- **Perspective Analysis** — vanishing point detection, line convergence
-- **Camera Position Estimation** — height, distance, pitch, yaw, roll
-- **Focal Length Estimation** — wide/normal/short_telephoto/telephoto + 35mm equivalent
-- **Depth of Field Analysis** — foreground/background blur, aperture range
-- **Motion Blur Analysis** — blur type, direction, shutter speed estimation
-- **Shooting Technique Classification** — 17 photography techniques
-- **Reverse Validation Engine** — virtual projection parameter optimization
-- **Camera Action Suggestions** — MOVE_FORWARD/BACKWARD/ZOOM_IN with reasoning
+The actual values and scores depend on the detected subject geometry and available constraints.
 
-### Output Format
-All estimates include:
-- Estimated value + possible range
-- Confidence level (high/medium/low)
-- Inference basis
-- Uncertainty notes
+## Performance and Cache
+
+The GUI uses staged background analysis:
+
+```text
+Pose ready → 2D ready → Reverse ready
+```
+
+Analysis uses resized images for expensive processing. Results are cached in-session by an exact SHA-256 image key and stored in a small LRU cache, so switching between 2D / 3D / Results does not rerun inference.
+
+## Project Structure
+
+```text
+photo/
+├── main.py
+├── test_smoke.py
+├── README.md
+├── core/
+│   ├── pose_detector.py
+│   ├── orientation.py
+│   ├── action_classifier.py
+│   ├── camera_analyzer.py
+│   ├── composition.py
+│   └── suggestion.py
+├── reverse_engineering/
+│   ├── data_types.py
+│   ├── perspective.py
+│   ├── camera_pose.py
+│   ├── focal_length.py
+│   ├── depth_of_field.py
+│   ├── depth_provider.py
+│   ├── motion_blur.py
+│   ├── shooting_technique.py
+│   ├── geometry.py
+│   ├── simulation.py
+│   ├── scene.py
+│   └── engine.py
+├── gui/
+│   ├── main_window.py
+│   ├── canvas.py
+│   ├── reverse_3d.py
+│   ├── cache.py
+│   └── panels.py
+└── dataset/
+```
 
 ## Running
 
 ```bash
-# Install dependencies
 pip install ultralytics opencv-python PySide6
 
-# CLI analysis
-python main.py --image photo.jpg --cli
-
-# GUI
 python main.py
-
-# GUI with image pre-loaded
-python main.py --image photo.jpg
+python main.py --image path/to/photo.jpg
+python main.py --image path/to/photo.jpg --cli
 ```
 
-### Smoke Test
+## Roadmap
 
-```bash
-# Basic tests (imports, API contracts, no display needed)
-python test_smoke.py
+### Completed
+- 2D analysis workspace
+- Light desktop UI
+- Staged background analysis
+- Reverse-engineering evidence overlay
+- Geometry/candidate solution refactor
+- First-stage 3D camera reconstruction viewer
+- Candidate solution selection and parameter editing
+- In-session LRU analysis cache
 
-# Full pipeline test with real image
-python test_smoke.py --image dataset/HO9prKFboAAm5Q5.jpg
-```
-
-## GUI Layout
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│ [Open Image] [Dataset ▼] [Skeleton] [3x3 Grid] [Center] ...│
-├──────────┬──────────────────────────┬───────────────────────┤
-│ Analysis │     Image Canvas         │ Photography Insight   │
-│          │                          │                       │
-│ Skeleton │   ┌──────────────┐       │ Recommended Actions   │
-│  90%     │   │              │       │  1. Walk forward      │
-│  9/17    │   │   Photo +    │       │  2. Turn slightly     │
-│          │   │   Overlays   │       │  3. Raise arm         │
-│ Orient.  │   │              │       │                       │
-│  Right   │   │  3x3 grid   │       │ Detailed Suggestions  │
-│  Upright │   │  + skeleton  │       │  [HIGH] ...           │
-│          │   │  + bbox      │       │  [MED] ...            │
-│ Action   │   │  + center    │       │  [LOW] ...            │
-│  Squat   │   │              │       │                       │
-│  90%     │   └──────────────┘       │ Creative Direction    │
-│          │                          │  ...                  │
-│ Camera   │                          │                       │
-│  Med-CU  │                          │                       │
-│  Low ang │                          │                       │
-│          │                          │                       │
-│ Compose  │                          │                       │
-│  Thirds  │                          │                       │
-│  83%     │                          │                       │
-├──────────┴──────────────────────────┴───────────────────────┤
-│ Status: Core analysis complete | Squatting                  │
-└─────────────────────────────────────────────────────────────┘
-```
-
-### Overlay Controls
-
-| Toggle         | Description                                    |
-|----------------|------------------------------------------------|
-| Skeleton       | Body skeleton lines + joint keypoints          |
-| 3x3 Grid       | Rule-of-thirds grid (always available)         |
-| Center         | Image center crosshair                         |
-| BBox           | Subject bounding box                           |
-| Visual Weight  | Visual weight center marker                    |
-| Headroom       | Headroom horizontal guide line                 |
-
-### Tab Pages
-
-| Tab                      | Content                                    |
-|--------------------------|--------------------------------------------|
-| 2D Analysis              | Fast analysis results + image with overlays |
-| 3D Reverse Engineering   | RE visualization (future: OpenGL 3D)       |
-| Results                  | Full reverse engineering text report        |
-
-## Project Structure
-
-```
-photo/
-├── main.py                     # Entry point (GUI / CLI)
-├── test_smoke.py               # Smoke tests
-├── README.md
-├── core/
-│   ├── pose_detector.py        # YOLOv26 skeleton detection
-│   ├── orientation.py          # Body orientation analysis
-│   ├── action_classifier.py    # Action category recognition
-│   ├── camera_analyzer.py      # Camera position estimation
-│   ├── composition.py          # Composition analysis
-│   └── suggestion.py           # Next action suggestions
-├── reverse_engineering/
-│   ├── data_types.py           # Core data structures (EstimatedValue, Result types)
-│   ├── perspective.py          # Perspective analysis
-│   ├── camera_pose.py          # Camera position estimation
-│   ├── focal_length.py         # Focal length estimation
-│   ├── depth_of_field.py       # Depth of field analysis
-│   ├── depth_provider.py       # Monocular depth estimation
-│   ├── motion_blur.py          # Motion blur analysis
-│   ├── shooting_technique.py   # Photography technique classification
-│   ├── geometry.py             # Geometric constraint solver
-│   ├── simulation.py           # Reverse validation engine
-│   └── engine.py               # Main RE engine
-├── gui/
-│   ├── main_window.py          # PySide6 main window (staged worker, caching)
-│   ├── canvas.py               # Image canvas + overlay rendering
-│   └── panels.py               # Analysis & suggestion panels
-└── dataset/                    # Sample images
-```
-
-## Data Structures
-
-### AnalysisBundle (gui/main_window.py)
-Accumulates all analysis results for a single image:
-- `pose` — PoseResult (skeleton detection)
-- `orientation` — OrientationResult (body facing)
-- `action` — ActionResult (pose classification + joint angles)
-- `camera` — CameraResult (shot type, angle, ratio)
-- `composition` — CompositionResult (thirds, symmetry, balance)
-- `suggestions` — SuggestionResult (next actions, tips, creative direction)
-- `reverse_result` — ReverseEngineeringResult (full RE output)
-
-### Worker Signals (AnalysisWorker)
-- `pose_ready(PoseResult)` — skeleton detected, show immediately
-- `core_ready(AnalysisBundle)` — all 2D analysis complete
-- `reverse_ready(AnalysisBundle)` — full RE complete
-- `error(str)` — error message
-
-## Tech Stack
-
-- Python 3.11+ (tested on 3.12)
-- YOLOv26 (Ultralytics) — skeleton detection
-- OpenCV 5.x — image processing
-- PySide6 — GUI framework
-- NumPy — numerical computation
+### Next
+- 2D ↔ 3D projection synchronization
+- Better intrinsics estimation from EXIF/calibration
+- Scene/depth constraints for camera distance and height
+- Mature monocular/stereo/LiDAR depth providers
+- More rigorous projective-geometry optimization

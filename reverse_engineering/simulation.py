@@ -1,114 +1,113 @@
-"""
-反向验证引擎 - ReverseSimulationEngine
+"""Automatic camera reconstruction from 2D pose evidence.
 
-使用 CameraModel 投影进行参数优化, 输出多个候选解。
+The primary solver is a bounded nonlinear reprojection fit. OpenCV supplies the
+pinhole projection model while SciPy supplies robust bounded least-squares.
+A deterministic geometry fallback is retained only as a runtime safety net if
+the numerical solver cannot produce a solution; it is explicitly marked in the
+candidate losses so it cannot be mistaken for a fitted optimum.
 """
 from __future__ import annotations
+
 import numpy as np
-from reverse_engineering.data_types import EstimatedValue
+
 from reverse_engineering.geometry import (
-    CameraIntrinsics, CameraModel, CameraExtrinsics, PoseCandidate,
-    REF_PERSON_HEIGHT, REF_SHOULDER_WIDTH,
+    CameraIntrinsics,
+    CameraExtrinsics,
+    PoseCandidate,
+    PoseSolver,
+    REF_PERSON_HEIGHT,
 )
-import math
 
 
-def _project_subject_scale(focal_px: float, distance: float, ref_height: float,
-                           image_h: int) -> float:
-    """预测主体在图像中的归一化高度"""
-    if distance < 0.1: return 1.0
-    projected_px = ref_height * focal_px / distance
-    return projected_px / image_h
+def _subject_position_loss(observed: tuple[float, float]) -> float:
+    x, y = observed
+    return max(0.0, abs(x - 0.5) - 0.5) ** 2 + max(0.0, abs(y - 0.5) - 0.5) ** 2
 
 
-def _perspective_loss(focal_mm: float, observed_strength: float) -> float:
-    """透视一致性损失"""
-    # 广角(小焦距) → 强透视, 长焦(大焦距) → 弱透视
-    predicted = max(0, 1.0 - (focal_mm - 18) / 180)
-    return (predicted - observed_strength) ** 2
+def _dedupe_candidates(candidates, max_candidates):
+    out = []
+    for c in sorted(candidates, key=lambda x: (
+        float(x.losses.get("mean_reprojection_px", 1e9)), -float(x.score)
+    )):
+        if any(
+            abs(c.focal_equiv_35mm - u.focal_equiv_35mm) < 4.0
+            and abs(c.distance - u.distance) < 0.2
+            and abs(c.extrinsics.yaw - u.extrinsics.yaw) < 2.0
+            for u in out
+        ):
+            continue
+        out.append(c)
+        if len(out) >= max(1, max_candidates):
+            break
+    return out
 
 
-def _composition_loss(pred_cx: float, pred_cy: float, obs_cx: float, obs_cy: float) -> float:
-    """构图一致性损失"""
-    return ((pred_cx - obs_cx) ** 2 + (pred_cy - obs_cy) ** 2)
+def _fallback_candidate(image_w, image_h, pose_keypoints, focal_mm=50.0):
+    kp = np.asarray(pose_keypoints, dtype=float)
+    if kp.ndim != 2 or kp.shape[0] < 17 or kp.shape[1] < 3:
+        return None
+    valid = kp[:17, 2] > 0.35
+    if int(valid.sum()) < 5:
+        return None
+    ys = kp[:17, 1][valid]
+    body_h = max(float(np.ptp(ys)), 20.0)
+    intr = CameraIntrinsics.from_focal_mm(focal_mm, image_w, image_h)
+    distance = max(1.0, REF_PERSON_HEIGHT * intr.fy / body_h)
+    center_y = float(np.mean(ys) / max(image_h, 1))
+    height = float(np.clip(REF_PERSON_HEIGHT * (0.8 - 0.45 * center_y), 0.5, 1.8))
+    return PoseCandidate(
+        intrinsics=intr,
+        extrinsics=CameraExtrinsics(
+            rvec=np.zeros(3),
+            tvec=np.array([0.0, 0.0, distance]),
+            position=np.array([0.0, height, -distance]),
+            pitch=0.0, yaw=0.0, roll=0.0,
+        ),
+        distance=float(distance),
+        height=float(height),
+        focal_equiv_35mm=float(focal_mm),
+        score=0.18,
+        losses={
+            "mean_reprojection_px": float(body_h),
+            "median_reprojection_px": float(body_h),
+            "bbox_iou": 0.0,
+            "fallback": 1.0,
+            "fallback_reason": "numerical camera fit returned no solution",
+        },
+    )
 
 
 def optimize_parameters(
-    image_w: int, image_h: int,
-    subject_scale: float,
-    subject_position: tuple[float, float],
-    perspective_strength: float,
-    pose_keypoints: np.ndarray = None,
-    num_candidates: int = 5,
-) -> list[PoseCandidate]:
-    """
-    通过网格搜索优化相机参数
+    image_w, image_h, subject_scale, subject_position, perspective_strength,
+    pose_keypoints=None, num_candidates=5, subject_bbox=None,
+):
+    """Fit Distance/Focal/Height/Yaw/Pitch/Roll from 2D pose + BBox evidence."""
+    del subject_scale, perspective_strength
+    if pose_keypoints is None:
+        return []
+    kp = np.asarray(pose_keypoints, dtype=float)
+    if kp.ndim != 2 or kp.shape[0] < 17 or kp.shape[1] < 3:
+        return []
 
-    输出多个候选解(而非单一最优值), 诚实表达多解性。
-    """
-    candidates = []
+    try:
+        candidates = PoseSolver.fit_camera_to_pose(
+            kp, image_w, image_h, subject_bbox=subject_bbox,
+            focal_seeds=(24, 35, 50, 70, 85, 105, 135, 200),
+            num_candidates=max(8, num_candidates),
+        )
+    except Exception as exc:
+        fallback = _fallback_candidate(image_w, image_h, kp)
+        if fallback is None:
+            return []
+        fallback.losses["fit_exception"] = f"{type(exc).__name__}: {exc}"
+        return [fallback]
 
-    # 搜索空间
-    focal_range = np.linspace(24, 135, 12)  # 35mm等效焦距
-    dist_range = np.linspace(1.0, 15.0, 10)  # 距离(m)
-    height_range = np.linspace(0.8, 2.0, 5)  # 高度(m)
+    if not candidates:
+        fallback = _fallback_candidate(image_w, image_h, kp)
+        return [fallback] if fallback is not None else []
 
-    obs_cx, obs_cy = subject_position
-
-    for focal_35mm in focal_range:
-        # 从35mm等效转换为像素焦距
-        focal_px = focal_35mm * image_w / 36.0
-
-        for distance in dist_range:
-            # 预测主体比例
-            pred_scale = _project_subject_scale(focal_px, distance,
-                                                 REF_PERSON_HEIGHT, image_h)
-            scale_error = (pred_scale - subject_scale) ** 2
-
-            # 透视损失
-            persp_error = _perspective_loss(focal_35mm, perspective_strength)
-
-            # 距离合理性
-            dist_penalty = 0.0 if 0.5 < distance < 20 else 1.0
-
-            total_loss = scale_error * 4.0 + persp_error * 2.0 + dist_penalty * 1.0
-
-            for height in height_range:
-                # 俯仰角估计
-                pitch = math.degrees(math.atan2(height - REF_PERSON_HEIGHT * 0.45, distance))
-                pitch = max(-30, min(30, pitch))
-
-                intrinsics = CameraIntrinsics.from_focal_mm(focal_35mm, image_w, image_h)
-                extrinsics = CameraExtrinsics(
-                    rvec=np.zeros(3), tvec=np.array([0, 0, -distance]),
-                    position=np.array([0, height, 0]),
-                    pitch=pitch, yaw=0, roll=0)
-
-                score = max(0, 1.0 - total_loss)
-
-                candidates.append(PoseCandidate(
-                    intrinsics=intrinsics, extrinsics=extrinsics,
-                    distance=round(distance, 2), height=round(height, 2),
-                    focal_equiv_35mm=round(focal_35mm),
-                    score=round(score, 3),
-                    losses={"scale": round(scale_error, 4),
-                            "perspective": round(persp_error, 4)}))
-
-    # 按得分排序, 返回 top N
-    candidates.sort(key=lambda c: c.score, reverse=True)
-
-    # 去重(相似参数的候选)
-    unique = []
+    position_penalty = min(_subject_position_loss(subject_position), 0.05)
     for c in candidates:
-        is_dup = False
-        for u in unique:
-            if (abs(c.focal_equiv_35mm - u.focal_equiv_35mm) < 10 and
-                abs(c.distance - u.distance) < 0.5):
-                is_dup = True
-                break
-        if not is_dup:
-            unique.append(c)
-        if len(unique) >= num_candidates:
-            break
-
-    return unique
+        c.losses["subject_position_prior"] = round(position_penalty, 5)
+        c.score = float(np.clip(c.score - position_penalty, 0.05, 0.99))
+    return _dedupe_candidates(candidates, num_candidates)

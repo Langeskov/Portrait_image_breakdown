@@ -1,118 +1,61 @@
-"""
-相机位置估计 - CameraPoseEstimator
-
-使用几何约束求解器 (geometry.py), 替代之前的 magic formula。
-保留 heuristic 作为 fallback, 但主要依赖几何计算。
-"""
+"""Camera pose estimation from the shared bounded 2D-pose fitting model."""
 from __future__ import annotations
-import math
-import numpy as np
+
 from reverse_engineering.data_types import EstimatedValue, CameraPoseResult
-from reverse_engineering.geometry import (
-    CameraIntrinsics, PoseSolver, CameraModel,
-    REF_PERSON_HEIGHT, REF_SHOULDER_WIDTH,
-)
-from core.pose_detector import PoseResult, LandmarkIndex as LI
+from reverse_engineering.geometry import PoseSolver
+from core.pose_detector import PoseResult
 
 
 def estimate_camera_pose(
     pose: PoseResult,
-    perspective_vanishing_points: list[tuple[float, float]] = None,
+    perspective_vanishing_points=None,
+    representative_focal_mm: float = 50.0,
+    image=None,
+    subject_bbox=None,
 ) -> CameraPoseResult:
-    """
-    估计相机位姿
+    """Return the same best-fit camera solution used by the 3D workspace.
 
-    优先使用几何约束求解, fallback 到 heuristic。
+    Vanishing-point and image-roll experiments are intentionally not used as
+    independent overrides here. The camera state must come from the shared
+    reprojection objective so Camera reconstruction and Projection Preview stay
+    numerically consistent.
     """
+    del perspective_vanishing_points, representative_focal_mm, image
     h, w = pose.image_height, pose.image_width
-
-    # 提取像素坐标
-    kp_pixels = np.zeros((17, 3))
-    for i in range(17):
-        lm = pose.landmarks[i]
-        kp_pixels[i] = [lm.x, lm.y, lm.visibility]
-
-    # 尝试几何求解
-    candidates = PoseSolver.solve_from_body_geometry(kp_pixels, w, h)
-
-    # 如果有消失点, 额外求解旋转
-    extrinsics_from_vp = None
-    if perspective_vanishing_points and len(perspective_vanishing_points) >= 2:
-        extrinsics_from_vp = PoseSolver.solve_from_vanishing_points(
-            perspective_vanishing_points, w, h)
-
+    kp = [[lm.x, lm.y, lm.visibility] for lm in pose.landmarks[:17]]
+    candidates = PoseSolver.fit_camera_to_pose(
+        kp, w, h,
+        subject_bbox=subject_bbox,
+        num_candidates=8,
+    )
     if candidates:
-        best = candidates[0]
-        # 合并消失点旋转信息
-        if extrinsics_from_vp:
-            pitch = extrinsics_from_vp.pitch
-            yaw = extrinsics_from_vp.yaw
-            roll = extrinsics_from_vp.roll
-        else:
-            pitch = best.extrinsics.pitch
-            yaw = best.extrinsics.yaw
-            roll = best.extrinsics.roll
-
-        dist = best.distance
-        height = best.height
-        focal = best.focal_equiv_35mm
-        conf = best.score
-
+        best = max(candidates, key=lambda c: c.score)
         return CameraPoseResult(
             camera_height=EstimatedValue(
-                height, unit="m",
-                range_min=round(max(0.3, height - 0.4), 2),
-                range_max=round(min(2.5, height + 0.4), 2),
-                confidence=min(conf + 0.1, 0.8),
-                basis=["body geometry constraint", f"score={conf:.2f}"]),
+                round(best.height, 2), unit="m", range_min=0.25, range_max=2.2,
+                confidence=min(0.8, best.score),
+                basis=["shared 2D pose reprojection fit", "pose-driven 3D proxy"]),
             camera_distance=EstimatedValue(
-                dist, unit="m",
-                range_min=round(max(0.5, dist * 0.7), 1),
-                range_max=round(dist * 1.4, 1),
-                confidence=conf,
-                basis=["body height + shoulder width constraint"]),
+                round(best.distance, 2), unit="m",
+                range_min=round(max(0.5, best.distance * 0.75), 2),
+                range_max=round(best.distance * 1.35, 2),
+                confidence=min(0.75, best.score),
+                basis=["shared reprojection fit", "focal/distance ambiguity retained"]),
             camera_pitch=EstimatedValue(
-                round(pitch, 1), unit="deg",
-                range_min=round(pitch - 5, 1),
-                range_max=round(pitch + 5, 1),
-                confidence=min(conf + 0.05, 0.75),
-                basis=["geometric projection"]),
+                round(best.extrinsics.pitch, 1), unit="deg", range_min=-30, range_max=30,
+                confidence=min(0.75, best.score), basis=["shared reprojection fit"]),
             camera_yaw=EstimatedValue(
-                round(yaw, 1), unit="deg",
-                range_min=round(yaw - 8, 1),
-                range_max=round(yaw + 8, 1),
-                confidence=0.35 if abs(yaw) < 5 else 0.5,
-                basis=["vanishing point" if extrinsics_from_vp else "subject offset"]),
+                round(best.extrinsics.yaw, 1), unit="deg", range_min=-30, range_max=30,
+                confidence=min(0.7, best.score), basis=["shared reprojection fit"]),
             camera_roll=EstimatedValue(
-                round(roll, 1), unit="deg",
-                range_min=round(roll - 2, 1),
-                range_max=round(roll + 2, 1),
-                confidence=0.6,
-                basis=["shoulder tilt"]))
-
-    # Fallback: heuristic (保留但标记为低置信度)
-    nose_y = pose.landmarks[LI.NOSE].world_y
-    ls_x = pose.landmarks[LI.LEFT_SHOULDER].world_x
-    rs_x = pose.landmarks[LI.RIGHT_SHOULDER].world_x
-    sw = abs(rs_x - ls_x)
-
-    height = max(0.3, min(2.5, 1.5 + (0.5 - nose_y) * 1.5))
-    dist = REF_SHOULDER_W / sw * 1.2 if sw > 0.01 else 5.0
-    dist = max(0.5, min(30.0, dist))
-    pitch = (0.4 - nose_y) * 30
+                round(best.extrinsics.roll, 1), unit="deg", range_min=-12, range_max=12,
+                confidence=min(0.65, best.score), basis=["shared reprojection fit", "roll is weakly constrained by 2D pose"]),
+        )
 
     return CameraPoseResult(
-        camera_height=EstimatedValue(
-            round(height, 2), unit="m", range_min=round(height-0.3, 2),
-            range_max=round(height+0.3, 2), confidence=0.3,
-            basis=["heuristic fallback", f"nose_y={nose_y:.2f}"]),
-        camera_distance=EstimatedValue(
-            round(dist, 1), unit="m", range_min=round(max(0.5, dist*0.7), 1),
-            range_max=round(dist*1.4, 1), confidence=0.25,
-            basis=["heuristic fallback"]),
-        camera_pitch=EstimatedValue(
-            round(pitch, 1), unit="deg", range_min=round(pitch-5, 1),
-            range_max=round(pitch+5, 1), confidence=0.25,
-            basis=["heuristic fallback"]),
-        camera_yaw=EstimatedValue(0.0, unit="deg", confidence=0.1, basis=["default"]),
-        camera_roll=EstimatedValue(0.0, unit="deg", confidence=0.1, basis=["default"]))
+        camera_height=EstimatedValue(1.0, unit="m", range_min=0.5, range_max=2.2, confidence=0.1, basis=["fallback"]),
+        camera_distance=EstimatedValue(4.0, unit="m", range_min=2.0, range_max=8.0, confidence=0.1, basis=["fallback"]),
+        camera_pitch=EstimatedValue(0.0, unit="deg", range_min=-30, range_max=30, confidence=0.1, basis=["fallback"]),
+        camera_yaw=EstimatedValue(0.0, unit="deg", range_min=-30, range_max=30, confidence=0.1, basis=["fallback"]),
+        camera_roll=EstimatedValue(0.0, unit="deg", range_min=-12, range_max=12, confidence=0.1, basis=["fallback"]),
+    )
