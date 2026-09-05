@@ -1,11 +1,12 @@
 [project]
 name = "photo"
-version = "0.2.0"
-description = "人体姿态分析 & 下一动作建议系统 (YOLOv26 Pose)"
+version = "0.3.0"
+description = "人体姿态分析 & 摄影机位反向工程系统 (YOLOv26 Pose)"
 requires-python = ">=3.12"
 dependencies = [
     "ultralytics>=8.4,<9",
     "opencv-python>=4.8,<6",
     "numpy>=1.26,<3",
+    "scipy>=1.13,<2",
     "PySide6>=6.7,<7",
 ]
