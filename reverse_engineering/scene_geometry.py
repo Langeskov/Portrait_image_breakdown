@@ -1,8 +1,8 @@
 """Scene-geometry evidence for camera rotation recovery.
 
-This module deliberately separates scene geometry from human pose.  It uses
+This module deliberately separates scene geometry from human pose. It uses
 standard OpenCV line detection plus deterministic robust fitting to estimate
-Manhattan-style vanishing points and the image-space horizon.  The result is
+Manhattan-style vanishing points and the image-space horizon. The result is
 evidence, not a claim that every photo has a Manhattan world.
 """
 from __future__ import annotations
@@ -68,7 +68,18 @@ def _angle_deg(dx: float, dy: float) -> float:
     return angle
 
 
-def detect_line_segments(image: np.ndarray, max_lines: int = 160) -> list[LineSegment]:
+def _point_inside_bbox(x: float, y: float, bbox: tuple[int, int, int, int] | None) -> bool:
+    if bbox is None:
+        return False
+    x0, y0, x1, y1 = bbox
+    return x0 <= x <= x1 and y0 <= y <= y1
+
+
+def detect_line_segments(
+    image: np.ndarray,
+    max_lines: int = 160,
+    exclude_bbox: tuple[int, int, int, int] | None = None,
+) -> list[LineSegment]:
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
     edges = cv2.Canny(gray, 50, 150, apertureSize=3)
     h, w = gray.shape[:2]
@@ -83,12 +94,19 @@ def detect_line_segments(image: np.ndarray, max_lines: int = 160) -> list[LineSe
     )
     if raw is None:
         return []
+
     segments: list[LineSegment] = []
     for x1, y1, x2, y2 in np.asarray(raw).reshape(-1, 4):
         length = math.hypot(float(x2 - x1), float(y2 - y1))
         if length < min_len:
             continue
+        mx, my = (float(x1) + float(x2)) * 0.5, (float(y1) + float(y2)) * 0.5
+        # Remove lines whose midpoint is on the primary person. This is a weak
+        # mask: long room lines crossing behind a person can still participate.
+        if _point_inside_bbox(mx, my, exclude_bbox):
+            continue
         segments.append(LineSegment(float(x1), float(y1), float(x2), float(y2), length, _angle_deg(x2 - x1, y2 - y1)))
+
     segments.sort(key=lambda s: s.length, reverse=True)
     return segments[:max_lines]
 
@@ -102,8 +120,10 @@ def _cluster_orientations(lines: list[LineSegment], max_clusters: int = 3) -> li
     if not lines:
         return []
     k = min(max_clusters, len(lines))
-    features = np.array([[math.cos(math.radians(2.0 * line.angle_deg)), math.sin(math.radians(2.0 * line.angle_deg))] for line in lines], dtype=np.float64)
-
+    features = np.array([
+        [math.cos(math.radians(2.0 * line.angle_deg)), math.sin(math.radians(2.0 * line.angle_deg))]
+        for line in lines
+    ], dtype=np.float64)
     centers: list[np.ndarray] = [features[0].copy()]
     while len(centers) < k:
         dist = np.min([np.sum((features - c) ** 2, axis=1) for c in centers], axis=0)
@@ -139,8 +159,7 @@ def _estimate_vanishing_point(lines: list[LineSegment], indices: list[int], widt
     A = []
     weights = []
     for idx in indices:
-        line = lines[idx].homogeneous()
-        A.append(line)
+        A.append(lines[idx].homogeneous())
         weights.append(math.sqrt(max(lines[idx].length, 1.0)))
     A = np.asarray(A, dtype=np.float64)
     weights = np.asarray(weights, dtype=np.float64)[:, None]
@@ -152,12 +171,7 @@ def _estimate_vanishing_point(lines: list[LineSegment], indices: list[int], widt
     if not np.isfinite([x, y]).all():
         return None
 
-    # Compute support in pixels against the fitted VP.  Large-distance VPs
-    # are allowed because room vanishing points commonly lie outside the image.
-    residuals = []
-    for idx in indices:
-        line = lines[idx].homogeneous()
-        residuals.append(abs(float(line @ np.array([x, y, 1.0]))))
+    residuals = [abs(float(lines[idx].homogeneous() @ np.array([x, y, 1.0]))) for idx in indices]
     median_residual = float(np.median(residuals))
     image_diag = math.hypot(width, height)
     support_conf = min(1.0, len(indices) / 12.0)
@@ -168,9 +182,9 @@ def _estimate_vanishing_point(lines: list[LineSegment], indices: list[int], widt
     return VanishingPoint(x, y, cluster_id, len(indices), confidence, median_residual)
 
 
-def analyze_scene_geometry(image: np.ndarray) -> SceneGeometryEvidence:
+def analyze_scene_geometry(image: np.ndarray, exclude_bbox: tuple[int, int, int, int] | None = None) -> SceneGeometryEvidence:
     h, w = image.shape[:2]
-    lines = detect_line_segments(image)
+    lines = detect_line_segments(image, exclude_bbox=exclude_bbox)
     clusters = _cluster_orientations(lines)
     vps: list[VanishingPoint] = []
     cluster_records: list[tuple[int, ...]] = []
@@ -178,7 +192,6 @@ def analyze_scene_geometry(image: np.ndarray) -> SceneGeometryEvidence:
         vp = _estimate_vanishing_point(lines, indices, w, h, cluster_id)
         if vp is None:
             continue
-        # Write cluster id after filtering so it always indexes the returned tuple.
         vps.append(VanishingPoint(vp.x, vp.y, cluster_id, vp.support, vp.confidence, vp.mean_line_residual_px))
         cluster_records.append(tuple(indices))
 
@@ -197,12 +210,9 @@ def analyze_scene_geometry(image: np.ndarray) -> SceneGeometryEvidence:
         a, b = horizontal_vps[0], horizontal_vps[1]
         horizon_angle = _angle_deg(b.x - a.x, b.y - a.y)
 
-    if vps:
-        confidence = float(np.mean([vp.confidence for vp in vps]))
-        if len(vps) >= 3:
-            confidence = min(0.95, confidence + 0.10)
-    else:
-        confidence = 0.0
+    confidence = float(np.mean([vp.confidence for vp in vps])) if vps else 0.0
+    if len(vps) >= 3:
+        confidence = min(0.95, confidence + 0.10)
 
     return SceneGeometryEvidence(
         width=w,
