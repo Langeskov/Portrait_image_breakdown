@@ -9,8 +9,16 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 
+def _install_v2_engine():
+    """Make the v2 engine the canonical engine used by GUI and CLI."""
+    import reverse_engineering.engine as engine_module
+    from reverse_engineering.engine_v2 import ReverseEngineeringEngineV2
+    engine_module.ReverseEngineeringEngine = ReverseEngineeringEngineV2
+
+
 def run_gui(image_path=None):
     from PySide6.QtWidgets import QApplication, QCheckBox, QToolBar
+    _install_v2_engine()
     import gui.main_window as main_window_module
     from gui.main_window import MainWindow, apply_light_theme
     from gui.reverse_3d import Reverse3DWorkspace as RealReverse3DWorkspace
@@ -34,7 +42,6 @@ def run_gui(image_path=None):
     window = MainWindow()
     window._result_cache = AnalysisCache(capacity=8)
 
-    # Keep the 3D projection preview synchronized with the currently loaded image.
     original_load = window._la
 
     def load_with_projection_sync(path):
@@ -71,6 +78,7 @@ def run_gui(image_path=None):
 
 def run_cli(image_path, verbose=False):
     import cv2
+    _install_v2_engine()
     from core.pose_detector import PoseDetector
     from core.orientation import analyze_orientation
     from core.action_classifier import classify_action
@@ -110,7 +118,7 @@ def run_cli(image_path, verbose=False):
             print(f"  [{s.priority.value}] {s.title}: {s.description}")
         print(f"\nNext actions: {', '.join(suggestions.next_actions)}")
         print(f"Creative: {suggestions.creative_direction}")
-        print("\n--- Reverse Engineering ---")
+        print("\n--- Reverse Engineering v2 ---")
         result = engine.analyze(image, pose, pose.bbox)
         print(result.report())
         print("\nCamera Actions:")
