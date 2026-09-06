@@ -170,6 +170,37 @@ The rotation solver then:
 
 When a photograph does not contain enough reliable orthogonal scene structure, v2 does not manufacture a confident absolute rotation.
 
+## Intrinsics Evidence
+
+v2 now accepts an optional `IntrinsicsEvidence` record. When the original image path is available, the CLI reads standard EXIF fields such as:
+
+```text
+FocalLength
+FocalLengthIn35mmFilm
+Make / Model
+LensModel
+```
+
+The evidence is used as a **prior**, not blindly treated as ground truth. Neighboring focal candidates are retained because an exported/cropped image can preserve EXIF while changing the relationship between pixels and the original camera framing.
+
+When EXIF does not contain a focal field, the pipeline continues using its geometry/framing candidate family without requiring metadata.
+
+The evidence source is persisted in `ReverseEngineeringResult.intrinsics_evidence` and included in CLI reports/JSON output.
+
+## Projection Validation
+
+The 3D projection preview uses the same pose-driven 17-keypoint proxy that participates in camera fitting. Candidate camera position and rotation share one target-centered coordinate frame, so the camera drawn in 3D and the camera used for 2D projection are now the same geometric state.
+
+The preview reports:
+
+```text
+3D projected subject size
+bbox IoU against observed BBox
+center displacement
+```
+
+This makes the 3D view a validation tool rather than a decorative frustum renderer.
+
 ## Performance and Cache
 
 The GUI uses staged background analysis:
@@ -188,6 +219,7 @@ photo/
 ├── test_smoke.py
 ├── test_stage2.py
 ├── test_v2_rotation.py
+├── test_v2_regression.py
 ├── README.md
 ├── core/
 │   ├── pose_detector.py
@@ -201,6 +233,7 @@ photo/
 │   ├── perspective.py
 │   ├── scene_geometry.py
 │   ├── rotation_solver.py
+│   ├── intrinsics.py
 │   ├── camera_pose.py
 │   ├── focal_length.py
 │   ├── depth_of_field.py
@@ -242,19 +275,22 @@ The application entry point installs `ReverseEngineeringEngineV2` as the active 
 - Reverse-engineering evidence overlay
 - Standard pinhole projection model
 - Pose/BBox framing candidate generation
+- Corrected pinhole distance initialization for portrait-scale subjects
 - Manhattan scene geometry extraction
 - Vanishing-point rotation recovery
 - Scene + pose candidate fusion
 - 2D ↔ 3D projection synchronization
 - Native 3D camera visualization
+- Pose-driven 3D subject proxy for projection validation
 - Multi-person 2D pose display
 - In-session LRU analysis cache
-- CI regression coverage for camera rotation geometry
+- EXIF focal-length / camera metadata evidence and candidate prior
+- CI regression coverage for camera rotation and camera-fit geometry
 
 ### Next
-- Better intrinsics estimation from EXIF/calibration
+- Camera-specific calibration profiles to recover principal point, pixel aspect and exact sensor dimensions
 - Scene/depth constraints for camera distance and height
 - Mature monocular/stereo/LiDAR depth providers
 - Multi-person 3D layout when independent depth evidence exists
 - Stronger non-Manhattan scene handling
-- Automatic refinement against the original image beyond pose/BBox evidence
+- Automatic image-space refinement against the original photo beyond pose/BBox evidence
