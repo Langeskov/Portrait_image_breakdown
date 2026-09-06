@@ -79,24 +79,20 @@ def estimate_camera_pose(
         subject_bbox=subject_bbox,
         num_candidates=8,
     )
-    if not candidates:
+    if candidates:
+        best = max(candidates, key=lambda c: c.score)
         return CameraPoseResult(
-            camera_height=EstimatedValue(1.7, 0.0),
-            camera_distance=EstimatedValue(4.0, 0.0),
-            camera_focal=EstimatedValue(representative_focal_mm, 0.0),
-            pitch=EstimatedValue(0.0, 0.0),
-            yaw=EstimatedValue(0.0, 0.0),
-            roll=EstimatedValue(0.0, 0.0),
-            confidence=0.0,
+            camera_height=EstimatedValue(round(best.height, 2), unit="m", range_min=0.25, range_max=2.2, confidence=min(0.8, best.score), basis=["shared 2D pose reprojection fit", "pose-driven 3D proxy"]),
+            camera_distance=EstimatedValue(round(best.distance, 2), unit="m", range_min=round(max(0.5, best.distance * 0.75), 2), range_max=round(best.distance * 1.35, 2), confidence=min(0.75, best.score), basis=["shared reprojection fit", "focal/distance ambiguity retained"]),
+            camera_pitch=EstimatedValue(round(best.extrinsics.pitch, 1), unit="deg", range_min=-30, range_max=30, confidence=min(0.75, best.score), basis=["shared reprojection fit"]),
+            camera_yaw=EstimatedValue(round(best.extrinsics.yaw, 1), unit="deg", range_min=-30, range_max=30, confidence=min(0.7, best.score), basis=["shared reprojection fit"]),
+            camera_roll=EstimatedValue(round(best.extrinsics.roll, 1), unit="deg", range_min=-12, range_max=12, confidence=min(0.65, best.score), basis=["shared reprojection fit", "roll is weakly constrained by 2D pose"]),
         )
-    best = candidates[0]
-    conf = float(np.clip(best.score, 0.0, 1.0))
+
     return CameraPoseResult(
-        camera_height=EstimatedValue(best.height, conf),
-        camera_distance=EstimatedValue(best.distance, conf),
-        camera_focal=EstimatedValue(best.focal_equiv_35mm, conf),
-        pitch=EstimatedValue(best.extrinsics.pitch, conf),
-        yaw=EstimatedValue(best.extrinsics.yaw, conf),
-        roll=EstimatedValue(best.extrinsics.roll, conf),
-        confidence=conf,
+        camera_height=EstimatedValue(1.0, unit="m", range_min=0.5, range_max=2.2, confidence=0.1, basis=["fallback"]),
+        camera_distance=EstimatedValue(4.0, unit="m", range_min=2.0, range_max=8.0, confidence=0.1, basis=["fallback"]),
+        camera_pitch=EstimatedValue(0.0, unit="deg", range_min=-30, range_max=30, confidence=0.1, basis=["fallback"]),
+        camera_yaw=EstimatedValue(0.0, unit="deg", range_min=-30, range_max=30, confidence=0.1, basis=["fallback"]),
+        camera_roll=EstimatedValue(0.0, unit="deg", range_min=-12, range_max=12, confidence=0.1, basis=["fallback"]),
     )
