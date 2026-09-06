@@ -49,7 +49,8 @@ def build_camera_model(scene: SceneModel, width: int, height: int) -> CameraMode
         scene.camera.sensor_width_mm * int(height) / max(int(width), 1),
     )
     position, right, up, forward = _camera_basis(scene)
-    # Keep a proper right-handed Y-up camera frame; CameraModel handles image-Y inversion.
+    # Use the same proper world->camera frame as geometry.py. The camera-up
+    # basis is +Y; CameraModel flips the raster Y coordinate exactly once.
     rotation = np.vstack([right, up, forward])
     rvec, _ = cv2.Rodrigues(rotation)
     tvec = -rotation @ position

@@ -3,7 +3,13 @@ from __future__ import annotations
 
 import numpy as np
 
-from reverse_engineering.geometry import CameraIntrinsics, CameraExtrinsics, PoseCandidate, PoseSolver, REF_PERSON_HEIGHT
+from reverse_engineering.geometry import (
+    CameraIntrinsics,
+    PoseCandidate,
+    PoseSolver,
+    REF_PERSON_HEIGHT,
+    _camera_pose_from_params,
+)
 from reverse_engineering.intrinsics import IntrinsicsEvidence
 from reverse_engineering.rotation_solver import fuse_pose_and_scene, estimate_rotation_candidates
 from reverse_engineering.scene_geometry import SceneGeometryEvidence
@@ -16,7 +22,10 @@ def _subject_position_loss(observed: tuple[float, float]) -> float:
 
 def _dedupe_candidates(candidates, max_candidates):
     out = []
-    for c in sorted(candidates, key=lambda x: (-float(x.score), float(x.losses.get("mean_reprojection_px", 1e9)))):
+    for c in sorted(
+        candidates,
+        key=lambda x: (-float(x.score), float(x.losses.get("mean_reprojection_px", 1e9))),
+    ):
         if any(
             abs(c.focal_equiv_35mm - u.focal_equiv_35mm) < 5.0
             and abs(c.distance - u.distance) < 0.25
@@ -44,16 +53,19 @@ def _fallback_candidate(image_w, image_h, pose_keypoints, focal_mm=50.0):
     distance = max(1.0, REF_PERSON_HEIGHT * intr.fy / body_h)
     center_y = float(np.mean(kp[:17, 1][valid]) / max(image_h, 1))
     height = float(np.clip(REF_PERSON_HEIGHT * (0.8 - 0.45 * center_y), 0.5, 1.8))
+    position, extrinsics = _camera_pose_from_params(distance, height, 0.0, 0.0, 0.0)
     return PoseCandidate(
         intrinsics=intr,
-        extrinsics=CameraExtrinsics(
-            rvec=np.zeros(3), tvec=np.array([0.0, 0.0, distance]),
-            position=np.array([0.0, height, -distance]), pitch=0.0, yaw=0.0, roll=0.0,
-        ),
-        distance=float(distance), height=float(height), focal_equiv_35mm=float(focal_mm), score=0.18,
+        extrinsics=extrinsics,
+        distance=float(distance),
+        height=float(height),
+        focal_equiv_35mm=float(focal_mm),
+        score=0.18,
         losses={
-            "mean_reprojection_px": float(body_h), "median_reprojection_px": float(body_h),
-            "bbox_iou": 0.0, "fallback": 1.0,
+            "mean_reprojection_px": float(body_h),
+            "median_reprojection_px": float(body_h),
+            "bbox_iou": 0.0,
+            "fallback": 1.0,
             "fallback_reason": "numerical camera fit returned no solution",
         },
     )
@@ -71,7 +83,11 @@ def optimize_parameters(
     scene_evidence: SceneGeometryEvidence | None = None,
     intrinsics_evidence: IntrinsicsEvidence | None = None,
 ):
-    """Build ranked camera solutions from pose, scene and optional EXIF evidence."""
+    """Build ranked camera solutions from pose, scene and optional EXIF evidence.
+
+    A pose-fit failure is not terminal: scene geometry can still recover camera
+    orientation, so the fallback pose is retained as a seed for scene fusion.
+    """
     del subject_scale, perspective_strength
     if pose_keypoints is None:
         return []
@@ -83,13 +99,13 @@ def optimize_parameters(
     if intrinsics_evidence is not None and intrinsics_evidence.has_focal_prior:
         focal = intrinsics_evidence.preferred_focal_mm()
         if focal is not None:
-            # Preserve neighboring hypotheses because EXIF can describe a
-            # cropped image or a processed derivative rather than the source.
             focal_seeds = sorted({
                 round(float(np.clip(focal + delta, 20.0, 220.0)), 2)
                 for delta in (-8.0, -4.0, 0.0, 4.0, 8.0)
             } | {float(v) for v in focal_seeds})
 
+    pose_candidates = []
+    fit_exception = None
     try:
         pose_candidates = PoseSolver.fit_camera_to_pose(
             kp, image_w, image_h,
@@ -98,17 +114,16 @@ def optimize_parameters(
             num_candidates=max(8, num_candidates),
         )
     except Exception as exc:
-        fallback_focal = intrinsics_evidence.preferred_focal_mm() if intrinsics_evidence else None
-        fallback = _fallback_candidate(image_w, image_h, kp, fallback_focal or 50.0)
-        if fallback is not None:
-            fallback.losses["fit_exception"] = f"{type(exc).__name__}: {exc}"
-            return [fallback]
-        return []
+        fit_exception = f"{type(exc).__name__}: {exc}"
 
     if not pose_candidates:
         fallback_focal = intrinsics_evidence.preferred_focal_mm() if intrinsics_evidence else None
         fallback = _fallback_candidate(image_w, image_h, kp, fallback_focal or 50.0)
-        return [fallback] if fallback is not None else []
+        if fallback is None:
+            return []
+        if fit_exception:
+            fallback.losses["fit_exception"] = fit_exception
+        pose_candidates = [fallback]
 
     position_penalty = min(_subject_position_loss(subject_position), 0.05)
     for c in pose_candidates:
@@ -119,12 +134,16 @@ def optimize_parameters(
             exif_score = float(np.exp(-focal_delta / max(8.0, 0.10 * float(hint))))
             c.losses["exif_focal_mm"] = round(float(hint), 3)
             c.losses["exif_focal_score"] = round(exif_score, 4)
-            c.score = float(np.clip(c.score * (0.82 + 0.18 * exif_score) - position_penalty, 0.05, 0.99))
+            c.score = float(
+                np.clip(c.score * (0.82 + 0.18 * exif_score) - position_penalty, 0.05, 0.99)
+            )
         else:
             c.score = float(np.clip(c.score - position_penalty, 0.05, 0.99))
 
     if scene_evidence is not None:
-        rotation_candidates = estimate_rotation_candidates(scene_evidence, image_w, image_h, max_candidates=8)
+        rotation_candidates = estimate_rotation_candidates(
+            scene_evidence, image_w, image_h, max_candidates=8
+        )
         fused = fuse_pose_and_scene(
             pose_candidates,
             rotation_candidates,
