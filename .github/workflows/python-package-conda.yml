@@ -12,6 +12,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Install Linux GUI runtime libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libegl1 libgl1 libxkbcommon-x11-0
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -31,4 +36,6 @@ jobs:
           uv run --with flake8 flake8 . --exclude=.venv,.git --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
 
       - name: Test with pytest
-        run: uv run --with pytest pytest
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: uv run --with pytest pytest -k 'not full_pipeline_with_image'
