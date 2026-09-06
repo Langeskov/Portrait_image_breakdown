@@ -3,21 +3,15 @@ from __future__ import annotations
 
 import math
 
-import cv2
 import numpy as np
 
 from reverse_engineering.data_types import EstimatedValue, PerspectiveResult
-from reverse_engineering.scene_geometry import analyze_scene_geometry
+from reverse_engineering.scene_geometry import SceneGeometryEvidence, analyze_scene_geometry
 
 
-def _line_angle(line):
-    x1, y1, x2, y2 = line
-    return math.degrees(math.atan2(y2 - y1, x2 - x1))
-
-
-def analyze_perspective(image):
+def analyze_perspective(image, scene_evidence: SceneGeometryEvidence | None = None):
     h, w = image.shape[:2]
-    scene = analyze_scene_geometry(image)
+    scene = scene_evidence or analyze_scene_geometry(image)
     normalized_lines = [
         (round(line.x1 / w, 5), round(line.y1 / h, 5),
          round(line.x2 / w, 5), round(line.y2 / h, 5))
@@ -40,7 +34,9 @@ def analyze_perspective(image):
     if scene.vertical_cluster is not None and scene.vertical_cluster < len(scene.clusters):
         vertical_support = len(scene.clusters[scene.vertical_cluster])
     if scene.horizontal_clusters:
-        horizontal_support = sum(len(scene.clusters[i]) for i in scene.horizontal_clusters if i < len(scene.clusters))
+        horizontal_support = sum(
+            len(scene.clusters[i]) for i in scene.horizontal_clusters if i < len(scene.clusters)
+        )
 
     vp_values = [(round(vp.x / w, 5), round(vp.y / h, 5)) for vp in scene.vanishing_points]
     return PerspectiveResult(
@@ -49,7 +45,11 @@ def analyze_perspective(image):
             confidence=min(0.75, 0.20 + 0.55 * scene.confidence),
             basis=[f"{len(scene.lines)} detected line segments", "orientation spread used qualitatively"],
         ),
-        perspective_type=EstimatedValue(ptype, confidence=pc, basis=["scene line orientation distribution"]),
+        perspective_type=EstimatedValue(
+            ptype,
+            confidence=pc,
+            basis=["scene line orientation distribution"],
+        ),
         vanishing_points=vp_values,
         vertical_convergence=EstimatedValue(
             round(min(1.0, vertical_support / 12.0), 3),
