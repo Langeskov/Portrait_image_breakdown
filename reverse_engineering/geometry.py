@@ -142,14 +142,18 @@ def pose_driven_person_points(pose_keypoints: np.ndarray, image_w: int, image_h:
     world[valid, 0] = (points[valid, 0] - cx) * scale
     world[valid, 1] = (cy - points[valid, 1]) * scale
     world[valid, 2] = 0.0
-    # Small, fixed depth offsets prevent a perfectly planar PnP configuration
-    # without inventing arbitrary per-joint depth.
     world[[0, 1, 2, 3, 4], 2] = .08
     world[[7, 8, 9, 10, 13, 14, 15, 16], 2] = -.04
     return world
 
 
 def _camera_pose_from_params(distance: float, height: float, yaw_deg: float, pitch_deg: float, roll_deg: float, target: Optional[np.ndarray] = None) -> tuple[np.ndarray, CameraExtrinsics]:
+    """Construct a right-handed world-to-camera rotation.
+
+    World coordinates are X-right, Y-up, Z-forward. The resulting camera frame
+    is also right-handed: +X right, +Y up, +Z forward. Image Y is converted
+    separately during projection, where positive camera Y maps upward on screen.
+    """
     target = np.asarray(target if target is not None else [0.0, 0.0, 0.0], dtype=float)
     yaw, pitch, roll = map(math.radians, (yaw_deg, pitch_deg, roll_deg))
     position = target + np.array([math.sin(yaw) * distance, height, -math.cos(yaw) * distance], dtype=float)
@@ -162,13 +166,16 @@ def _camera_pose_from_params(distance: float, height: float, yaw_deg: float, pit
     c, s = math.cos(roll), math.sin(roll)
     rolled_right = right * c + up * s
     rolled_up = -right * s + up * c
-    R = np.vstack([rolled_right, -rolled_up, forward])
+    # Proper right-handed basis: determinant +1.
+    R = np.vstack([rolled_right, rolled_up, forward])
     rvec, _ = cv2.Rodrigues(R)
     tvec = -R @ position
     return position, CameraExtrinsics(rvec.reshape(3), tvec.reshape(3), position, float(pitch_deg), float(yaw_deg), float(roll_deg))
 
 
 class CameraModel:
+    """Pinhole projection using a right-handed Y-up camera convention."""
+
     def __init__(self, intrinsics: CameraIntrinsics, extrinsics: Optional[CameraExtrinsics] = None):
         self.intrinsics = intrinsics
         self.extrinsics = extrinsics
@@ -179,9 +186,18 @@ class CameraModel:
         if self.extrinsics is None:
             return out
         valid = np.isfinite(points).all(axis=1)
-        if valid.any():
-            projected, _ = cv2.projectPoints(points[valid], self.extrinsics.rvec, self.extrinsics.tvec, self.intrinsics.to_matrix(), None)
-            out[valid] = projected.reshape(-1, 2)
+        if not valid.any():
+            return out
+        R = cv2.Rodrigues(self.extrinsics.rvec)[0]
+        camera_points = (R @ points[valid].T + self.extrinsics.tvec.reshape(3, 1)).T
+        z = camera_points[:, 2]
+        front = z > 1e-8
+        projected = np.full((len(camera_points), 2), np.nan, dtype=float)
+        if front.any():
+            xyz = camera_points[front]
+            projected[front, 0] = self.intrinsics.fx * xyz[:, 0] / xyz[:, 2] + self.intrinsics.cx
+            projected[front, 1] = self.intrinsics.cy - self.intrinsics.fy * xyz[:, 1] / xyz[:, 2]
+        out[valid] = projected
         return out
 
     def project_point(self, point_3d: np.ndarray) -> tuple[float, float]:
@@ -189,8 +205,13 @@ class CameraModel:
         return float(p[0]), float(p[1])
 
     def unproject_point(self, px: float, py: float, depth: float = 1.0) -> np.ndarray:
-        ray = np.linalg.inv(self.intrinsics.to_matrix()) @ np.array([px, py, 1.0], dtype=float)
-        return ray * (float(depth) / ray[2]) if abs(ray[2]) > 1e-9 else np.array([np.nan, np.nan, np.nan])
+        ray = np.array([
+            (float(px) - self.intrinsics.cx) / max(self.intrinsics.fx, 1e-9),
+            -(float(py) - self.intrinsics.cy) / max(self.intrinsics.fy, 1e-9),
+            1.0,
+        ], dtype=float)
+        ray *= float(depth) / max(ray[2], 1e-9)
+        return ray
 
 
 class PoseSolver:
@@ -221,243 +242,96 @@ class PoseSolver:
         xspan = max(float(np.ptp(obs[:, 0])), 20.0)
         base_distance = max(1.0, 50.0 * image_h / yspan * ref_height / 24.0)
         base_height = float(np.clip(ref_height * (0.35 + 0.45 * (1.0 - np.clip((np.mean(obs[:, 1]) / image_h), 0.0, 1.0))), .45, 1.9))
-
-        # [distance, focal, height, yaw, pitch, roll]
         lo = np.array([max(.8, base_distance * .20), 28.0, .40, -20.0, -20.0, -8.0], dtype=float)
         hi = np.array([min(18.0, max(6.0, base_distance * 3.0)), 180.0, 2.10, 20.0, 20.0, 8.0], dtype=float)
         if hi[0] <= lo[0]:
             hi[0] = lo[0] + .5
 
-        target_center = np.array([0.0, 0.0, 0.0], dtype=float)
-
         def evaluate(p):
             distance, focal, height, yaw, pitch, roll = p
             intr = CameraIntrinsics.from_focal_mm(focal, image_w, image_h)
-            position, extrinsics = _camera_pose_from_params(distance, height, yaw, pitch, roll, target_center)
-            camera = CameraModel(intr, extrinsics)
-            projected = camera.project_points(obj)
+            position, extrinsics = _camera_pose_from_params(distance, height, yaw, pitch, roll)
+            projected = CameraModel(intr, extrinsics).project_points(obj)
             return projected, intr, extrinsics, position
 
         def residual(p):
-            distance, _, height, yaw, pitch, roll = p
+            _, _, _, _ = p
             projected, _, _, _ = evaluate(p)
             pred = projected[valid]
             point_r = ((pred - obs) / 4.0) * weights[:, None]
             if not np.isfinite(point_r).all():
-                return np.full(point_r.size + 4, 100.0)
-
+                return np.full(point_r.size + 9, 100.0)
             extra = []
             if bbox is not None:
                 bx0, by0, bx1, by1 = bbox
                 pb = np.array([np.nanmin(projected[:, 0]), np.nanmin(projected[:, 1]), np.nanmax(projected[:, 0]), np.nanmax(projected[:, 1])])
-                observed_w, observed_h = max(bx1 - bx0, 1.0), max(by1 - by0, 1.0)
-                predicted_w, predicted_h = max(pb[2] - pb[0], 1.0), max(pb[3] - pb[1], 1.0)
-                extra.extend([
-                    (pb[0] - bx0) / 6.0,
-                    (pb[1] - by0) / 6.0,
-                    (math.log(predicted_w / observed_w)) * 6.0,
-                    (math.log(predicted_h / observed_h)) * 6.0,
-                ])
-            # Weak regularization prevents meaningless boundary solutions while
-            # keeping pose orientation free to move when image evidence supports it.
+                observed_w, observed_h = max(bx1-bx0,1.0), max(by1-by0,1.0)
+                predicted_w, predicted_h = max(pb[2]-pb[0],1.0), max(pb[3]-pb[1],1.0)
+                extra.extend([(pb[0]-bx0)/6.0,(pb[1]-by0)/6.0,math.log(predicted_w/observed_w)*6.0,math.log(predicted_h/observed_h)*6.0])
             extra.extend([
-                (distance / max(base_distance, 1.0) - 1.0) * .15,
-                ((height - base_height) / .8) * .10,
-                (yaw / 20.0) * .06,
-                (pitch / 20.0) * .06,
-                (roll / 8.0) * .03,
+                (p[0]/max(base_distance,1.0)-1.0)*.15,
+                ((p[2]-base_height)/.8)*.10,
+                (p[3]/20.0)*.06,
+                (p[4]/20.0)*.06,
+                (p[5]/8.0)*.03,
             ])
             return np.concatenate([point_r.reshape(-1), np.asarray(extra, dtype=float)])
 
         results: list[PoseCandidate] = []
-        yaw_seeds = (-6.0, 0.0, 6.0)
-        pitch_seeds = (-6.0, 0.0, 6.0)
-        roll_seeds = (-3.0, 0.0, 3.0)
         for focal in focal_seeds:
-            for yaw0 in yaw_seeds:
-                for pitch0 in pitch_seeds:
+            for yaw0 in (-6.0, 0.0, 6.0):
+                for pitch0 in (-6.0, 0.0, 6.0):
                     x0 = np.array([base_distance * focal / 50.0, focal, base_height, yaw0, pitch0, 0.0], dtype=float)
                     x0 = np.clip(x0, lo + 1e-4, hi - 1e-4)
                     try:
-                        sol = least_squares(
-                            residual, x0, bounds=(lo, hi),
-                            loss="soft_l1", f_scale=5.0,
-                            max_nfev=350, xtol=1e-7, ftol=1e-7, gtol=1e-7,
-                        )
+                        sol = least_squares(residual, x0, bounds=(lo, hi), loss="soft_l1", f_scale=5.0, max_nfev=350, xtol=1e-7, ftol=1e-7, gtol=1e-7)
                     except (ValueError, RuntimeError, FloatingPointError):
                         continue
                     projected, intr, extrinsics, position = evaluate(sol.x)
                     errors = np.linalg.norm(projected[valid] - obs, axis=1)
                     if not np.isfinite(errors).all():
                         continue
-                    mean_error = float(np.mean(errors)); median_error = float(np.median(errors))
+                    mean_error, median_error = float(np.mean(errors)), float(np.median(errors))
                     if mean_error > 60.0:
                         continue
-
                     pb = np.array([np.nanmin(projected[:, 0]), np.nanmin(projected[:, 1]), np.nanmax(projected[:, 0]), np.nanmax(projected[:, 1])])
                     iou = 0.0
                     center_delta = diag
                     if bbox is not None:
                         bx0, by0, bx1, by1 = bbox
-                        iw = max(0.0, min(pb[2], bx1) - max(pb[0], bx0))
-                        ih = max(0.0, min(pb[3], by1) - max(pb[1], by0))
-                        inter = iw * ih
-                        area_p = max(0.0, pb[2] - pb[0]) * max(0.0, pb[3] - pb[1])
-                        area_o = max(0.0, bx1 - bx0) * max(0.0, by1 - by0)
-                        union = area_p + area_o - inter
-                        iou = inter / union if union > 1e-9 else 0.0
-                        center_delta = math.hypot((pb[0] + pb[2]) * .5 - (bx0 + bx1) * .5, (pb[1] + pb[3]) * .5 - (by0 + by1) * .5)
+                        iw, ih = max(0.0,min(pb[2],bx1)-max(pb[0],bx0)), max(0.0,min(pb[3],by1)-max(pb[1],by0))
+                        inter = iw*ih
+                        area_p = max(0.0,pb[2]-pb[0])*max(0.0,pb[3]-pb[1])
+                        area_o = max(0.0,bx1-bx0)*max(0.0,by1-by0)
+                        iou = inter/max(area_p+area_o-inter,1e-9)
+                        center_delta = math.hypot((pb[0]+pb[2])*.5-(bx0+bx1)*.5,(pb[1]+pb[3])*.5-(by0+by1)*.5)
+                    reproj_score = math.exp(-mean_error/max(12.0,.015*diag))
+                    center_score = math.exp(-center_delta/max(30.0,.03*diag))
+                    prior = math.exp(-0.5*((sol.x[0]/max(base_distance,1.0)-1.0)/1.75)**2)
+                    size_score = math.exp(-abs(math.log(max(pb[2]-pb[0],1)/max((bbox[2]-bbox[0]) if bbox else pb[2]-pb[0],1)))) if bbox else 1.0
+                    score = float(np.clip(.50*reproj_score+.25*iou+.15*center_score+.10*prior*size_score,0.0,1.0))
+                    results.append(PoseCandidate(intr,extrinsics,float(sol.x[0]),float(sol.x[2]),float(sol.x[1]),score,{
+                        "mean_reprojection_px": round(mean_error,3), "median_reprojection_px": round(median_error,3),
+                        "bbox_iou": round(iou,4), "center_delta_px": round(center_delta,3), "optimization_cost": round(float(sol.cost),6),
+                    }))
 
-                    reproj_score = math.exp(-mean_error / max(12.0, 0.015 * diag))
-                    size_score = math.exp(-abs(math.log(max(pb[2]-pb[0],1) / max((bbox[2]-bbox[0]) if bbox else pb[2]-pb[0],1)))) if bbox else 1.0
-                    center_score = math.exp(-center_delta / max(30.0, 0.03 * diag))
-                    prior = math.exp(-0.5 * ((sol.x[0] / max(base_distance,1.0) - 1.0) / 1.75) ** 2)
-                    score = float(np.clip(.50 * reproj_score + .25 * iou + .15 * center_score + .10 * prior * size_score, 0.0, 1.0))
-                    results.append(PoseCandidate(
-                        intrinsics=intr,
-                        extrinsics=extrinsics,
-                        distance=float(sol.x[0]),
-                        height=float(sol.x[2]),
-                        focal_equiv_35mm=float(sol.x[1]),
-                        score=score,
-                        losses={
-                            "mean_reprojection_px": round(mean_error, 3),
-                            "median_reprojection_px": round(median_error, 3),
-                            "bbox_iou": round(iou, 4),
-                            "center_delta_px": round(center_delta, 3),
-                            "optimization_cost": round(float(sol.cost), 6),
-                        },
-                    ))
-
-        # The bounded parameterization is useful as a prior, but its orientation
-        # model can become a poor local minimum for synthetic or strongly tilted
-        # poses. OpenCV's PnP solver provides a direct reprojection solution for
-        # the same metric proxy. Use it to recover a solution family whenever the
-        # bounded search did not produce enough usable candidates.
-        if len(results) < max(1, num_candidates):
-            pnp_obj = obj[valid].astype(np.float32)
-            pnp_obs = obs.astype(np.float32)
-            for focal in focal_seeds:
-                if len(results) >= max(1, num_candidates):
-                    break
-                intr = CameraIntrinsics.from_focal_mm(focal, image_w, image_h)
-                try:
-                    ok, rvec, tvec = cv2.solvePnP(
-                        pnp_obj, pnp_obs, intr.to_matrix(), None,
-                        flags=cv2.SOLVEPNP_ITERATIVE,
-                    )
-                except (cv2.error, ValueError, FloatingPointError):
-                    continue
-                if not ok:
-                    continue
-                rvec = np.asarray(rvec, dtype=float).reshape(3)
-                tvec = np.asarray(tvec, dtype=float).reshape(3)
-                projected, _ = cv2.projectPoints(pnp_obj, rvec, tvec, intr.to_matrix(), None)
-                projected = projected.reshape(-1, 2)
-                errors = np.linalg.norm(projected - obs, axis=1)
-                if not np.isfinite(errors).all():
-                    continue
-                mean_error = float(np.mean(errors))
-                median_error = float(np.median(errors))
-                if mean_error > 60.0:
-                    continue
-
-                R, _ = cv2.Rodrigues(rvec)
-                position = (-R.T @ tvec).reshape(3)
-                distance = float(np.linalg.norm(position))
-                height = float(abs(position[1]))
-                extrinsics = CameraExtrinsics(
-                    rvec=rvec,
-                    tvec=tvec,
-                    position=position,
-                )
-                pb = np.array([
-                    np.min(projected[:, 0]), np.min(projected[:, 1]),
-                    np.max(projected[:, 0]), np.max(projected[:, 1]),
-                ])
-                iou = 0.0
-                center_delta = diag
-                if bbox is not None:
-                    bx0, by0, bx1, by1 = bbox
-                    iw = max(0.0, min(pb[2], bx1) - max(pb[0], bx0))
-                    ih = max(0.0, min(pb[3], by1) - max(pb[1], by0))
-                    inter = iw * ih
-                    area_p = max(0.0, pb[2] - pb[0]) * max(0.0, pb[3] - pb[1])
-                    area_o = max(0.0, bx1 - bx0) * max(0.0, by1 - by0)
-                    union = area_p + area_o - inter
-                    iou = inter / union if union > 1e-9 else 0.0
-                    center_delta = math.hypot(
-                        (pb[0] + pb[2]) * .5 - (bx0 + bx1) * .5,
-                        (pb[1] + pb[3]) * .5 - (by0 + by1) * .5,
-                    )
-                reproj_score = math.exp(-mean_error / max(12.0, 0.015 * diag))
-                center_score = math.exp(-center_delta / max(30.0, 0.03 * diag))
-                score = float(np.clip(.65 * reproj_score + .25 * iou + .10 * center_score, 0.0, 1.0))
-                results.append(PoseCandidate(
-                    intrinsics=intr,
-                    extrinsics=extrinsics,
-                    distance=distance,
-                    height=height,
-                    focal_equiv_35mm=float(focal),
-                    score=score,
-                    losses={
-                        "mean_reprojection_px": round(mean_error, 3),
-                        "median_reprojection_px": round(median_error, 3),
-                        "bbox_iou": round(iou, 4),
-                        "center_delta_px": round(center_delta, 3),
-                        "solver": "solvePnP",
-                    },
-                ))
-
-        results.sort(key=lambda c: (-c.score, c.losses.get("mean_reprojection_px", 1e9)))
+        results.sort(key=lambda c:(-c.score,c.losses.get("mean_reprojection_px",1e9)))
         unique: list[PoseCandidate] = []
         for candidate in results:
             if any(
-                abs(candidate.focal_equiv_35mm - u.focal_equiv_35mm) < 4.0
-                and abs(candidate.distance - u.distance) < .20
-                and abs(candidate.extrinsics.yaw - u.extrinsics.yaw) < 2.0
-                and abs(candidate.extrinsics.pitch - u.extrinsics.pitch) < 2.0
+                abs(candidate.focal_equiv_35mm-u.focal_equiv_35mm)<4.0
+                and abs(candidate.distance-u.distance)<.20
+                and abs(candidate.extrinsics.yaw-u.extrinsics.yaw)<2.0
+                and abs(candidate.extrinsics.pitch-u.extrinsics.pitch)<2.0
+                and abs(candidate.extrinsics.roll-u.extrinsics.roll)<1.5
                 for u in unique
             ):
                 continue
             unique.append(candidate)
-            if len(unique) >= max(1, num_candidates):
+            if len(unique) >= max(1,num_candidates):
                 break
         return unique
 
     @staticmethod
     def solve_from_body_geometry(pose_keypoints, image_w, image_h, **kwargs):
         return PoseSolver.fit_camera_to_pose(pose_keypoints, image_w, image_h, **kwargs)
-
-    @staticmethod
-    def solve_from_vanishing_points(vps, image_w, image_h, intrinsics=None):
-        if len(vps) < 2:
-            return None
-        if intrinsics is None:
-            focal = 0.9 * max(image_w, image_h)
-            intrinsics = CameraIntrinsics(focal, focal, image_w * .5, image_h * .5, image_w, image_h)
-        inv = np.linalg.inv(intrinsics.to_matrix())
-        dirs = []
-        for vx, vy in vps[:3]:
-            if np.isfinite(vx) and np.isfinite(vy):
-                d = inv @ np.array([vx * image_w, vy * image_h, 1.0])
-                n = np.linalg.norm(d)
-                if n > 1e-8:
-                    dirs.append(d / n)
-        if len(dirs) < 2 or abs(float(np.dot(dirs[0], dirs[1]))) > .45:
-            return None
-        r1 = dirs[0]
-        r2 = dirs[1] - np.dot(dirs[1], r1) * r1
-        n = np.linalg.norm(r2)
-        if n < 1e-8:
-            return None
-        r2 /= n
-        r3 = np.cross(r1, r2)
-        R = np.column_stack([r1, r2, r3])
-        U, _, Vt = np.linalg.svd(R)
-        R = U @ Vt
-        if np.linalg.det(R) < 0:
-            U[:, -1] *= -1
-            R = U @ Vt
-        rvec, _ = cv2.Rodrigues(R)
-        return CameraExtrinsics(rvec.reshape(3), np.zeros(3), np.array([np.nan, np.nan, np.nan]))
