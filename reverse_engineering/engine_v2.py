@@ -1,9 +1,4 @@
-"""Portrait camera reverse-engineering engine v2.
-
-v2 separates the evidence roles: human pose/BBox constrain framing, while
-scene geometry constrains camera rotation and provides an independent focal
-length prior. The final candidate family is produced by fusing both sources.
-"""
+"""Portrait camera reverse-engineering engine v2."""
 from __future__ import annotations
 
 import math
@@ -17,6 +12,7 @@ from reverse_engineering.data_types import CameraAction, CameraPoseResult, Compo
 from reverse_engineering.depth_of_field import analyze_depth_of_field
 from reverse_engineering.depth_provider import MonocularDepthProvider
 from reverse_engineering.focal_length import estimate_focal_length
+from reverse_engineering.intrinsics import IntrinsicsEvidence
 from reverse_engineering.motion_blur import analyze_motion_blur
 from reverse_engineering.perspective import analyze_perspective
 from reverse_engineering.scene_geometry import analyze_scene_geometry
@@ -103,7 +99,7 @@ class ReverseEngineeringEngineV2:
         self._enable_simulation = enable_simulation
         self._depth_provider = MonocularDepthProvider()
 
-    def analyze(self, image, pose=None, bbox=None):
+    def analyze(self, image, pose=None, bbox=None, intrinsics_evidence: IntrinsicsEvidence | None = None):
         h, w = image.shape[:2]
         scene_evidence = analyze_scene_geometry(image, exclude_bbox=bbox)
         composition = _analyze_composition_extended(image, pose, bbox)
@@ -115,6 +111,7 @@ class ReverseEngineeringEngineV2:
                 w, h, composition.subject_scale, composition.subject_position,
                 perspective.perspective_strength.value, kp, num_candidates=6,
                 subject_bbox=bbox, scene_evidence=scene_evidence,
+                intrinsics_evidence=intrinsics_evidence,
             )
         if candidates:
             camera_pose = _camera_pose_from_candidate(candidates[0])
@@ -146,6 +143,9 @@ class ReverseEngineeringEngineV2:
             uncertainties.append("rotation uses Manhattan scene geometry; quality depends on reliable orthogonal scene lines")
         else:
             uncertainties.append("insufficient orthogonal scene structure for reliable absolute rotation")
+        if intrinsics_evidence is not None:
+            uncertainties.append(f"intrinsics source: {intrinsics_evidence.source}; observed fields: {', '.join(intrinsics_evidence.observed_fields) or 'none'}")
+            uncertainties.extend(intrinsics_evidence.notes)
         result = ReverseEngineeringResult(
             image_size=(w, h), subject_bbox=bbox,
             subject_keypoints=pose.landmarks[:17] if pose else None,
@@ -156,6 +156,7 @@ class ReverseEngineeringEngineV2:
             shooting_techniques=shooting_techniques,
             overall_confidence=overall_confidence, uncertainties=uncertainties,
             _sim_candidates=candidates,
+            intrinsics_evidence=intrinsics_evidence.to_dict() if intrinsics_evidence else {},
         )
         result._camera_actions = _generate_camera_actions(result, candidates)
         return result
