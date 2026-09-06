@@ -86,13 +86,17 @@ def run_cli(image_path, verbose=False):
     from core.composition import analyze_composition
     from core.suggestion import generate_suggestions
     from reverse_engineering.engine import ReverseEngineeringEngine
+    from reverse_engineering.intrinsics import read_exif_intrinsics
 
     image = cv2.imread(image_path)
     if image is None:
         print(f"Error: cannot read {image_path}")
         sys.exit(1)
+    intrinsics = read_exif_intrinsics(image_path)
     print(f"Analyzing: {image_path}")
     print(f"Image size: {image.shape[1]}x{image.shape[0]}")
+    if intrinsics.has_focal_prior:
+        print(f"EXIF intrinsics: focal={intrinsics.focal_length_mm} mm, 35mm eq={intrinsics.focal_length_35mm} mm")
     print("=" * 60)
 
     det = PoseDetector()
@@ -119,7 +123,7 @@ def run_cli(image_path, verbose=False):
         print(f"\nNext actions: {', '.join(suggestions.next_actions)}")
         print(f"Creative: {suggestions.creative_direction}")
         print("\n--- Reverse Engineering v2 ---")
-        result = engine.analyze(image, pose, pose.bbox)
+        result = engine.analyze(image, pose, pose.bbox, intrinsics_evidence=intrinsics)
         print(result.report())
         print("\nCamera Actions:")
         for a in result._camera_actions:
