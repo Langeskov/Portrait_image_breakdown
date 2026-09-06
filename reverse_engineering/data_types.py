@@ -141,6 +141,7 @@ class ReverseEngineeringResult:
     uncertainties: list[str]
     _sim_candidates: list = field(default_factory=list)
     _camera_actions: list = field(default_factory=list)
+    intrinsics_evidence: dict = field(default_factory=dict)
 
     @property
     def candidate_solutions(self) -> list:
@@ -177,7 +178,8 @@ class ReverseEngineeringResult:
                          "subject_bbox": self.subject_bbox,
                          "subject_scale": round(self.subject_scale, 4),
                          "subject_keypoints_count": len(self.subject_keypoints) if self.subject_keypoints else 0,
-                         "perspective_line_count": len(self.perspective.line_segments)},
+                         "perspective_line_count": len(self.perspective.line_segments),
+                         "intrinsics_evidence": self.intrinsics_evidence},
             "estimated": {
                 "perspective": {"strength": self.perspective.perspective_strength.to_dict(),
                                 "type": self.perspective.perspective_type.to_dict(),
@@ -220,6 +222,9 @@ class ReverseEngineeringResult:
         fl = self.focal_length
         lines.append(f"  category:  {fl.category.value}  (conf {fl.category.confidence:.0%})")
         lines.append(f"  35mm eq:   {fl.equivalent_35mm.value} mm  (range {fl.equivalent_35mm.range_min}-{fl.equivalent_35mm.range_max})")
+        if self.intrinsics_evidence:
+            ex = self.intrinsics_evidence
+            lines.extend(["", "-- Intrinsics Evidence --", f"  source:    {ex.get('source', 'unknown')}", f"  focal:     {ex.get('focal_length_mm')}", f"  35mm eq:   {ex.get('focal_length_35mm')}", f"  camera:    {ex.get('make') or ''} {ex.get('model') or ''}".strip()])
         lines.extend(["", "-- Exposure (estimated) --"])
         lines.append(f"  DOF type:  {self.depth_of_field.dof_type.value}  (conf {self.depth_of_field.dof_type.confidence:.0%})")
         lines.append(f"  aperture:  {self.depth_of_field.aperture_range.value}")
