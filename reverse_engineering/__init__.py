@@ -1,6 +1,10 @@
-"""
-Photography Reverse Engineering — 摄影逆向工程模块
+"""Photography reverse engineering package.
 
-从照片反推拍摄参数、构图意图、摄影手法。
-所有输出区分 Observed / Estimated / Unknown 三层数据。
+v2 separates observed evidence, scene geometry, framing candidates and
+camera-rotation inference.  Public consumers can use ``ReverseEngineeringEngineV2``
+as the active pipeline.
 """
+
+from reverse_engineering.engine_v2 import ReverseEngineeringEngineV2
+
+__all__ = ["ReverseEngineeringEngineV2"]
