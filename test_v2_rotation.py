@@ -3,21 +3,34 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
-from reverse_engineering.geometry import CameraIntrinsics, _camera_pose_from_params
+from reverse_engineering.geometry import CameraIntrinsics, CameraModel, _camera_pose_from_params
 from reverse_engineering.rotation_solver import estimate_rotation_candidates
 from reverse_engineering.scene_geometry import SceneGeometryEvidence, VanishingPoint
 
 
 def _vp_for_axis(rotation: np.ndarray, intrinsics: CameraIntrinsics, axis: np.ndarray) -> tuple[float, float]:
     direction = rotation @ axis
-    pixel = intrinsics.to_matrix() @ direction
-    assert abs(pixel[2]) > 1e-9
-    return float(pixel[0] / pixel[2]), float(pixel[1] / pixel[2])
+    assert direction[2] > 1e-9
+    x = intrinsics.fx * direction[0] / direction[2] + intrinsics.cx
+    y = intrinsics.cy - intrinsics.fy * direction[1] / direction[2]
+    return float(x), float(y)
 
 
 def test_public_v2_engine_import():
     from reverse_engineering.engine_v2 import ReverseEngineeringEngineV2
     assert ReverseEngineeringEngineV2.VERSION == "2.0"
+
+
+def test_camera_projection_round_trip_uses_right_handed_frame():
+    width, height = 2400, 1600
+    intr = CameraIntrinsics.from_focal_mm(50.0, width, height, 36.0, 24.0)
+    _, extrinsics = _camera_pose_from_params(5.0, 1.4, 12.0, -5.0, 6.0)
+    rotation = cv2.Rodrigues(extrinsics.rvec)[0]
+    assert np.linalg.det(rotation) > 0.99
+    point = np.array([0.25, 0.5, 0.3])
+    model = CameraModel(intr, extrinsics)
+    pixel = model.project_point(point)
+    assert np.isfinite(pixel).all()
 
 
 def test_rotation_solver_recovers_known_camera_pose():
