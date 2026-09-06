@@ -365,7 +365,7 @@ class PoseSolver:
                 R, _ = cv2.Rodrigues(rvec)
                 position = (-R.T @ tvec).reshape(3)
                 distance = float(np.linalg.norm(position))
-                height = float(position[1])
+                height = float(abs(position[1]))
                 extrinsics = CameraExtrinsics(
                     rvec=rvec,
                     tvec=tvec,
