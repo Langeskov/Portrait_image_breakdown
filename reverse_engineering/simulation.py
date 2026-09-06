@@ -4,6 +4,7 @@ from __future__ import annotations
 import numpy as np
 
 from reverse_engineering.geometry import CameraIntrinsics, CameraExtrinsics, PoseCandidate, PoseSolver, REF_PERSON_HEIGHT
+from reverse_engineering.intrinsics import IntrinsicsEvidence
 from reverse_engineering.rotation_solver import fuse_pose_and_scene, estimate_rotation_candidates
 from reverse_engineering.scene_geometry import SceneGeometryEvidence
 
@@ -68,13 +69,9 @@ def optimize_parameters(
     num_candidates=5,
     subject_bbox=None,
     scene_evidence: SceneGeometryEvidence | None = None,
+    intrinsics_evidence: IntrinsicsEvidence | None = None,
 ):
-    """Build ranked camera solutions from pose framing plus scene orientation.
-
-    The pose solver establishes plausible framing/distance. When Manhattan
-    scene evidence is available, a second solver establishes rotation and a
-    scene-supported focal family; the two are then fused and re-scored.
-    """
+    """Build ranked camera solutions from pose, scene and optional EXIF evidence."""
     del subject_scale, perspective_strength
     if pose_keypoints is None:
         return []
@@ -82,37 +79,56 @@ def optimize_parameters(
     if kp.ndim != 2 or kp.shape[0] < 17 or kp.shape[1] < 3:
         return []
 
+    focal_seeds = [28, 35, 50, 70, 85, 105, 135, 200]
+    if intrinsics_evidence is not None and intrinsics_evidence.has_focal_prior:
+        focal = intrinsics_evidence.preferred_focal_mm()
+        if focal is not None:
+            # Preserve neighboring hypotheses because EXIF can describe a
+            # cropped image or a processed derivative rather than the source.
+            focal_seeds = sorted({
+                round(float(np.clip(focal + delta, 20.0, 220.0)), 2)
+                for delta in (-8.0, -4.0, 0.0, 4.0, 8.0)
+            } | {float(v) for v in focal_seeds})
+
     try:
         pose_candidates = PoseSolver.fit_camera_to_pose(
             kp, image_w, image_h,
             subject_bbox=subject_bbox,
-            focal_seeds=(28, 35, 50, 70, 85, 105, 135, 200),
+            focal_seeds=tuple(focal_seeds),
             num_candidates=max(8, num_candidates),
         )
     except Exception as exc:
-        fallback = _fallback_candidate(image_w, image_h, kp)
+        fallback_focal = intrinsics_evidence.preferred_focal_mm() if intrinsics_evidence else None
+        fallback = _fallback_candidate(image_w, image_h, kp, fallback_focal or 50.0)
         if fallback is not None:
             fallback.losses["fit_exception"] = f"{type(exc).__name__}: {exc}"
             return [fallback]
         return []
 
     if not pose_candidates:
-        fallback = _fallback_candidate(image_w, image_h, kp)
+        fallback_focal = intrinsics_evidence.preferred_focal_mm() if intrinsics_evidence else None
+        fallback = _fallback_candidate(image_w, image_h, kp, fallback_focal or 50.0)
         return [fallback] if fallback is not None else []
 
     position_penalty = min(_subject_position_loss(subject_position), 0.05)
     for c in pose_candidates:
         c.losses["subject_position_prior"] = round(position_penalty, 5)
-        c.score = float(np.clip(c.score - position_penalty, 0.05, 0.99))
+        if intrinsics_evidence is not None and intrinsics_evidence.preferred_focal_mm() is not None:
+            hint = intrinsics_evidence.preferred_focal_mm()
+            focal_delta = abs(float(c.focal_equiv_35mm) - float(hint))
+            exif_score = float(np.exp(-focal_delta / max(8.0, 0.10 * float(hint))))
+            c.losses["exif_focal_mm"] = round(float(hint), 3)
+            c.losses["exif_focal_score"] = round(exif_score, 4)
+            c.score = float(np.clip(c.score * (0.82 + 0.18 * exif_score) - position_penalty, 0.05, 0.99))
+        else:
+            c.score = float(np.clip(c.score - position_penalty, 0.05, 0.99))
 
     if scene_evidence is not None:
         rotation_candidates = estimate_rotation_candidates(scene_evidence, image_w, image_h, max_candidates=8)
         fused = fuse_pose_and_scene(
             pose_candidates,
             rotation_candidates,
-            image_w,
-            image_h,
-            kp,
+            image_w, image_h, kp,
             subject_bbox=subject_bbox,
             max_candidates=max(8, num_candidates),
         )
