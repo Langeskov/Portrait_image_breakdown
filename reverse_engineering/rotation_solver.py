@@ -31,14 +31,20 @@ def _normalize_angle(angle: float) -> float:
 
 
 def _vp_ray(vp: VanishingPoint, intrinsics: CameraIntrinsics) -> np.ndarray:
-    ray = np.linalg.inv(intrinsics.to_matrix()) @ np.array([vp.x, vp.y, 1.0], dtype=np.float64)
+    """Unproject an image VP into the right-handed Y-up camera frame."""
+    ray = np.array([
+        (vp.x - intrinsics.cx) / max(intrinsics.fx, 1e-9),
+        -(vp.y - intrinsics.cy) / max(intrinsics.fy, 1e-9),
+        1.0,
+    ], dtype=np.float64)
     return ray / max(np.linalg.norm(ray), 1e-12)
 
 
 def _focal_from_orthogonal_vps(a: VanishingPoint, b: VanishingPoint, width: int, height: int, sensor_w: float = 36.0) -> float | None:
     sensor_h = sensor_w * height / max(width, 1)
-    ax, ay = a.x - width * 0.5, a.y - height * 0.5
-    bx, by = b.x - width * 0.5, b.y - height * 0.5
+    ax, ay = a.x - width * 0.5, b.y - height * 0.5
+    bx, by = b.x - width * 0.5, a.y - height * 0.5
+    # Keep the sign convention explicit: image Y is downward, camera Y is up.
     term = ax * bx * (sensor_w / width) ** 2 + ay * by * (sensor_h / height) ** 2
     if term >= -1e-6:
         return None
@@ -50,7 +56,7 @@ def _focal_from_orthogonal_vps(a: VanishingPoint, b: VanishingPoint, width: int,
 
 
 def _angles_from_rotation(R: np.ndarray) -> tuple[float, float, float]:
-    camera_to_world = R.T
+    camera_to_world = np.asarray(R, dtype=np.float64).T
     forward = camera_to_world @ np.array([0.0, 0.0, 1.0])
     forward /= max(np.linalg.norm(forward), 1e-12)
     yaw = math.degrees(math.atan2(-forward[0], forward[2]))
@@ -63,7 +69,7 @@ def _angles_from_rotation(R: np.ndarray) -> tuple[float, float, float]:
     right0 /= np.linalg.norm(right0)
     up0 = np.cross(forward, right0)
     up0 /= max(np.linalg.norm(up0), 1e-12)
-    camera_up = camera_to_world @ np.array([0.0, -1.0, 0.0])
+    camera_up = camera_to_world @ np.array([0.0, 1.0, 0.0])
     camera_up /= max(np.linalg.norm(camera_up), 1e-12)
     roll = math.degrees(math.atan2(
         float(np.dot(np.cross(up0, camera_up), forward)),
@@ -73,16 +79,12 @@ def _angles_from_rotation(R: np.ndarray) -> tuple[float, float, float]:
 
 
 def _rotation_from_vps(vps: tuple[VanishingPoint, VanishingPoint, VanishingPoint], intrinsics: CameraIntrinsics, preferred_horizon_roll: float | None = None):
-    # Vanishing points are unoriented projective directions. The ray obtained
-    # from K^-1 p may be either sign. Enumerate the valid sign of the horizontal
-    # X direction and choose the right-handed solution closest to the observed
-    # horizon roll and to a conventional forward-facing scene axis.
     best = None
     for hx, hz in ((vps[0], vps[1]), (vps[1], vps[0])):
         rx0, rz0, ry0 = _vp_ray(hx, intrinsics), _vp_ray(hz, intrinsics), _vp_ray(vps[2], intrinsics)
         if rz0[2] < 0:
             rz0 = -rz0
-        if ry0[1] > 0:
+        if ry0[1] < 0:
             ry0 = -ry0
 
         for sx in (-1.0, 1.0):
@@ -91,13 +93,12 @@ def _rotation_from_vps(vps: tuple[VanishingPoint, VanishingPoint, VanishingPoint
             U, _, Vt = np.linalg.svd(M)
             R = U @ Vt
             if np.linalg.det(R) < 0:
+                # Preserve +Y/+Z directions while choosing the nearest proper rotation.
                 U[:, -1] *= -1.0
                 R = U @ Vt
             pitch, yaw, roll = _angles_from_rotation(R)
-            raw_err = abs(float(np.dot(rx0, ry0))) + abs(float(np.dot(rx0, rz0))) + abs(float(np.dot(ry0, rz0)))
+            raw_err = abs(float(np.dot(rx, ry0))) + abs(float(np.dot(rx, rz0))) + abs(float(np.dot(ry0, rz0)))
             horizon_err = abs(_normalize_angle(roll - preferred_horizon_roll)) if preferred_horizon_roll is not None else 0.0
-            # Prefer the horizontal assignment with the depth VP closer to the
-            # principal point, and among sign choices keep a conventional yaw.
             depth_vp_radius = math.hypot(hz.x - intrinsics.cx, hz.y - intrinsics.cy) / max(math.hypot(intrinsics.width, intrinsics.height), 1.0)
             preference = 0.0025 * abs(yaw) + 0.01 * max(0.0, abs(pitch) - 60.0) + 0.006 * max(0.0, abs(roll) - 30.0) + 0.15 * depth_vp_radius + 0.25 * horizon_err / 90.0
             quality = raw_err + preference
