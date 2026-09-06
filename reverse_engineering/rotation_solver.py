@@ -49,7 +49,34 @@ def _focal_from_orthogonal_vps(a: VanishingPoint, b: VanishingPoint, width: int,
     return float(focal) if 18.0 <= focal <= 220.0 else None
 
 
-def _rotation_from_vps(vps: tuple[VanishingPoint, VanishingPoint, VanishingPoint], intrinsics: CameraIntrinsics):
+def _angles_from_rotation(R: np.ndarray) -> tuple[float, float, float]:
+    camera_to_world = R.T
+    forward = camera_to_world @ np.array([0.0, 0.0, 1.0])
+    forward /= max(np.linalg.norm(forward), 1e-12)
+    yaw = math.degrees(math.atan2(-forward[0], forward[2]))
+    pitch = math.degrees(math.asin(float(np.clip(-forward[1], -1.0, 1.0))))
+
+    world_up = np.array([0.0, 1.0, 0.0])
+    right0 = np.cross(world_up, forward)
+    if np.linalg.norm(right0) < 1e-8:
+        return pitch, yaw, 0.0
+    right0 /= np.linalg.norm(right0)
+    up0 = np.cross(forward, right0)
+    up0 /= max(np.linalg.norm(up0), 1e-12)
+    camera_up = camera_to_world @ np.array([0.0, -1.0, 0.0])
+    camera_up /= max(np.linalg.norm(camera_up), 1e-12)
+    roll = math.degrees(math.atan2(
+        float(np.dot(np.cross(up0, camera_up), forward)),
+        float(np.dot(up0, camera_up)),
+    ))
+    return pitch, yaw, roll
+
+
+def _rotation_from_vps(vps: tuple[VanishingPoint, VanishingPoint, VanishingPoint], intrinsics: CameraIntrinsics, preferred_horizon_roll: float | None = None):
+    # Vanishing points are unoriented projective directions. The ray obtained
+    # from K^-1 p may be either sign. Enumerate the valid sign of the horizontal
+    # X direction and choose the right-handed solution closest to the observed
+    # horizon roll and to a conventional forward-facing scene axis.
     best = None
     for hx, hz in ((vps[0], vps[1]), (vps[1], vps[0])):
         rx0, rz0, ry0 = _vp_ray(hx, intrinsics), _vp_ray(hz, intrinsics), _vp_ray(vps[2], intrinsics)
@@ -57,40 +84,29 @@ def _rotation_from_vps(vps: tuple[VanishingPoint, VanishingPoint, VanishingPoint
             rz0 = -rz0
         if ry0[1] > 0:
             ry0 = -ry0
-        raw_err = abs(float(np.dot(rx0, ry0))) + abs(float(np.dot(rx0, rz0))) + abs(float(np.dot(ry0, rz0)))
 
-        # Polar decomposition converts the noisy VP triad into the nearest
-        # proper rotation while preserving the measured directions.
-        M = np.column_stack([rx0, ry0, rz0])
-        U, _, Vt = np.linalg.svd(M)
-        R = U @ Vt
-        if np.linalg.det(R) < 0:
-            U[:, -1] *= -1.0
+        for sx in (-1.0, 1.0):
+            rx = rx0 * sx
+            M = np.column_stack([rx, ry0, rz0])
+            U, _, Vt = np.linalg.svd(M)
             R = U @ Vt
-
-        camera_to_world = R.T
-        forward = camera_to_world @ np.array([0.0, 0.0, 1.0])
-        forward /= max(np.linalg.norm(forward), 1e-12)
-        yaw = math.degrees(math.atan2(-forward[0], forward[2]))
-        pitch = math.degrees(math.asin(float(np.clip(-forward[1], -1.0, 1.0))))
-
-        world_up = np.array([0.0, 1.0, 0.0])
-        right0 = np.cross(world_up, forward)
-        if np.linalg.norm(right0) < 1e-8:
-            continue
-        right0 /= np.linalg.norm(right0)
-        up0 = np.cross(forward, right0)
-        up0 /= max(np.linalg.norm(up0), 1e-12)
-        camera_up = camera_to_world @ np.array([0.0, -1.0, 0.0])
-        camera_up /= max(np.linalg.norm(camera_up), 1e-12)
-        roll = math.degrees(math.atan2(
-            float(np.dot(np.cross(up0, camera_up), forward)),
-            float(np.dot(up0, camera_up)),
-        ))
-        candidate = (R, (pitch, yaw, roll), raw_err)
-        if best is None or raw_err < best[2]:
-            best = candidate
-    return best
+            if np.linalg.det(R) < 0:
+                U[:, -1] *= -1.0
+                R = U @ Vt
+            pitch, yaw, roll = _angles_from_rotation(R)
+            raw_err = abs(float(np.dot(rx0, ry0))) + abs(float(np.dot(rx0, rz0))) + abs(float(np.dot(ry0, rz0)))
+            horizon_err = abs(_normalize_angle(roll - preferred_horizon_roll)) if preferred_horizon_roll is not None else 0.0
+            # Prefer the horizontal assignment with the depth VP closer to the
+            # principal point, and among sign choices keep a conventional yaw.
+            depth_vp_radius = math.hypot(hz.x - intrinsics.cx, hz.y - intrinsics.cy) / max(math.hypot(intrinsics.width, intrinsics.height), 1.0)
+            preference = 0.0025 * abs(yaw) + 0.01 * max(0.0, abs(pitch) - 60.0) + 0.006 * max(0.0, abs(roll) - 30.0) + 0.15 * depth_vp_radius + 0.25 * horizon_err / 90.0
+            quality = raw_err + preference
+            candidate = (quality, R, (pitch, yaw, roll), raw_err, horizon_err)
+            if best is None or quality < best[0]:
+                best = candidate
+    if best is None:
+        return None
+    return best[1], best[2], best[3]
 
 
 def estimate_rotation_candidates(evidence: SceneGeometryEvidence, image_w: int, image_h: int, max_candidates: int = 8) -> list[RotationCandidate]:
@@ -105,7 +121,6 @@ def estimate_rotation_candidates(evidence: SceneGeometryEvidence, image_w: int, 
     for pair in ((horizontal[0], horizontal[1]), (horizontal[0], vertical), (horizontal[1], vertical)):
         focal = _focal_from_orthogonal_vps(pair[0], pair[1], image_w, image_h)
         if focal is not None:
-            # Keep a local neighborhood so noisy VPs do not force one exact f.
             for delta in (-8.0, -4.0, 0.0, 4.0, 8.0):
                 focal_values.add(round(float(np.clip(focal + delta, 20.0, 200.0)), 2))
     focal_values.update((28.0, 35.0, 50.0, 70.0, 85.0, 105.0, 135.0))
@@ -113,7 +128,7 @@ def estimate_rotation_candidates(evidence: SceneGeometryEvidence, image_w: int, 
     results: list[RotationCandidate] = []
     for focal in sorted(focal_values):
         intr = CameraIntrinsics.from_focal_mm(focal, image_w, image_h, 36.0, 36.0 * image_h / max(image_w, 1))
-        rotation = _rotation_from_vps((horizontal[0], horizontal[1], vertical), intr)
+        rotation = _rotation_from_vps((horizontal[0], horizontal[1], vertical), intr, evidence.horizon_angle_deg)
         if rotation is None:
             continue
         R, (pitch, yaw, roll), orth_err = rotation
@@ -122,14 +137,7 @@ def estimate_rotation_candidates(evidence: SceneGeometryEvidence, image_w: int, 
         support = float(np.mean([horizontal[0].confidence, horizontal[1].confidence, vertical.confidence]))
         orth_score = math.exp(-orth_err / 0.18)
         horizon_score = math.exp(-horizon_error / 6.0) if horizon is not None else 0.45
-
-        # Penalize focal hypotheses that explain the VP triad poorly.  A scene
-        # supported focal gets a substantially higher score than a pose-only
-        # arbitrary long-lens hypothesis.
-        scene_score = float(np.clip(
-            0.58 * orth_score + 0.22 * support + 0.20 * horizon_score,
-            0.01, 0.99,
-        ))
+        scene_score = float(np.clip(0.58 * orth_score + 0.22 * support + 0.20 * horizon_score, 0.01, 0.99))
         rvec, _ = cv2.Rodrigues(R)
         results.append(RotationCandidate(
             focal_length_mm=float(focal),
@@ -167,18 +175,11 @@ def _camera_from_candidate(candidate: PoseCandidate, rotation: RotationCandidate
     focal = float(rotation.focal_length_mm)
     distance = float(candidate.distance) * focal / max(float(candidate.focal_equiv_35mm), 1e-6)
     height = float(candidate.height)
-    position = np.array([
-        0.0,
-        height,
-        -distance,
-    ], dtype=float)
+    position = np.array([0.0, height, -distance], dtype=float)
     R = cv2.Rodrigues(rotation.extrinsics.rvec)[0]
     tvec = -R @ position
     intr = CameraIntrinsics.from_focal_mm(focal, image_w, image_h, 36.0, 36.0 * image_h / max(image_w, 1))
-    ext = CameraExtrinsics(
-        rotation.extrinsics.rvec.copy(), tvec, position,
-        rotation.extrinsics.pitch, rotation.extrinsics.yaw, rotation.extrinsics.roll,
-    )
+    ext = CameraExtrinsics(rotation.extrinsics.rvec.copy(), tvec, position, rotation.extrinsics.pitch, rotation.extrinsics.yaw, rotation.extrinsics.roll)
     camera = CameraModel(intr, ext)
     if pose_keypoints is None:
         return PoseCandidate(intr, ext, distance, height, focal, candidate.score, dict(candidate.losses))
@@ -207,7 +208,7 @@ def _camera_from_candidate(candidate: PoseCandidate, rotation: RotationCandidate
         iou = inter / max(ap + ao - inter, 1e-9)
 
     pose_score = math.exp(-mean_error / max(12.0, 0.012 * math.hypot(image_w, image_h)))
-    combined = float(np.clip(0.52 * pose_score + 0.28 * iou + 0.20 * rotation.scene_score, 0.01, 0.99))
+    combined = float(np.clip(0.48 * pose_score + 0.26 * iou + 0.26 * rotation.scene_score, 0.01, 0.99))
     losses = dict(candidate.losses)
     losses.update({
         "mean_reprojection_px": round(mean_error, 3),
@@ -222,25 +223,14 @@ def _camera_from_candidate(candidate: PoseCandidate, rotation: RotationCandidate
     return PoseCandidate(intr, ext, distance, height, focal, combined, losses)
 
 
-def fuse_pose_and_scene(
-    pose_candidates: list[PoseCandidate],
-    rotation_candidates: list[RotationCandidate],
-    image_w: int,
-    image_h: int,
-    pose_keypoints: np.ndarray,
-    subject_bbox=None,
-    max_candidates: int = 5,
-) -> list[PoseCandidate]:
+def fuse_pose_and_scene(pose_candidates: list[PoseCandidate], rotation_candidates: list[RotationCandidate], image_w: int, image_h: int, pose_keypoints: np.ndarray, subject_bbox=None, max_candidates: int = 5) -> list[PoseCandidate]:
     if not pose_candidates or not rotation_candidates:
         return []
     fused: list[PoseCandidate] = []
     for rotation in rotation_candidates:
         nearest = sorted(pose_candidates, key=lambda p: abs(p.focal_equiv_35mm - rotation.focal_length_mm))[:3]
         for pose_candidate in nearest:
-            candidate = _camera_from_candidate(
-                pose_candidate, rotation, image_w, image_h,
-                subject_bbox=subject_bbox, pose_keypoints=pose_keypoints,
-            )
+            candidate = _camera_from_candidate(pose_candidate, rotation, image_w, image_h, subject_bbox=subject_bbox, pose_keypoints=pose_keypoints)
             if candidate is not None:
                 fused.append(candidate)
     fused.sort(key=lambda c: (-c.score, c.losses.get("mean_reprojection_px", 1e9)))
