@@ -41,6 +41,8 @@ def test_projection_and_unprojection_share_image_y_convention():
 
     rotation = cv2.Rodrigues(extrinsics.rvec)[0]
     camera_point = rotation @ point + extrinsics.tvec
-    recovered_ray = model.unproject_point(float(pixel[0]), float(pixel[1]), depth=float(camera_point[2]))
-    recovered_world = np.linalg.inv(rotation) @ recovered_ray
+    recovered_camera_point = model.unproject_point(
+        float(pixel[0]), float(pixel[1]), depth=float(camera_point[2])
+    )
+    recovered_world = np.linalg.inv(rotation) @ recovered_camera_point + extrinsics.position
     assert np.allclose(recovered_world - point, np.zeros(3), atol=1e-5)
