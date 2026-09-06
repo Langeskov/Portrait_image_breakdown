@@ -10,7 +10,10 @@ from reverse_engineering.scene_geometry import SceneGeometryEvidence, VanishingP
 
 def _vp_for_axis(rotation: np.ndarray, intrinsics: CameraIntrinsics, axis: np.ndarray) -> tuple[float, float]:
     direction = rotation @ axis
-    assert direction[2] > 1e-9
+    # A vanishing point is homogeneous: d and -d define the same image point.
+    if direction[2] < 0:
+        direction = -direction
+    assert abs(direction[2]) > 1e-9
     x = intrinsics.fx * direction[0] / direction[2] + intrinsics.cx
     y = intrinsics.cy - intrinsics.fy * direction[1] / direction[2]
     return float(x), float(y)
