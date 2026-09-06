@@ -112,10 +112,6 @@ def estimate_rotation_candidates(evidence: SceneGeometryEvidence, image_w: int, 
     horizontal = [vp for vp in evidence.vanishing_points if vp.cluster in evidence.horizontal_clusters]
     if vertical is None or len(horizontal) < 2:
         return []
-
-    # Orthogonal Manhattan directions provide focal-length constraints. A focal
-    # that is independently supported by several VP pairs is preferred over a
-    # focal that merely permits a low residual for one noisy triad.
     pair_focals = []
     for pair in ((horizontal[0], horizontal[1]), (horizontal[0], vertical), (horizontal[1], vertical)):
         f = _focal_from_orthogonal_vps(pair[0], pair[1], image_w, image_h)
@@ -128,7 +124,6 @@ def estimate_rotation_candidates(evidence: SceneGeometryEvidence, image_w: int, 
             for delta in (-8.0, -4.0, 0.0, 4.0, 8.0):
                 focal_values.add(round(float(np.clip(base + delta, 20.0, 200.0)), 2))
     focal_values.update((28.0, 35.0, 50.0, 70.0, 85.0, 105.0, 135.0))
-
     results: list[RotationCandidate] = []
     for focal in sorted(focal_values):
         intr = CameraIntrinsics.from_focal_mm(focal, image_w, image_h, 36.0, 36.0 * image_h / max(image_w, 1))
@@ -146,36 +141,21 @@ def estimate_rotation_candidates(evidence: SceneGeometryEvidence, image_w: int, 
             focal_consistency = math.exp(-focal_spread / max(5.0, 0.15 * float(np.median(pair_focals))))
         else:
             focal_consistency = 0.2
-        scene_score = float(np.clip(
-            0.48 * orth_score + 0.18 * support + 0.19 * horizon_score + 0.15 * focal_consistency,
-            0.01, 0.99,
-        ))
+        scene_score = float(np.clip(0.48 * orth_score + 0.18 * support + 0.19 * horizon_score + 0.15 * focal_consistency, 0.01, 0.99))
         rvec, _ = cv2.Rodrigues(R)
         results.append(RotationCandidate(
             focal_length_mm=float(focal),
             extrinsics=CameraExtrinsics(rvec.reshape(3), np.zeros(3), np.zeros(3), pitch, yaw, roll),
             scene_score=scene_score,
-            orthogonality_error=float(orth_err), horizon_error_deg=float(horizon_error),
+            orthogonality_error=float(orth_err),
+            horizon_error_deg=float(horizon_error),
             vanishing_point_support=support,
-            evidence=(
-                f"{len(evidence.lines)} scene lines",
-                f"VP support {vertical.support}/{horizontal[0].support}/{horizontal[1].support}",
-                f"orthogonality error {orth_err:.3f}",
-                f"focal consistency {focal_consistency:.2f}" if pair_focals else "focal from generic candidate family",
-                f"horizon roll {horizon:.1f}°" if horizon is not None else "horizon unavailable",
-            ),
+            evidence=(f"{len(evidence.lines)} scene lines", f"VP support {vertical.support}/{horizontal[0].support}/{horizontal[1].support}", f"orthogonality error {orth_err:.3f}", f"focal consistency {focal_consistency:.2f}" if pair_focals else "focal from generic candidate family", f"horizon roll {horizon:.1f}°" if horizon is not None else "horizon unavailable"),
         ))
-
     results.sort(key=lambda c: (-c.scene_score, c.orthogonality_error, c.focal_length_mm))
     unique: list[RotationCandidate] = []
     for candidate in results:
-        if any(
-            abs(candidate.focal_length_mm - u.focal_length_mm) < 5.0
-            and abs(candidate.extrinsics.yaw - u.extrinsics.yaw) < 4.0
-            and abs(candidate.extrinsics.pitch - u.extrinsics.pitch) < 4.0
-            and abs(candidate.extrinsics.roll - u.extrinsics.roll) < 2.0
-            for u in unique
-        ):
+        if any(abs(candidate.focal_length_mm - u.focal_length_mm) < 5.0 and abs(candidate.extrinsics.yaw - u.extrinsics.yaw) < 4.0 and abs(candidate.extrinsics.pitch - u.extrinsics.pitch) < 4.0 and abs(candidate.extrinsics.roll - u.extrinsics.roll) < 2.0 for u in unique):
             continue
         unique.append(candidate)
         if len(unique) >= max(1, max_candidates):
@@ -187,11 +167,17 @@ def _camera_from_candidate(candidate: PoseCandidate, rotation: RotationCandidate
     focal = float(rotation.focal_length_mm)
     distance = float(candidate.distance) * focal / max(float(candidate.focal_equiv_35mm), 1e-6)
     height = float(candidate.height)
-    position = np.array([0.0, height, -distance], dtype=float)
+    yaw = float(rotation.extrinsics.yaw)
+    # Keep camera position and orientation in the same target-centered frame.
+    position = np.array([
+        math.sin(math.radians(yaw)) * distance,
+        height,
+        -math.cos(math.radians(yaw)) * distance,
+    ], dtype=float)
     R = cv2.Rodrigues(rotation.extrinsics.rvec)[0]
     tvec = -R @ position
     intr = CameraIntrinsics.from_focal_mm(focal, image_w, image_h, 36.0, 36.0 * image_h / max(image_w, 1))
-    ext = CameraExtrinsics(rotation.extrinsics.rvec.copy(), tvec, position, rotation.extrinsics.pitch, rotation.extrinsics.yaw, rotation.extrinsics.roll)
+    ext = CameraExtrinsics(rotation.extrinsics.rvec.copy(), tvec, position, rotation.extrinsics.pitch, yaw, rotation.extrinsics.roll)
     camera = CameraModel(intr, ext)
     if pose_keypoints is None:
         return PoseCandidate(intr, ext, distance, height, focal, candidate.score, dict(candidate.losses))
@@ -204,7 +190,7 @@ def _camera_from_candidate(candidate: PoseCandidate, rotation: RotationCandidate
     if int(valid.sum()) < 5:
         return None
     errors = np.linalg.norm(projected[valid] - points[valid, :2], axis=1)
-    mean_error = float(np.mean(errors)); median_error = float(np.median(errors))
+    mean_error, median_error = float(np.mean(errors)), float(np.median(errors))
     iou = 0.0
     if subject_bbox is not None:
         pb = np.array([np.min(projected[valid, 0]), np.min(projected[valid, 1]), np.max(projected[valid, 0]), np.max(projected[valid, 1])])
@@ -215,12 +201,7 @@ def _camera_from_candidate(candidate: PoseCandidate, rotation: RotationCandidate
     pose_score = math.exp(-mean_error / max(12.0, 0.012 * math.hypot(image_w, image_h)))
     combined = float(np.clip(0.48 * pose_score + 0.26 * iou + 0.26 * rotation.scene_score, 0.01, 0.99))
     losses = dict(candidate.losses)
-    losses.update({
-        "mean_reprojection_px": round(mean_error, 3), "median_reprojection_px": round(median_error, 3),
-        "bbox_iou": round(iou, 4), "scene_score": round(rotation.scene_score, 4),
-        "scene_focal_mm": round(focal, 3), "scene_yaw": round(rotation.extrinsics.yaw, 3),
-        "scene_pitch": round(rotation.extrinsics.pitch, 3), "scene_roll": round(rotation.extrinsics.roll, 3),
-    })
+    losses.update({"mean_reprojection_px": round(mean_error, 3), "median_reprojection_px": round(median_error, 3), "bbox_iou": round(iou, 4), "scene_score": round(rotation.scene_score, 4), "scene_focal_mm": round(focal, 3), "scene_yaw": round(yaw, 3), "scene_pitch": round(rotation.extrinsics.pitch, 3), "scene_roll": round(rotation.extrinsics.roll, 3)})
     return PoseCandidate(intr, ext, distance, height, focal, combined, losses)
 
 
@@ -237,13 +218,7 @@ def fuse_pose_and_scene(pose_candidates: list[PoseCandidate], rotation_candidate
     fused.sort(key=lambda c: (-c.score, c.losses.get("mean_reprojection_px", 1e9)))
     unique: list[PoseCandidate] = []
     for candidate in fused:
-        if any(
-            abs(candidate.focal_equiv_35mm - u.focal_equiv_35mm) < 5
-            and abs(candidate.extrinsics.yaw - u.extrinsics.yaw) < 4
-            and abs(candidate.extrinsics.pitch - u.extrinsics.pitch) < 4
-            and abs(candidate.extrinsics.roll - u.extrinsics.roll) < 2
-            for u in unique
-        ):
+        if any(abs(candidate.focal_equiv_35mm - u.focal_equiv_35mm) < 5 and abs(candidate.extrinsics.yaw - u.extrinsics.yaw) < 4 and abs(candidate.extrinsics.pitch - u.extrinsics.pitch) < 4 and abs(candidate.extrinsics.roll - u.extrinsics.roll) < 2 for u in unique):
             continue
         unique.append(candidate)
         if len(unique) >= max(1, max_candidates):
