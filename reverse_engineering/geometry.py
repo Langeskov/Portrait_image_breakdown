@@ -329,6 +329,86 @@ class PoseSolver:
                         },
                     ))
 
+        # The bounded parameterization is useful as a prior, but its orientation
+        # model can become a poor local minimum for synthetic or strongly tilted
+        # poses. OpenCV's PnP solver provides a direct reprojection solution for
+        # the same metric proxy. Use it to recover a solution family whenever the
+        # bounded search did not produce enough usable candidates.
+        if len(results) < max(1, num_candidates):
+            pnp_obj = obj[valid].astype(np.float32)
+            pnp_obs = obs.astype(np.float32)
+            for focal in focal_seeds:
+                if len(results) >= max(1, num_candidates):
+                    break
+                intr = CameraIntrinsics.from_focal_mm(focal, image_w, image_h)
+                try:
+                    ok, rvec, tvec = cv2.solvePnP(
+                        pnp_obj, pnp_obs, intr.to_matrix(), None,
+                        flags=cv2.SOLVEPNP_ITERATIVE,
+                    )
+                except (cv2.error, ValueError, FloatingPointError):
+                    continue
+                if not ok:
+                    continue
+                rvec = np.asarray(rvec, dtype=float).reshape(3)
+                tvec = np.asarray(tvec, dtype=float).reshape(3)
+                projected, _ = cv2.projectPoints(pnp_obj, rvec, tvec, intr.to_matrix(), None)
+                projected = projected.reshape(-1, 2)
+                errors = np.linalg.norm(projected - obs, axis=1)
+                if not np.isfinite(errors).all():
+                    continue
+                mean_error = float(np.mean(errors))
+                median_error = float(np.median(errors))
+                if mean_error > 60.0:
+                    continue
+
+                R, _ = cv2.Rodrigues(rvec)
+                position = (-R.T @ tvec).reshape(3)
+                distance = float(np.linalg.norm(position))
+                height = float(position[1])
+                extrinsics = CameraExtrinsics(
+                    rvec=rvec,
+                    tvec=tvec,
+                    position=position,
+                )
+                pb = np.array([
+                    np.min(projected[:, 0]), np.min(projected[:, 1]),
+                    np.max(projected[:, 0]), np.max(projected[:, 1]),
+                ])
+                iou = 0.0
+                center_delta = diag
+                if bbox is not None:
+                    bx0, by0, bx1, by1 = bbox
+                    iw = max(0.0, min(pb[2], bx1) - max(pb[0], bx0))
+                    ih = max(0.0, min(pb[3], by1) - max(pb[1], by0))
+                    inter = iw * ih
+                    area_p = max(0.0, pb[2] - pb[0]) * max(0.0, pb[3] - pb[1])
+                    area_o = max(0.0, bx1 - bx0) * max(0.0, by1 - by0)
+                    union = area_p + area_o - inter
+                    iou = inter / union if union > 1e-9 else 0.0
+                    center_delta = math.hypot(
+                        (pb[0] + pb[2]) * .5 - (bx0 + bx1) * .5,
+                        (pb[1] + pb[3]) * .5 - (by0 + by1) * .5,
+                    )
+                reproj_score = math.exp(-mean_error / max(12.0, 0.015 * diag))
+                center_score = math.exp(-center_delta / max(30.0, 0.03 * diag))
+                score = float(np.clip(.65 * reproj_score + .25 * iou + .10 * center_score, 0.0, 1.0))
+                results.append(PoseCandidate(
+                    intrinsics=intr,
+                    extrinsics=extrinsics,
+                    distance=distance,
+                    height=height,
+                    focal_equiv_35mm=float(focal),
+                    score=score,
+                    losses={
+                        "mean_reprojection_px": round(mean_error, 3),
+                        "median_reprojection_px": round(median_error, 3),
+                        "bbox_iou": round(iou, 4),
+                        "center_delta_px": round(center_delta, 3),
+                        "solver": "solvePnP",
+                    },
+                ))
+
         results.sort(key=lambda c: (-c.score, c.losses.get("mean_reprojection_px", 1e9)))
         unique: list[PoseCandidate] = []
         for candidate in results:
