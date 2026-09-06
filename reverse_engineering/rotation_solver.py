@@ -31,7 +31,6 @@ def _normalize_angle(angle: float) -> float:
 
 
 def _vp_ray(vp: VanishingPoint, intrinsics: CameraIntrinsics) -> np.ndarray:
-    """Unproject an image VP into the right-handed Y-up camera frame."""
     ray = np.array([
         (vp.x - intrinsics.cx) / max(intrinsics.fx, 1e-9),
         -(vp.y - intrinsics.cy) / max(intrinsics.fy, 1e-9),
@@ -42,9 +41,10 @@ def _vp_ray(vp: VanishingPoint, intrinsics: CameraIntrinsics) -> np.ndarray:
 
 def _focal_from_orthogonal_vps(a: VanishingPoint, b: VanishingPoint, width: int, height: int, sensor_w: float = 36.0) -> float | None:
     sensor_h = sensor_w * height / max(width, 1)
-    ax, ay = a.x - width * 0.5, b.y - height * 0.5
-    bx, by = b.x - width * 0.5, a.y - height * 0.5
-    # Keep the sign convention explicit: image Y is downward, camera Y is up.
+    ax, ay = a.x - width * 0.5, a.y - height * 0.5
+    bx, by = b.x - width * 0.5, b.y - height * 0.5
+    # (Ka)^T(Kb)=0 for orthogonal world directions; image Y is downward,
+    # but the squared scale factors keep the standard dot-product identity.
     term = ax * bx * (sensor_w / width) ** 2 + ay * by * (sensor_h / height) ** 2
     if term >= -1e-6:
         return None
@@ -61,7 +61,6 @@ def _angles_from_rotation(R: np.ndarray) -> tuple[float, float, float]:
     forward /= max(np.linalg.norm(forward), 1e-12)
     yaw = math.degrees(math.atan2(-forward[0], forward[2]))
     pitch = math.degrees(math.asin(float(np.clip(-forward[1], -1.0, 1.0))))
-
     world_up = np.array([0.0, 1.0, 0.0])
     right0 = np.cross(world_up, forward)
     if np.linalg.norm(right0) < 1e-8:
@@ -86,14 +85,12 @@ def _rotation_from_vps(vps: tuple[VanishingPoint, VanishingPoint, VanishingPoint
             rz0 = -rz0
         if ry0[1] < 0:
             ry0 = -ry0
-
         for sx in (-1.0, 1.0):
             rx = rx0 * sx
             M = np.column_stack([rx, ry0, rz0])
             U, _, Vt = np.linalg.svd(M)
             R = U @ Vt
             if np.linalg.det(R) < 0:
-                # Preserve +Y/+Z directions while choosing the nearest proper rotation.
                 U[:, -1] *= -1.0
                 R = U @ Vt
             pitch, yaw, roll = _angles_from_rotation(R)
@@ -117,7 +114,6 @@ def estimate_rotation_candidates(evidence: SceneGeometryEvidence, image_w: int, 
     horizontal = [vp for vp in evidence.vanishing_points if vp.cluster in evidence.horizontal_clusters]
     if vertical is None or len(horizontal) < 2:
         return []
-
     focal_values: set[float] = set()
     for pair in ((horizontal[0], horizontal[1]), (horizontal[0], vertical), (horizontal[1], vertical)):
         focal = _focal_from_orthogonal_vps(pair[0], pair[1], image_w, image_h)
@@ -144,8 +140,7 @@ def estimate_rotation_candidates(evidence: SceneGeometryEvidence, image_w: int, 
             focal_length_mm=float(focal),
             extrinsics=CameraExtrinsics(rvec.reshape(3), np.zeros(3), np.zeros(3), pitch, yaw, roll),
             scene_score=scene_score,
-            orthogonality_error=float(orth_err),
-            horizon_error_deg=float(horizon_error),
+            orthogonality_error=float(orth_err), horizon_error_deg=float(horizon_error),
             vanishing_point_support=support,
             evidence=(
                 f"{len(evidence.lines)} scene lines",
@@ -184,7 +179,6 @@ def _camera_from_candidate(candidate: PoseCandidate, rotation: RotationCandidate
     camera = CameraModel(intr, ext)
     if pose_keypoints is None:
         return PoseCandidate(intr, ext, distance, height, focal, candidate.score, dict(candidate.losses))
-
     obj = pose_driven_person_points(pose_keypoints, image_w, image_h)
     valid = np.isfinite(obj).all(axis=1)
     points = np.asarray(pose_keypoints, dtype=float)
@@ -194,32 +188,22 @@ def _camera_from_candidate(candidate: PoseCandidate, rotation: RotationCandidate
     if int(valid.sum()) < 5:
         return None
     errors = np.linalg.norm(projected[valid] - points[valid, :2], axis=1)
-    mean_error = float(np.mean(errors))
-    median_error = float(np.median(errors))
-
+    mean_error = float(np.mean(errors)); median_error = float(np.median(errors))
     iou = 0.0
     if subject_bbox is not None:
         pb = np.array([np.min(projected[valid, 0]), np.min(projected[valid, 1]), np.max(projected[valid, 0]), np.max(projected[valid, 1])])
         bx0, by0, bx1, by1 = map(float, subject_bbox)
-        iw = max(0.0, min(pb[2], bx1) - max(pb[0], bx0))
-        ih = max(0.0, min(pb[3], by1) - max(pb[1], by0))
-        inter = iw * ih
-        ap = max(0.0, pb[2] - pb[0]) * max(0.0, pb[3] - pb[1])
-        ao = max(0.0, bx1 - bx0) * max(0.0, by1 - by0)
+        iw = max(0.0, min(pb[2], bx1) - max(pb[0], bx0)); ih = max(0.0, min(pb[3], by1) - max(pb[1], by0))
+        inter = iw * ih; ap = max(0.0, pb[2] - pb[0]) * max(0.0, pb[3] - pb[1]); ao = max(0.0, bx1 - bx0) * max(0.0, by1 - by0)
         iou = inter / max(ap + ao - inter, 1e-9)
-
     pose_score = math.exp(-mean_error / max(12.0, 0.012 * math.hypot(image_w, image_h)))
     combined = float(np.clip(0.48 * pose_score + 0.26 * iou + 0.26 * rotation.scene_score, 0.01, 0.99))
     losses = dict(candidate.losses)
     losses.update({
-        "mean_reprojection_px": round(mean_error, 3),
-        "median_reprojection_px": round(median_error, 3),
-        "bbox_iou": round(iou, 4),
-        "scene_score": round(rotation.scene_score, 4),
-        "scene_focal_mm": round(focal, 3),
-        "scene_yaw": round(rotation.extrinsics.yaw, 3),
-        "scene_pitch": round(rotation.extrinsics.pitch, 3),
-        "scene_roll": round(rotation.extrinsics.roll, 3),
+        "mean_reprojection_px": round(mean_error, 3), "median_reprojection_px": round(median_error, 3),
+        "bbox_iou": round(iou, 4), "scene_score": round(rotation.scene_score, 4),
+        "scene_focal_mm": round(focal, 3), "scene_yaw": round(rotation.extrinsics.yaw, 3),
+        "scene_pitch": round(rotation.extrinsics.pitch, 3), "scene_roll": round(rotation.extrinsics.roll, 3),
     })
     return PoseCandidate(intr, ext, distance, height, focal, combined, losses)
 
