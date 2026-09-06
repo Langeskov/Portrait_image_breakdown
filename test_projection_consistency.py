@@ -19,9 +19,9 @@ def test_world_up_projects_above_image_center():
     _, extrinsics = _camera_pose_from_params(5.0, 1.4, 0.0, 0.0, 0.0)
     model = CameraModel(intr, extrinsics)
 
-    center = np.array([0.0, 0.0, 0.0])
-    above = np.array([0.0, 0.5, 0.0])
-    center_px = np.asarray(model.project_point(center))
+    camera_level = np.array([0.0, extrinsics.position[1], 0.0])
+    above = camera_level + np.array([0.0, 0.5, 0.0])
+    center_px = np.asarray(model.project_point(camera_level))
     above_px = np.asarray(model.project_point(above))
 
     assert np.isfinite(center_px).all()
