@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import math
-
 import cv2
 import numpy as np
 
@@ -15,6 +13,11 @@ def _vp_for_axis(rotation: np.ndarray, intrinsics: CameraIntrinsics, axis: np.nd
     pixel = intrinsics.to_matrix() @ direction
     assert abs(pixel[2]) > 1e-9
     return float(pixel[0] / pixel[2]), float(pixel[1] / pixel[2])
+
+
+def test_public_v2_engine_import():
+    from reverse_engineering.engine_v2 import ReverseEngineeringEngineV2
+    assert ReverseEngineeringEngineV2.VERSION == "2.0"
 
 
 def test_rotation_solver_recovers_known_camera_pose():
