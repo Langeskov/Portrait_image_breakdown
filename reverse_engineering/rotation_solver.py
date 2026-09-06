@@ -43,8 +43,6 @@ def _focal_from_orthogonal_vps(a: VanishingPoint, b: VanishingPoint, width: int,
     sensor_h = sensor_w * height / max(width, 1)
     ax, ay = a.x - width * 0.5, a.y - height * 0.5
     bx, by = b.x - width * 0.5, b.y - height * 0.5
-    # (Ka)^T(Kb)=0 for orthogonal world directions; image Y is downward,
-    # but the squared scale factors keep the standard dot-product identity.
     term = ax * bx * (sensor_w / width) ** 2 + ay * by * (sensor_h / height) ** 2
     if term >= -1e-6:
         return None
@@ -114,12 +112,21 @@ def estimate_rotation_candidates(evidence: SceneGeometryEvidence, image_w: int, 
     horizontal = [vp for vp in evidence.vanishing_points if vp.cluster in evidence.horizontal_clusters]
     if vertical is None or len(horizontal) < 2:
         return []
-    focal_values: set[float] = set()
+
+    # Orthogonal Manhattan directions provide focal-length constraints. A focal
+    # that is independently supported by several VP pairs is preferred over a
+    # focal that merely permits a low residual for one noisy triad.
+    pair_focals = []
     for pair in ((horizontal[0], horizontal[1]), (horizontal[0], vertical), (horizontal[1], vertical)):
-        focal = _focal_from_orthogonal_vps(pair[0], pair[1], image_w, image_h)
-        if focal is not None:
+        f = _focal_from_orthogonal_vps(pair[0], pair[1], image_w, image_h)
+        if f is not None:
+            pair_focals.append(f)
+    focal_values: set[float] = set()
+    if pair_focals:
+        median_f = float(np.median(pair_focals))
+        for base in pair_focals + [median_f]:
             for delta in (-8.0, -4.0, 0.0, 4.0, 8.0):
-                focal_values.add(round(float(np.clip(focal + delta, 20.0, 200.0)), 2))
+                focal_values.add(round(float(np.clip(base + delta, 20.0, 200.0)), 2))
     focal_values.update((28.0, 35.0, 50.0, 70.0, 85.0, 105.0, 135.0))
 
     results: list[RotationCandidate] = []
@@ -134,7 +141,15 @@ def estimate_rotation_candidates(evidence: SceneGeometryEvidence, image_w: int, 
         support = float(np.mean([horizontal[0].confidence, horizontal[1].confidence, vertical.confidence]))
         orth_score = math.exp(-orth_err / 0.18)
         horizon_score = math.exp(-horizon_error / 6.0) if horizon is not None else 0.45
-        scene_score = float(np.clip(0.58 * orth_score + 0.22 * support + 0.20 * horizon_score, 0.01, 0.99))
+        if pair_focals:
+            focal_spread = float(np.median([abs(focal - pf) for pf in pair_focals]))
+            focal_consistency = math.exp(-focal_spread / max(5.0, 0.15 * float(np.median(pair_focals))))
+        else:
+            focal_consistency = 0.2
+        scene_score = float(np.clip(
+            0.48 * orth_score + 0.18 * support + 0.19 * horizon_score + 0.15 * focal_consistency,
+            0.01, 0.99,
+        ))
         rvec, _ = cv2.Rodrigues(R)
         results.append(RotationCandidate(
             focal_length_mm=float(focal),
@@ -146,6 +161,7 @@ def estimate_rotation_candidates(evidence: SceneGeometryEvidence, image_w: int, 
                 f"{len(evidence.lines)} scene lines",
                 f"VP support {vertical.support}/{horizontal[0].support}/{horizontal[1].support}",
                 f"orthogonality error {orth_err:.3f}",
+                f"focal consistency {focal_consistency:.2f}" if pair_focals else "focal from generic candidate family",
                 f"horizon roll {horizon:.1f}°" if horizon is not None else "horizon unavailable",
             ),
         ))
