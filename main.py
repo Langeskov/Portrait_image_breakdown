@@ -46,6 +46,11 @@ def run_gui(image_path=None):
             return
         summary = bundle.reverse_result.evidence_summary()
         counts = summary["counts"]
+        # Remove duplicate evidence headings produced by repeated refreshes or
+        # older local builds before appending exactly one current summary.
+        text = self._rl.text()
+        lines = [line for line in text.splitlines() if line.strip() != "EVIDENCE STATE"]
+        base_text = "\n".join(lines).rstrip()
         evidence_text = (
             "\n\n" + "=" * 55 + "\n"
             "EVIDENCE STATE\n"
@@ -55,7 +60,7 @@ def run_gui(image_path=None):
             "Estimated = inferred from available evidence and model confidence.\n"
             "Unknown = insufficient evidence; do not treat as a measured value."
         )
-        self._rl.setText(self._rl.text() + evidence_text)
+        self._rl.setText(base_text + evidence_text)
 
     main_window_module.ResultsWorkspace.update_results = update_results_with_evidence_state
 
