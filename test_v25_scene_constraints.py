@@ -1,6 +1,6 @@
 import numpy as np
 
-from core.pose_detector import Landmark, PoseResult
+from core.pose_detector import PoseLandmark, PoseResult
 from reverse_engineering.depth_provider import MonocularDepthProvider
 from reverse_engineering.scene_constraints import build_depth_constraint_evidence, candidate_depth_score, DepthConstraintEvidence
 from reverse_engineering.geometry import CameraIntrinsics, PoseCandidate, _camera_pose_from_params
@@ -8,12 +8,13 @@ from reverse_engineering.geometry import CameraIntrinsics, PoseCandidate, _camer
 
 def _synthetic_pose():
     landmarks = []
-    # Pixel-space landmarks with a small depth-changing geometry pattern.
+    # Pixel-space landmarks with deterministic vertical structure.
     for i in range(17):
         x = 300.0 + (i % 5) * 40.0
         y = 180.0 + i * 28.0
-        landmarks.append(Landmark(x=x, y=y, visibility=0.95, world_x=x, world_y=y, world_z=0.0))
-    return PoseResult(landmarks=landmarks, bbox=(260, 150, 520, 700), detection_confidence=0.95)
+        landmarks.append(PoseLandmark(i, x, y, 0.0, 0.95, x, y, 0.0))
+    return PoseResult(landmarks=landmarks, image_width=800, image_height=800,
+                      bbox=(260, 150, 520, 700), detection_confidence=0.95)
 
 
 def test_depth_constraint_evidence_is_relative_and_conservative():
