@@ -1,18 +1,12 @@
 import numpy as np
 
 from reverse_engineering.geometry import CameraIntrinsics, PoseCandidate, _camera_pose_from_params
-from reverse_engineering.scene_constraints import (
-    SupportPlaneEvidence,
-    candidate_support_plane_score,
-    estimate_support_plane,
-    expected_support_pitch_deg,
-)
+from reverse_engineering.support_plane import SupportPlaneEvidence, candidate_support_plane_score, estimate_support_plane, expected_support_pitch_deg
 
 
 def _standing_pose():
     kp = np.zeros((17, 3), dtype=float)
     kp[:, 2] = 0.95
-    # Simple upright pose in raster coordinates: hips -> knees -> ankles.
     kp[11, :2] = (400, 420); kp[12, :2] = (500, 420)
     kp[13, :2] = (410, 600); kp[14, :2] = (490, 600)
     kp[15, :2] = (410, 760); kp[16, :2] = (490, 760)
