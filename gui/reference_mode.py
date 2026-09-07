@@ -15,7 +15,6 @@ from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushBu
 
 from core.image_io import load_image, frame_orientation
 from reverse_engineering.reference_reconstruction import (
-    ReferenceComposition,
     build_reference_composition,
     compare_pose_to_reference,
     composition_delta,
@@ -113,6 +112,19 @@ class ReferenceModeWidget(QWidget):
     def _current_image(self, value):
         self.__current_image = value
 
+    def _sync_canvas_target(self):
+        window = self.parentWidget()
+        canvas = getattr(getattr(window, "_w2", None), "_cv", None)
+        if canvas is None:
+            return
+        if self._reference is None or self._current_pose is None or self._current_image is None:
+            canvas.clear_reference_target()
+            return
+        width, height = self._current_image_size
+        current = build_reference_composition(self._current_pose, width, height)
+        deltas = compare_pose_to_reference(self._reference_pose, self._current_pose, width, height)
+        canvas.set_reference_target(self._reference, current, deltas, visible=True)
+
     def _load_reference(self):
         path, _ = QFileDialog.getOpenFileName(self, "Select Reference Image", "", "Images (*.jpg *.jpeg *.png *.bmp *.webp)")
         if not path:
@@ -131,6 +143,7 @@ class ReferenceModeWidget(QWidget):
         self._set_pixmap(self._reference_preview, image)
         self._summary.setText(os.path.basename(path) + f" · {frame_orientation(image)} · " + reference_summary(self._reference))
         self._render_compare()
+        self._sync_canvas_target()
 
     def clear_reference(self):
         self._reference_image = None
@@ -142,6 +155,7 @@ class ReferenceModeWidget(QWidget):
         self._target.setText("Analyze a reference and current frame to generate a target shooting plan.")
         self._summary.setText("Load a reference photograph to compare composition and pose.")
         self._set_pixmap(self._reference_preview, None)
+        self._sync_canvas_target()
 
     def set_current(self, pose, image):
         self._current_pose = pose
@@ -149,6 +163,7 @@ class ReferenceModeWidget(QWidget):
         self._current_image_size = image.shape[:2][::-1] if image is not None else (1, 1)
         self._set_pixmap(self._current_preview, image)
         self._render_compare()
+        self._sync_canvas_target()
 
     def _render_compare(self):
         if self._reference is None or self._reference_pose is None or self._current_pose is None:
@@ -189,10 +204,5 @@ def install_reference_mode(window):
         old_update(bundle)
         if bundle.pose and window._img is not None:
             widget.set_current(bundle.pose, window._img)
-            if widget._reference is not None:
-                current = build_reference_composition(bundle.pose, window._img.shape[1], window._img.shape[0])
-                deltas = compare_pose_to_reference(widget._reference_pose, bundle.pose, window._img.shape[1], window._img.shape[0])
-                plan = build_reference_target_plan(widget._reference, current, deltas)
-                window._w2._cv.set_reference_target(widget._reference, current, deltas, visible=True)
     window._w2.update_results = update_results
     return widget
