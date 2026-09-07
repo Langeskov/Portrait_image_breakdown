@@ -18,19 +18,28 @@ def _install_v2_engine():
 
 
 def _strip_evidence_block(text: str) -> str:
-    """Remove every legacy/previously appended Evidence State block."""
-    pattern = re.compile(
+    """Remove both legacy Evidence State renderings from a report."""
+    text = re.sub(
         r"\n*={20,}\nEVIDENCE STATE\n={20,}\n"
         r"Observed:\s*\d+.*?\n"
         r"Observed = directly supported by image/metadata\.\n"
         r"Estimated = inferred from available evidence and model confidence\.\n"
         r"Unknown = insufficient evidence; do not treat as a measured value\.\s*",
-        re.DOTALL,
+        "",
+        text,
+        flags=re.DOTALL,
     )
-    return pattern.sub("", text).rstrip()
+    text = re.sub(
+        r"\n*-- Evidence State --\n\s*observed:\s*\d+\n\s*estimated:\s*\d+\n\s*unknown:\s*\d+\s*",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+    return text.rstrip()
 
 
 def _append_evidence_state(text: str, reverse_result) -> str:
+    """Render exactly one Evidence State block from a fresh report string."""
     summary = reverse_result.evidence_summary()
     counts = summary["counts"]
     base_text = _strip_evidence_block(text)
@@ -68,14 +77,10 @@ def run_gui(image_path=None):
 
     main_window_module.Analysis2DWorkspace.update_results = update_results_with_reverse
 
-    original_results_update = main_window_module.ResultsWorkspace.update_results
-
-    def update_results_with_evidence_state(self, bundle):
-        original_results_update(self, bundle)
-        if bundle.reverse_result:
-            self._rl.setText(_append_evidence_state(self._rl.text(), bundle.reverse_result))
-
-    main_window_module.ResultsWorkspace.update_results = update_results_with_evidence_state
+    main_window_module.ResultsWorkspace.update_results = lambda self, bundle: (
+        self._rl.setText(_append_evidence_state(bundle.reverse_result.report(), bundle.reverse_result))
+        if bundle.reverse_result else self._rl.setText("Reverse engineering not yet complete...")
+    )
 
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
