@@ -54,10 +54,6 @@ Image
                     voice-ready text / SSML
 ```
 
-### Image orientation normalization
-
-All application entry points load photographs through `core/image_io.py`. JPEG EXIF orientation is decoded explicitly before pose detection, composition analysis, caching and projection so portrait images stored with a 90° camera rotation tag cannot enter the analysis pipeline as landscape frames. The CLI also reports the normalized frame orientation.
-
 ### Intrinsics and Calibration
 
 Reusable calibration profiles carry sensor size, principal point, pixel aspect ratio and optional focal priors. EXIF metadata and user-selected calibration remain separate evidence sources, while the active profile is applied to candidate projection intrinsics.
@@ -93,7 +89,7 @@ UNKNOWN
 
 ## v2.5 Field Mode
 
-Field Mode is a fourth workspace designed for shooting rather than post-analysis. It uses a large primary cue, compact confidence/landmark status, secondary cues, undo/redo, and separate plain-text and SSML copy actions. The output layer is device-independent and does not require a network speech service. The dark theme explicitly isolates the nested labels, list items, buttons and combo-box popup from the application's light global palette.
+Field Mode is a fourth workspace designed for shooting rather than post-analysis. It uses a large primary cue, compact confidence/landmark status, secondary cues, undo/redo, and separate plain-text and SSML copy actions. The output layer is device-independent and does not require a network speech service. The dark theme explicitly styles nested labels, list items, buttons and combo-box popups so foreground/background colors remain readable under the application's global palette.
 
 ## v3 Architecture
 
@@ -124,13 +120,24 @@ The GUI now provides a **Reference** workspace where a reference photograph can 
 
 ### v3 Phase 2 — Reference target planning
 
-The second tranche converts the raw reference deltas into a reproducible shooting target instead of only listing differences. `reverse_engineering/reference_targets.py` separates the plan into:
+The second tranche converts raw reference deltas into a reproducible shooting target. `reverse_engineering/reference_targets.py` separates the plan into:
 
 - **framing actions** — subject scale plus whole-subject horizontal/vertical placement
 - **pose actions** — the largest visible landmark deltas from the reference
 - **priority order** — fix composition first, then use a small number of pose changes
 
-The Reference workspace now renders this target plan directly under the two-image comparison. It remains image-space and conservative: the system does not pretend that a single image uniquely determines physical room coordinates or a unique camera translation.
+The Reference workspace renders this target plan under the two-image comparison. It remains image-space and conservative: the system does not pretend that a single image uniquely determines physical room coordinates or a unique camera translation.
+
+### v3 Phase 2.2 — 2D target guides
+
+The current-photo 2D canvas now consumes the same reference target data and draws:
+
+- a dashed **TARGET FRAME** showing where the reference subject should occupy the current frame
+- a **TARGET CENTER** marker and arrow showing whole-subject composition movement
+- up to five largest actionable landmark arrows from the current pose toward the reference-normalized targets
+- a toolbar **Reference Target** toggle so the visual guidance can be hidden without disabling the reference comparison workspace
+
+Target landmark coordinates are stored in the reference image's normalized coordinate system, so arrows remain stable when reference and current photographs have different resolutions or aspect ratios.
 
 ## Test Organization
 
@@ -154,7 +161,7 @@ photo/
     └── engine_v2.py
 ```
 
-The unified suite covers geometry/projection conventions, camera fitting, calibration and EXIF evidence, normalized image orientation, relative depth, feasibility/support-plane constraints, image refinement and semantic anchors, evidence states, photographer cues and goal-oriented pose guidance, cue history and voice output, scene rotation, Field Mode styling, and v3 phase-2 target planning. Model-backed end-to-end tests that require YOLO weights or a real photograph are intentionally kept outside the deterministic regression suite.
+The unified suite covers geometry/projection conventions, camera fitting, calibration and EXIF evidence, normalized image orientation, relative depth, feasibility/support-plane constraints, image refinement and semantic anchors, evidence states, photographer cues and goal-oriented pose guidance, cue history and voice output, scene rotation, Field Mode styling, reference target planning, and 2D target overlay contracts. Model-backed end-to-end tests that require YOLO weights or a real photograph are intentionally kept outside the deterministic regression suite.
 
 ## Roadmap
 
@@ -180,12 +187,19 @@ Completed: calibration profiles, EXIF + calibration separation, multi-candidate 
 - Orientation-normalized reference loading
 - Regression coverage for target-plan generation
 
+#### Completed Phase 2.2
+- 2D current-image target frame overlay
+- Target-center movement arrow
+- Landmark-level movement arrows using reference-normalized coordinates
+- Reference Target visibility toggle
+- Resolution-independent target geometry regression coverage
+
 #### Next
 - Multi-person 3D layout when independent depth evidence exists
 - Room/object plane reconstruction and editable scene anchors
 - Camera-to-scene calibration workflow using manually selected reference points
 - Reference-photo camera hypothesis comparison
-- Pose-to-reference delta visualization directly on the 2D canvas
+- Composition-aware target pose generation rather than only corrective suggestions
 - Temporal mode for video/live camera input, smoothing pose and camera estimates over time
 
 ### v4 — Assisted Shooting
