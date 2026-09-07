@@ -17,6 +17,7 @@ from reverse_engineering.intrinsics import IntrinsicsEvidence
 from reverse_engineering.motion_blur import analyze_motion_blur
 from reverse_engineering.perspective import analyze_perspective
 from reverse_engineering.scene_geometry import analyze_scene_geometry
+from reverse_engineering.scene_constraints import build_depth_constraint_evidence
 from reverse_engineering.shooting_technique import classify_techniques
 from reverse_engineering.simulation import optimize_parameters
 
@@ -62,7 +63,7 @@ def _analyze_composition_extended(image, pose=None, bbox=None) -> CompositionRes
     if subject_scale < 0.4:
         styles.append({"name": "depth_layering", "confidence": 0.5})
     styles.sort(key=lambda s: s["confidence"], reverse=True)
-    return CompositionResult(styles=styles[:5], subject_position=(round(sx, 3), round(sy, 3)), subject_scale=round(subject_scale, 4), headroom=round(headroom, 3), look_room=look_room, negative_space_ratio=round(neg_space, 3))
+    return CompositionResult(styles=styles[:5], subject_position=(round(sx, 3), round(sy, 3),), subject_scale=round(subject_scale, 4), headroom=round(headroom, 3), look_room=look_room, negative_space_ratio=round(neg_space, 3))
 
 
 def _generate_camera_actions(result, candidates=None):
@@ -94,7 +95,7 @@ def _camera_pose_from_candidate(candidate) -> CameraPoseResult:
 
 
 class ReverseEngineeringEngineV2:
-    VERSION = "2.0"
+    VERSION = "2.5"
 
     def __init__(self, enable_simulation=True, calibration_profile: CalibrationProfile | str | None = None):
         self._enable_simulation = enable_simulation
@@ -114,14 +115,17 @@ class ReverseEngineeringEngineV2:
         composition = _analyze_composition_extended(image, pose, bbox)
         perspective = analyze_perspective(image, scene_evidence)
         candidates = []
+        depth_evidence = None
         if pose is not None:
             kp = _extract_keypoints_pixels(pose)
+            _, depth_evidence = build_depth_constraint_evidence(image, kp, self._depth_provider)
             candidates = optimize_parameters(
                 w, h, composition.subject_scale, composition.subject_position,
                 perspective.perspective_strength.value, kp, num_candidates=6,
                 subject_bbox=bbox, scene_evidence=scene_evidence,
                 intrinsics_evidence=intrinsics_evidence,
                 calibration_profile=self._calibration_profile,
+                depth_evidence=depth_evidence,
             )
         if candidates:
             camera_pose = _camera_pose_from_candidate(candidates[0])
@@ -149,6 +153,11 @@ class ReverseEngineeringEngineV2:
             "aperture is inferred only from blur/depth characteristics",
             "camera height and distance remain coupled without scene scale or depth",
         ]
+        if depth_evidence is not None:
+            if depth_evidence.usable:
+                uncertainties.append(f"relative depth constraint active: {depth_evidence.valid_count} landmarks, confidence {depth_evidence.confidence:.0%}; used only as a soft ranking signal")
+            else:
+                uncertainties.append("relative depth constraint unavailable or too weak; camera height/distance remain primarily pose-derived")
         if scene_evidence.has_three_directions:
             uncertainties.append("rotation uses Manhattan scene geometry; quality depends on reliable orthogonal scene lines")
         else:
