@@ -9,11 +9,11 @@ from __future__ import annotations
 
 import os
 
-import cv2
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont, QImage, QPixmap
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFileDialog, QSplitter, QListWidget, QListWidgetItem, QFrame
 
+from core.image_io import load_image, frame_orientation
 from reverse_engineering.reference_reconstruction import (
     ReferenceComposition,
     build_reference_composition,
@@ -21,6 +21,7 @@ from reverse_engineering.reference_reconstruction import (
     composition_delta,
     reference_summary,
 )
+from reverse_engineering.reference_targets import build_reference_target_plan
 
 
 class ReferenceModeWidget(QWidget):
@@ -38,7 +39,7 @@ class ReferenceModeWidget(QWidget):
         lo.setSpacing(9)
 
         header = QHBoxLayout()
-        title = QLabel("REFERENCE RECONSTRUCTION")
+        title = QLabel("REFERENCE RECONSTRUCTION · V3 PHASE 2")
         title.setFont(QFont("Segoe UI", 15, QFont.Weight.Bold))
         header.addWidget(title)
         header.addStretch(1)
@@ -77,6 +78,14 @@ class ReferenceModeWidget(QWidget):
         stats.addWidget(self._anchor)
         lo.addLayout(stats)
 
+        target_title = QLabel("TARGET PLAN")
+        target_title.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
+        lo.addWidget(target_title)
+        self._target = QLabel("Analyze a reference and current frame to generate a target shooting plan.")
+        self._target.setWordWrap(True)
+        self._target.setFrameShape(QFrame.StyledPanel)
+        lo.addWidget(self._target)
+
         self._delta_list = QListWidget()
         self._delta_list.setAlternatingRowColors(True)
         lo.addWidget(self._delta_list, 1)
@@ -86,7 +95,7 @@ class ReferenceModeWidget(QWidget):
             label.setText("No image")
             label.setPixmap(QPixmap())
             return
-        rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        rgb = __import__("cv2").cvtColor(image, __import__("cv2").COLOR_BGR2RGB)
         h, w = rgb.shape[:2]
         pix = QPixmap.fromImage(QImage(rgb.data, w, h, rgb.strides[0], QImage.Format_RGB888).copy())
         label.setPixmap(pix.scaled(label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
@@ -94,8 +103,7 @@ class ReferenceModeWidget(QWidget):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._set_pixmap(self._reference_preview, self._reference_image)
-        if self._current_image is not None:
-            self._set_pixmap(self._current_preview, self._current_image)
+        self._set_pixmap(self._current_preview, self._current_image)
 
     @property
     def _current_image(self):
@@ -109,7 +117,7 @@ class ReferenceModeWidget(QWidget):
         path, _ = QFileDialog.getOpenFileName(self, "Select Reference Image", "", "Images (*.jpg *.jpeg *.png *.bmp *.webp)")
         if not path:
             return
-        image = cv2.imread(path)
+        image = load_image(path)
         if image is None:
             self._summary.setText("Reference image could not be read.")
             return
@@ -121,7 +129,7 @@ class ReferenceModeWidget(QWidget):
         self._reference_pose = pose
         self._reference = build_reference_composition(pose, image.shape[1], image.shape[0])
         self._set_pixmap(self._reference_preview, image)
-        self._summary.setText(os.path.basename(path) + " · " + reference_summary(self._reference))
+        self._summary.setText(os.path.basename(path) + f" · {frame_orientation(image)} · " + reference_summary(self._reference))
         self._render_compare()
 
     def clear_reference(self):
@@ -131,6 +139,7 @@ class ReferenceModeWidget(QWidget):
         self._delta_list.clear()
         self._composition.setText("Composition delta: —")
         self._anchor.setText("Semantic anchor: —")
+        self._target.setText("Analyze a reference and current frame to generate a target shooting plan.")
         self._summary.setText("Load a reference photograph to compare composition and pose.")
         self._set_pixmap(self._reference_preview, None)
 
@@ -156,6 +165,9 @@ class ReferenceModeWidget(QWidget):
         self._anchor.setText(f"Semantic anchor: {anchor.name if anchor else 'bbox_center'}")
 
         deltas = compare_pose_to_reference(self._reference_pose, self._current_pose, width, height)
+        plan = build_reference_target_plan(self._reference, current, deltas)
+        self._target.setText(plan.as_text())
+
         self._delta_list.clear()
         if not deltas:
             self._delta_list.addItem(QListWidgetItem("Pose is already close to the reference on the visible landmarks."))
