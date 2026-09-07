@@ -17,12 +17,14 @@ def _install_v2_engine():
 
 
 def run_gui(image_path=None):
-    from PySide6.QtWidgets import QApplication, QCheckBox, QToolBar
+    from PySide6.QtWidgets import QApplication, QCheckBox, QToolBar, QComboBox, QLabel
     _install_v2_engine()
     import gui.main_window as main_window_module
     from gui.main_window import MainWindow, apply_light_theme
     from gui.reverse_3d import Reverse3DWorkspace as RealReverse3DWorkspace
     from gui.cache import AnalysisCache, image_cache_key
+    from reverse_engineering.calibration import BUILTIN_PROFILES
+    import reverse_engineering.engine as engine_module
 
     main_window_module.Reverse3DWorkspace = RealReverse3DWorkspace
     main_window_module._image_hash = image_cache_key
@@ -41,6 +43,17 @@ def run_gui(image_path=None):
     apply_light_theme(app)
     window = MainWindow()
     window._result_cache = AnalysisCache(capacity=8)
+
+    selected_profile = {"name": "Generic"}
+    EngineV2 = engine_module.ReverseEngineeringEngine
+
+    def engine_factory(enable_simulation=True):
+        return EngineV2(enable_simulation=enable_simulation, calibration_profile=selected_profile["name"])
+
+    # AnalysisWorker imports the engine class from this module at load time;
+    # replacing it with a callable factory keeps the existing GUI architecture
+    # while allowing the profile to be selected from the toolbar.
+    engine_module.ReverseEngineeringEngine = engine_factory
 
     original_load = window._la
 
@@ -69,6 +82,22 @@ def run_gui(image_path=None):
     bars = window.findChildren(QToolBar)
     if bars:
         bars[0].addWidget(reverse_toggle)
+        bars[0].addWidget(QLabel("  Calibration: "))
+        calibration_combo = QComboBox()
+        calibration_combo.addItems(list(BUILTIN_PROFILES.keys()))
+        calibration_combo.setCurrentText(selected_profile["name"])
+        calibration_combo.setToolTip("Camera calibration profile used by 3D reconstruction and projection")
+
+        def on_profile_changed(name):
+            selected_profile["name"] = name or "Generic"
+            # Force a fresh engine; the current cached bundle remains readable,
+            # but the next analysis uses the new intrinsics model.
+            window._eng = None
+            if window._img is not None:
+                window._la(str(window._current_path)) if hasattr(window, "_current_path") else None
+
+        calibration_combo.currentTextChanged.connect(on_profile_changed)
+        bars[0].addWidget(calibration_combo)
 
     window.show()
     if image_path and os.path.exists(image_path):
@@ -76,7 +105,7 @@ def run_gui(image_path=None):
     sys.exit(app.exec())
 
 
-def run_cli(image_path, verbose=False):
+def run_cli(image_path, verbose=False, calibration_profile="Generic"):
     import cv2
     _install_v2_engine()
     from core.pose_detector import PoseDetector
@@ -84,7 +113,6 @@ def run_cli(image_path, verbose=False):
     from core.action_classifier import classify_action
     from core.camera_analyzer import analyze_camera
     from core.composition import analyze_composition
-    from core.suggestion import generate_suggestions
     from reverse_engineering.engine import ReverseEngineeringEngine
     from reverse_engineering.intrinsics import read_exif_intrinsics
 
@@ -95,12 +123,13 @@ def run_cli(image_path, verbose=False):
     intrinsics = read_exif_intrinsics(image_path)
     print(f"Analyzing: {image_path}")
     print(f"Image size: {image.shape[1]}x{image.shape[0]}")
+    print(f"Calibration profile: {calibration_profile}")
     if intrinsics.has_focal_prior:
         print(f"EXIF intrinsics: focal={intrinsics.focal_length_mm} mm, 35mm eq={intrinsics.focal_length_35mm} mm")
     print("=" * 60)
 
     det = PoseDetector()
-    engine = ReverseEngineeringEngine()
+    engine = ReverseEngineeringEngine(calibration_profile=calibration_profile)
     try:
         pose = det.detect(image)
         if pose is None:
@@ -122,7 +151,7 @@ def run_cli(image_path, verbose=False):
             print(f"  [{s.priority.value}] {s.title}: {s.description}")
         print(f"\nNext actions: {', '.join(suggestions.next_actions)}")
         print(f"Creative: {suggestions.creative_direction}")
-        print("\n--- Reverse Engineering v2 ---")
+        print("\n--- Reverse Engineering v2.5 ---")
         result = engine.analyze(image, pose, pose.bbox, intrinsics_evidence=intrinsics)
         print(result.report())
         print("\nCamera Actions:")
@@ -139,9 +168,10 @@ def main():
     parser.add_argument("--image", "-i", help="Image path to analyze")
     parser.add_argument("--cli", action="store_true", help="CLI mode")
     parser.add_argument("--verbose", "-v", action="store_true")
+    parser.add_argument("--calibration-profile", default="Generic", help="Calibration profile: Generic, Full Frame 36x24, APS-C 23.5x15.6, Micro Four Thirds 17.3x13")
     args = parser.parse_args()
     if args.image and args.cli:
-        run_cli(args.image, args.verbose)
+        run_cli(args.image, args.verbose, args.calibration_profile)
     elif args.image:
         run_gui(args.image)
     else:
