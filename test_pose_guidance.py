@@ -83,6 +83,12 @@ def test_guidance_does_not_depend_on_current_action_label():
     assert g1 == g2
 
 
+def test_next_actions_are_coaching_goals_not_action_labels():
+    result = generate_suggestions(_action(), _orientation(), _camera(), _composition())
+    assert result.next_actions == ["调整重心", "打开身体轮廓", "改变头部方向"]
+    assert all(name not in {"行走", "坐下", "跳跃", "转身"} for name in result.next_actions)
+
+
 def test_goal_direction_follows_composition():
     result = generate_suggestions(
         _action(), _orientation(), _camera(), _composition(x=0.75)
