@@ -48,7 +48,7 @@ Provides:
 - Camera analysis — shot type, camera angle, subject ratio
 - Composition — rule-of-thirds, symmetry, headroom, balance
 - Goal-oriented pose coaching — geometry-based corrections instead of action matching
-- Photographer-ready verbal cues — short instructions suitable for on-set use
+- Photographer-ready verbal cues — concise instructions suitable for on-set use
 
 The professional analysis remains available alongside the verbal guidance. The two layers serve different purposes: analysis explains **why** a change is useful; a cue tells the photographer/subject **what to do next**.
 
@@ -101,15 +101,19 @@ What should I say to the subject right now?
 
 This is important for field use. A photographer may be working without a computer next to the camera, while still wanting access later to the full geometric and compositional explanation.
 
-The cue layer therefore translates analysis into speakable instructions without deleting the underlying data. Typical cues include:
+The cue layer therefore translates analysis into speakable instructions without deleting the underlying data. A cue is a suggestion, not a mandatory target. The system prefers small, achievable corrections over forcing a named action.
 
-- “重心放到一条腿上，另一条腿放松一点。”
-- “一只手离开身体一点，肘部别夹死。”
-- “两条腿前后错一点，别让膝盖和脚踝落在同一条线上。”
-- “动作往你的右边打开一点。”
-- “身体先不动，下巴往一侧偏一点，看我。”
+### Field cue modes
 
-A cue is a suggestion, not a mandatory target. The system should prefer small, achievable corrections over forcing a named action.
+v2.5 introduces three presentation modes over the same underlying cue data:
+
+| Mode | Purpose |
+|---|---|
+| Concise | One immediate spoken instruction for fast on-set use |
+| Normal | A short sequence of practical cues |
+| Technical | Cue plus the analytical reason behind it |
+
+The mode changes presentation, not the underlying professional analysis.
 
 ## Action Guidance Philosophy
 
@@ -187,6 +191,12 @@ Interaction:
 
 The viewer is a geometric explanation/validation view, not a claim of full photogrammetric reconstruction.
 
+## Intrinsics and Calibration
+
+v2.5 adds a reusable `CalibrationProfile` abstraction with built-in generic, full-frame, APS-C and Micro Four Thirds priors. A profile can provide sensor dimensions, pixel aspect ratio, principal point and an optional default focal length, while remaining an explicit prior rather than silently becoming ground truth.
+
+Profiles can also be serialized to JSON so camera-specific calibration can be carried between field sessions.
+
 ## Candidate Solution Model
 
 v2 ranks candidates using two separate evidence families:
@@ -221,23 +231,6 @@ The rotation solver then:
 
 When a photograph does not contain enough reliable orthogonal scene structure, v2 does not manufacture a confident absolute rotation.
 
-## Intrinsics Evidence
-
-v2 now accepts an optional `IntrinsicsEvidence` record. When the original image path is available, the CLI reads standard EXIF fields such as:
-
-```text
-FocalLength
-FocalLengthIn35mmFilm
-Make / Model
-LensModel
-```
-
-The evidence is used as a **prior**, not blindly treated as ground truth. Neighboring focal candidates are retained because an exported/cropped image can preserve EXIF while changing the relationship between pixels and the original camera framing.
-
-When EXIF does not contain a focal field, the pipeline continues using its geometry/framing candidate family without requiring metadata.
-
-The evidence source is persisted in `ReverseEngineeringResult.intrinsics_evidence` and included in CLI reports/JSON output.
-
 ## Projection Validation
 
 The 3D projection preview uses the same pose-driven 17-keypoint proxy that participates in camera fitting. Candidate camera position and rotation share one target-centered coordinate frame, so the camera drawn in 3D and the camera used for 2D projection are now the same geometric state.
@@ -260,7 +253,7 @@ The GUI uses staged background analysis with visible progress feedback:
 Pose ready → 2D ready → Reverse ready
 ```
 
-Analysis uses resized images for expensive processing. Results are cached in-session by an exact SHA-256 image key and stored in a small LRU cache, so switching between 2D / 3D / Results does not rerun inference.
+Analysis uses resized images for expensive processing. Results are cached in-session by an exact image key and stored in a small LRU cache, so switching between 2D / 3D / Results does not rerun inference.
 
 ## Project Structure
 
@@ -273,6 +266,7 @@ photo/
 ├── test_v2_regression.py
 ├── test_pose_guidance.py
 ├── test_photographer_cues.py
+├── test_v25_foundation.py
 ├── README.md
 ├── core/
 │   ├── pose_detector.py
@@ -281,13 +275,15 @@ photo/
 │   ├── camera_analyzer.py
 │   ├── composition.py
 │   ├── suggestion.py
-│   └── photographer_cues.py
+│   ├── photographer_cues.py
+│   └── photographer_cue_modes.py
 ├── reverse_engineering/
 │   ├── data_types.py
 │   ├── perspective.py
 │   ├── scene_geometry.py
 │   ├── rotation_solver.py
 │   ├── intrinsics.py
+│   ├── calibration.py
 │   ├── camera_pose.py
 │   ├── focal_length.py
 │   ├── depth_of_field.py
@@ -345,14 +341,21 @@ The application entry point installs the active reverse-engineering engine for b
 - CI regression coverage for camera rotation, camera fitting and pose guidance
 
 ### v2.5 — Field Photography Assistance
-- Camera-specific calibration profiles: principal point, pixel aspect ratio, sensor dimensions and lens presets
+
+#### Completed foundation
+- Calibration profile data model with reusable built-in sensor priors
+- JSON import/export for camera calibration profiles
+- Photographer cue presentation modes: concise / normal / technical
+- Regression tests for calibration profiles and cue-mode behavior
+
+#### Next implementation steps
+- Bind calibration profiles to the active camera reconstruction and projection intrinsics
 - Explicit observed / estimated / unknown confidence presentation in the GUI
 - Scene/depth constraints for camera distance and height
-- Depth-provider abstraction with an optional monocular depth provider first
+- Mature monocular depth provider behind the existing `DepthProvider` interface
 - Stronger non-Manhattan scene handling
 - Image-space refinement against the original photograph beyond pose/BBox evidence
 - Better pose landmarks for hands, feet and facial direction
-- On-set photographer cue modes: concise / normal / technical
 - One-screen field mode that keeps verbal instructions visible while preserving technical analysis
 - Cue history and undo so the photographer can compare successive pose adjustments
 - Voice-ready cue text as a device-independent output layer
