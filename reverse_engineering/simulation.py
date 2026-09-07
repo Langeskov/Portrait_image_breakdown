@@ -17,6 +17,7 @@ from reverse_engineering.intrinsics import IntrinsicsEvidence
 from reverse_engineering.calibration import CalibrationProfile, resolve_profile
 from reverse_engineering.rotation_solver import fuse_pose_and_scene, estimate_rotation_candidates
 from reverse_engineering.scene_geometry import SceneGeometryEvidence
+from reverse_engineering.scene_constraints import DepthConstraintEvidence, candidate_depth_score
 
 
 def _intrinsics_from_profile(focal_mm, image_w, image_h, profile: CalibrationProfile | None = None):
@@ -141,14 +142,26 @@ def _apply_level_reference(candidate, scene_evidence: SceneGeometryEvidence | No
     return candidate
 
 
+def _apply_depth_constraint(candidate, pose_keypoints, image_w, image_h, depth_evidence: DepthConstraintEvidence | None):
+    """Use relative depth only as a soft ranking signal, never as metric truth."""
+    score = candidate_depth_score(candidate, pose_keypoints, image_w, image_h, depth_evidence)
+    if score is None:
+        return
+    candidate.losses["depth_order_score"] = round(float(score), 4)
+    candidate.losses["depth_constraint_confidence"] = round(float(depth_evidence.confidence), 4)
+    # Keep depth evidence deliberately weaker than geometric reprojection.
+    candidate.score = float(np.clip(candidate.score + 0.12 * depth_evidence.confidence * (score - 0.5), 0.01, 0.99))
+
+
 def optimize_parameters(
     image_w, image_h, subject_scale, subject_position, perspective_strength,
     pose_keypoints=None, num_candidates=5, subject_bbox=None,
     scene_evidence: SceneGeometryEvidence | None = None,
     intrinsics_evidence: IntrinsicsEvidence | None = None,
     calibration_profile: CalibrationProfile | None = None,
+    depth_evidence: DepthConstraintEvidence | None = None,
 ):
-    """Build ranked camera solutions from pose, scene, EXIF and calibration evidence."""
+    """Build ranked camera solutions from pose, scene, EXIF, calibration and relative depth evidence."""
     del subject_scale, perspective_strength
     if pose_keypoints is None:
         return []
@@ -200,6 +213,7 @@ def optimize_parameters(
         point_inside, bbox_iou = _camera_candidate_visibility(c, kp, image_w, image_h, subject_bbox)
         c.losses["in_frame_fraction"] = round(point_inside, 4)
         c.losses["visibility_bbox_iou"] = round(bbox_iou, 4)
+        _apply_depth_constraint(c, kp, image_w, image_h, depth_evidence)
         if point_inside < 0.55 and not c.losses.get("fallback"):
             continue
         c.score = float(np.clip(c.score + 0.10 * (point_inside - 0.5) + 0.06 * (bbox_iou - 0.5), 0.01, 0.99))
@@ -219,6 +233,7 @@ def optimize_parameters(
                 c.losses["in_frame_fraction"] = round(point_inside, 4)
                 c.losses["visibility_bbox_iou"] = round(bbox_iou, 4)
                 c.losses["calibration_profile"] = profile.name
+                _apply_depth_constraint(c, kp, image_w, image_h, depth_evidence)
                 if point_inside >= 0.55:
                     c.score = float(np.clip(c.score + 0.10 * (point_inside - 0.5) + 0.06 * (bbox_iou - 0.5), 0.01, 0.99))
                     visible_fused.append(c)
