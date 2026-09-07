@@ -1,14 +1,17 @@
 """Automatic camera reconstruction from 2D pose and scene evidence."""
 from __future__ import annotations
 
+import math
 import numpy as np
 
 from reverse_engineering.geometry import (
     CameraIntrinsics,
+    CameraModel,
     PoseCandidate,
     PoseSolver,
     REF_PERSON_HEIGHT,
     _camera_pose_from_params,
+    pose_driven_person_points,
 )
 from reverse_engineering.intrinsics import IntrinsicsEvidence
 from reverse_engineering.rotation_solver import fuse_pose_and_scene, estimate_rotation_candidates
@@ -71,6 +74,39 @@ def _fallback_candidate(image_w, image_h, pose_keypoints, focal_mm=50.0):
     )
 
 
+def _camera_candidate_visibility(candidate, pose_keypoints, image_w, image_h, subject_bbox=None):
+    """Score how safely the reconstructed proxy remains inside the image."""
+    kp = np.asarray(pose_keypoints, dtype=float)
+    proxy = pose_driven_person_points(kp, image_w, image_h)
+    intr = candidate.intrinsics
+    camera = CameraModel(intr, candidate.extrinsics)
+    projected = camera.project_points(proxy)
+    valid = np.isfinite(projected).all(axis=1) & (kp[:, 2] > 0.35)
+    if int(valid.sum()) < 5:
+        return 0.0, 0.0
+
+    p = projected[valid]
+    inside = (
+        (p[:, 0] >= 0.0) & (p[:, 0] <= image_w) &
+        (p[:, 1] >= 0.0) & (p[:, 1] <= image_h)
+    )
+    point_inside = float(np.mean(inside))
+
+    if subject_bbox is None:
+        return point_inside, point_inside
+
+    x0, y0, x1, y1 = subject_bbox
+    pb = np.array([p[:, 0].min(), p[:, 1].min(), p[:, 0].max(), p[:, 1].max()])
+    iw = max(0.0, min(pb[2], float(x1)) - max(pb[0], float(x0)))
+    ih = max(0.0, min(pb[3], float(y1)) - max(pb[1], float(y0)))
+    inter = iw * ih
+    pred_area = max(0.0, pb[2] - pb[0]) * max(0.0, pb[3] - pb[1])
+    observed_area = max(0.0, float(x1 - x0)) * max(0.0, float(y1 - y0))
+    union = pred_area + observed_area - inter
+    bbox_iou = inter / union if union > 1e-9 else 0.0
+    return point_inside, bbox_iou
+
+
 def optimize_parameters(
     image_w,
     image_h,
@@ -126,6 +162,7 @@ def optimize_parameters(
         pose_candidates = [fallback]
 
     position_penalty = min(_subject_position_loss(subject_position), 0.05)
+    stable_candidates = []
     for c in pose_candidates:
         c.losses["subject_position_prior"] = round(position_penalty, 5)
         if intrinsics_evidence is not None and intrinsics_evidence.preferred_focal_mm() is not None:
@@ -134,11 +171,22 @@ def optimize_parameters(
             exif_score = float(np.exp(-focal_delta / max(8.0, 0.10 * float(hint))))
             c.losses["exif_focal_mm"] = round(float(hint), 3)
             c.losses["exif_focal_score"] = round(exif_score, 4)
-            c.score = float(
-                np.clip(c.score * (0.82 + 0.18 * exif_score) - position_penalty, 0.05, 0.99)
-            )
+            c.score = float(np.clip(c.score * (0.82 + 0.18 * exif_score) - position_penalty, 0.05, 0.99))
         else:
             c.score = float(np.clip(c.score - position_penalty, 0.05, 0.99))
+
+        point_inside, bbox_iou = _camera_candidate_visibility(
+            c, kp, image_w, image_h, subject_bbox
+        )
+        c.losses["in_frame_fraction"] = round(point_inside, 4)
+        c.losses["visibility_bbox_iou"] = round(bbox_iou, 4)
+        if point_inside < 0.55 and not c.losses.get("fallback"):
+            continue
+        c.score = float(np.clip(c.score + 0.10 * (point_inside - 0.5) + 0.06 * (bbox_iou - 0.5), 0.01, 0.99))
+        stable_candidates.append(c)
+
+    if stable_candidates:
+        pose_candidates = stable_candidates
 
     if scene_evidence is not None:
         rotation_candidates = estimate_rotation_candidates(
@@ -152,6 +200,18 @@ def optimize_parameters(
             max_candidates=max(8, num_candidates),
         )
         if fused:
-            return _dedupe_candidates(fused, num_candidates)
+            # Reapply the visibility guard after scene fusion: Manhattan rotation
+            # can generate mathematically valid but photographically implausible
+            # solutions for sparse/ambiguous line evidence.
+            visible_fused = []
+            for c in fused:
+                point_inside, bbox_iou = _camera_candidate_visibility(c, kp, image_w, image_h, subject_bbox)
+                c.losses["in_frame_fraction"] = round(point_inside, 4)
+                c.losses["visibility_bbox_iou"] = round(bbox_iou, 4)
+                if point_inside >= 0.55:
+                    c.score = float(np.clip(c.score + 0.10 * (point_inside - 0.5) + 0.06 * (bbox_iou - 0.5), 0.01, 0.99))
+                    visible_fused.append(c)
+            if visible_fused:
+                return _dedupe_candidates(visible_fused, num_candidates)
 
     return _dedupe_candidates(pose_candidates, num_candidates)
