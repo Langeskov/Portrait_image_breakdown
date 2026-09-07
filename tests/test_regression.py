@@ -1,9 +1,4 @@
-"""Unified regression suite for Portrait Image Breakdown.
-
-The suite intentionally lives in one place so CI and local development run a
-single deterministic contract suite. Model-backed end-to-end checks are kept
-out of this file because they require a local YOLO weight and a real photo.
-"""
+"""Unified regression suite for Portrait Image Breakdown."""
 from __future__ import annotations
 
 import cv2
@@ -13,7 +8,7 @@ from core.action_classifier import ActionCategory, ActionResult
 from core.camera_analyzer import CameraAngle, CameraResult, ShotType
 from core.composition import CompositionResult, CompositionType
 from core.cue_history import CueHistory
-from core.image_io import frame_orientation, load_image
+from core.image_io import _apply_exif_orientation, frame_orientation, load_image
 from core.landmark_quality import assess_landmarks, semantic_anchor_pixels
 from core.orientation import FacingDirection, OrientationResult, TiltDirection
 from core.photographer_cue_modes import CueMode, format_cues, primary_cue
@@ -176,8 +171,7 @@ def test_depth_constraint_is_relative_and_conservative():
 def test_calibration_profiles_and_exif(tmp_path):
     profile=CalibrationProfile("Lab Camera",35.8,23.9,1.0,1001.5,752.0,50.0,"test"); path=tmp_path/"profile.json"; save_profile(profile,path); assert load_profile(path)==profile
     ff=BUILTIN_PROFILES["Full Frame 36x24"]; assert ff.sensor_width_mm==36 and ff.sensor_height_mm==24
-    from PIL import Image
-    image_path=tmp_path/"fixture.jpg"; Image.new("RGB",(2000,1500),"white").save(image_path); evidence=read_exif_intrinsics(image_path,profile=ff)
+    image_path=tmp_path/"fixture.jpg"; cv2.imwrite(str(image_path),np.full((1500,2000,3),255,dtype=np.uint8)); evidence=read_exif_intrinsics(image_path,profile=ff)
     assert evidence.sensor_width_mm==36 and evidence.sensor_height_mm==24 and evidence.principal_point_x==1000 and evidence.principal_point_y==750
     full=_intrinsics_from_profile(50,2000,1500,ff); aps=_intrinsics_from_profile(50,2000,1500,BUILTIN_PROFILES["APS-C 23.5x15.6"]); assert aps.fx>full.fx and aps.fy>full.fy
 
@@ -253,38 +247,38 @@ def test_scene_rotation_solver_contract():
     candidates=estimate_rotation_candidates(evidence,width,height,max_candidates=8); best=max(candidates,key=lambda c:c.scene_score); assert candidates and abs(best.focal_length_mm-focal)<2 and abs(best.extrinsics.yaw-12)<1.5 and abs(best.extrinsics.pitch+5)<1.5 and abs(best.extrinsics.roll-6)<1.5
 
 
-def test_exif_orientation_is_normalized_before_analysis(tmp_path):
-    from PIL import Image
-    image_path = tmp_path / "portrait-exif.jpg"
-    # Store 40×60 pixels with EXIF Orientation=6: display result must be 60×40.
-    source = Image.new("RGB", (40, 60), "white")
-    exif = source.getexif(); exif[274] = 6
-    source.save(image_path, exif=exif)
-    image = load_image(image_path)
+def test_exif_orientation_normalizes_landscape_storage_to_portrait_display(tmp_path):
+    # Build a JPEG carrying the minimal EXIF Orientation=6 tag.
+    raw = cv2.imencode('.jpg', np.full((60, 40, 3), 220, dtype=np.uint8))[1].tobytes()
+    tiff = bytearray(b'II*\x00\x08\x00\x00\x00\x01\x00')
+    tiff += b'\x12\x01\x03\x00\x01\x00\x00\x00\x06\x00\x00\x00' + b'\x00\x00\x00\x00'
+    exif = b'Exif\x00\x00' + bytes(tiff)
+    segment = b'\xff\xe1' + (len(exif) + 2).to_bytes(2, 'big') + exif
+    path = tmp_path / 'portrait-exif.jpg'
+    path.write_bytes(raw[:2] + segment + raw[2:])
+    image = load_image(path)
     assert image is not None and image.shape[:2] == (40, 60)
-    assert frame_orientation(image) == "landscape"
+    assert frame_orientation(image) == 'portrait'
+    probe = np.zeros((2, 3, 3), dtype=np.uint8); assert _apply_exif_orientation(probe, 6).shape[:2] == (3, 2)
 
 
 def test_field_mode_styles_scope_foreground_and_primary_surface():
     from gui.field_mode import FieldModeWidget
-    sheet = FieldModeWidget.__dict__.get("_THEME")
-    assert sheet["bg"] == "#10151c"
-    # Instantiate only to ensure the Qt stylesheet parses without relying on the global light palette.
+    theme = FieldModeWidget._THEME
+    assert theme['bg'] == '#10151c'
     from PySide6.QtWidgets import QApplication
     app = QApplication.instance() or QApplication([])
-    widget = FieldModeWidget()
-    css = widget.styleSheet()
-    assert "QWidget#fieldMode QLabel" in css
-    assert "QLabel#primaryCue" in css and "QComboBox QAbstractItemView" in css
+    widget = FieldModeWidget(); css = widget.styleSheet()
+    assert 'QWidget#fieldMode QLabel' in css and 'QLabel#primaryCue' in css and 'QComboBox QAbstractItemView' in css
     widget.close()
 
 
 def test_v3_phase2_target_plan_distinguishes_framing_and_pose():
     reference = build_reference_composition(_reference_pose(), 200, 180)
-    current = build_reference_composition(_reference_pose(offset_x=-18, offset_y=10, scale=.8), 200, 180)
-    deltas = compare_pose_to_reference(_reference_pose(), _reference_pose(offset_x=-18, offset_y=10, scale=.8), 200, 180)
+    current_pose = _reference_pose(offset_x=-18, offset_y=10, scale=.8)
+    current = build_reference_composition(current_pose, 200, 180)
+    deltas = compare_pose_to_reference(_reference_pose(), current_pose, 200, 180)
     plan = build_reference_target_plan(reference, current, deltas)
     text = plan.as_text()
-    assert plan.framing_actions
-    assert plan.pose_actions
-    assert "构图：" in text and "姿态：" in text
+    assert plan.framing_actions and plan.pose_actions
+    assert '构图：' in text and '姿态：' in text
