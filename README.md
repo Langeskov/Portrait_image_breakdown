@@ -26,13 +26,53 @@ Image → Analysis ────────┤
 The important design rule is:
 
 - **Human pose constrains framing** — subject scale, image position, body shape and plausible camera distance/height.
-- **Scene geometry constrains rotation** — Manhattan vanishing points, horizon direction and orthogonal image directions provide evidence for camera yaw/pitch/roll.
+- **Scene geometry constrains rotation** when the image contains a reliable Manhattan structure.
 - **Focal length remains a candidate family** — a single image cannot generally determine exact focal length and distance independently.
+- **Weak/non-Manhattan scenes fall back to image-driven pose fitting and bounded refinement** instead of forcing a Manhattan solution.
 - **Action labels provide context, not commands** — pose guidance is driven by body geometry, silhouette, balance, framing and visual intent.
 
-## Intrinsics and Calibration
+## v2.5 Architecture
 
-v2.5 includes reusable calibration profiles with explicit sensor, principal-point and pixel-aspect priors. EXIF metadata and user-selected calibration remain separate evidence sources.
+```text
+Image
+  │
+  ├─ Pose + BBox ─────────────┐
+  ├─ EXIF + calibration ──────┤
+  ├─ Scene geometry ───────────┤
+  └─ Relative / local depth ───┤
+                               ↓
+                      candidate camera family
+                               ↓
+                       constraint ranking
+                               ↓
+                    bounded image-space refine
+                               ↓
+                    3D proxy + 2D validation
+                               ↓
+               photographer cues / field mode
+                               ↓
+                    voice-ready text / SSML
+```
+
+### Intrinsics and Calibration
+
+Reusable calibration profiles carry sensor size, principal point, pixel aspect ratio and optional focal priors. EXIF metadata and user-selected calibration remain separate evidence sources, while the active profile is applied to candidate projection intrinsics.
+
+### Depth
+
+`DepthProvider` remains the stable interface. The default provider is deterministic and offline-friendly; a local monocular-depth model can be injected through `model_fn` without changing the reconstruction pipeline. Depth remains a relative ranking signal rather than absolute metric depth.
+
+### Image-space refinement
+
+After candidate recovery, v2.5 makes only bounded corrections to yaw/pitch/roll. The refinement prefers a stable body anchor (hips → torso → head) and minimizes observed-vs-projected keypoint residuals while preserving the focal-length/distance ambiguity. The correction is reported rather than silently hidden.
+
+### Non-Manhattan scenes
+
+Scene-geometry fusion is gated by scene confidence and the availability of three reliable orthogonal directions. Weak or non-Manhattan scenes rely more heavily on pose framing and the bounded image-space refinement pass.
+
+### Landmark quality
+
+The field layer exposes landmark confidence, lower-body confidence, face confidence and a semantic anchor. The existing COCO 17-point detector remains backward compatible while higher-quality/extended landmark providers can be plugged in later.
 
 ## Evidence State Model
 
@@ -47,11 +87,9 @@ UNKNOWN
   ↓ insufficient evidence; do not treat as measured
 ```
 
-## v2.5 Camera Geometry Constraints
+## v2.5 Field Mode
 
-The camera candidate pipeline now has a conservative support-plane constraint in addition to relative depth and broad height/distance feasibility intervals. A standing subject with reliable ankle/knee geometry can provide a weak contact-plane hypothesis. Its purpose is to rank pitch-coherent solutions, not to claim that a physical floor was definitively detected.
-
-The application pitch convention is **positive = looking downward**. The 3D workspace exposes optical-axis miss from the subject target so a candidate whose recovered pitch does not actually aim toward the subject is visible rather than silently corrected.
+Field Mode is a fourth workspace designed for shooting rather than post-analysis. It keeps the primary cue large, exposes concise/normal/technical presentation, records cue history with undo/redo, shows landmark quality, and exposes device-independent voice payloads as plain text + minimal SSML. No network speech service is required.
 
 ## Project Structure
 
@@ -69,6 +107,8 @@ photo/
 ├── test_v25_scene_constraints.py
 ├── test_v25_candidate_family.py
 ├── test_v25_support_plane.py
+├── test_v25_depth_provider.py
+├── test_v25_completion.py
 └── reverse_engineering/
     ├── geometry.py
     ├── intrinsics.py
@@ -76,6 +116,7 @@ photo/
     ├── depth_provider.py
     ├── scene_constraints.py
     ├── support_plane.py
+    ├── image_refinement.py
     ├── simulation.py
     └── engine_v2.py
 ```
@@ -94,19 +135,19 @@ photo/
 - Explicit observed / estimated / unknown evidence states in serialized results and GUI Results view
 - Regression coverage for calibration-driven projection intrinsics, cue modes and evidence-state semantics
 - Relative monocular depth constraint used as a soft candidate-ranking signal
+- Mature `DepthProvider` adapter with deterministic fallback and local-model injection path
 - Broad camera height/distance feasibility intervals
 - Support-plane pitch coherence constraint for reliable lower-limb contact geometry
 - 3D optical-axis aim-error diagnostic; recovered pitch is no longer hard-clamped by vertical scene-line detection
-- Regression coverage for support-plane pitch convention and candidate coherence
+- Bounded image-space yaw/pitch/roll refinement with hip/torso-first subject anchor
+- Confidence-gated non-Manhattan fallback
+- Landmark-quality and semantic-anchor layer
+- One-screen Field Mode workspace
+- Cue history with undo/redo and duplicate-snapshot suppression
+- Device-independent voice-ready text and SSML output
+- Regression coverage for depth, refinement, anchors, history and voice layers
 
-#### Next
-- Mature monocular depth provider behind the existing `DepthProvider` interface
-- Stronger non-Manhattan scene handling
-- Image-space refinement against the original photograph beyond pose/BBox evidence
-- Better pose landmarks for hands, feet and facial direction
-- One-screen field mode that keeps verbal instructions visible while preserving technical analysis
-- Cue history and undo so the photographer can compare successive pose adjustments
-- Voice-ready cue text as a device-independent output layer
+The v2.5 line is now functionally complete. The next major changes belong to v3 scene/reference reconstruction rather than expanding the field-assistance surface.
 
 ### v3 — Reference Reconstruction and Scene Understanding
 - Multi-person 3D layout when independent depth evidence exists
