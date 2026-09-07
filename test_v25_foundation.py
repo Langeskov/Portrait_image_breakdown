@@ -1,16 +1,15 @@
-"""v2.5 foundation tests: calibration profiles, intrinsics and field cue modes."""
+"""v2.5 foundation tests: calibration, intrinsics and field cue modes."""
 from pathlib import Path
 import tempfile
 
+import numpy as np
+
 from core.photographer_cues import CuePriority, PhotographerCue
 from core.photographer_cue_modes import CueMode, format_cues, primary_cue
-from reverse_engineering.calibration import (
-    BUILTIN_PROFILES,
-    CalibrationProfile,
-    load_profile,
-    save_profile,
-)
+from reverse_engineering.calibration import BUILTIN_PROFILES, CalibrationProfile, load_profile, save_profile
+from reverse_engineering.geometry import CameraIntrinsics
 from reverse_engineering.intrinsics import read_exif_intrinsics
+from reverse_engineering.simulation import _intrinsics_from_profile
 
 
 def test_builtin_calibration_profiles_have_safe_defaults():
@@ -24,14 +23,9 @@ def test_builtin_calibration_profiles_have_safe_defaults():
 
 def test_profile_round_trip():
     profile = CalibrationProfile(
-        name="Lab Camera",
-        sensor_width_mm=35.8,
-        sensor_height_mm=23.9,
-        pixel_aspect_ratio=1.0,
-        principal_point_x=1001.5,
-        principal_point_y=752.0,
-        default_focal_length_mm=50.0,
-        note="test",
+        name="Lab Camera", sensor_width_mm=35.8, sensor_height_mm=23.9,
+        pixel_aspect_ratio=1.0, principal_point_x=1001.5,
+        principal_point_y=752.0, default_focal_length_mm=50.0, note="test",
     )
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "profile.json"
@@ -55,7 +49,6 @@ def test_cue_modes_preserve_same_underlying_cue():
 
 def test_exif_reader_can_apply_calibration_profile(tmp_path):
     from PIL import Image
-
     image_path = tmp_path / "fixture.jpg"
     Image.new("RGB", (2000, 1500), "white").save(image_path)
     profile = BUILTIN_PROFILES["Full Frame 36x24"]
@@ -66,3 +59,19 @@ def test_exif_reader_can_apply_calibration_profile(tmp_path):
     assert evidence.principal_point_x == 1000.0
     assert evidence.principal_point_y == 750.0
     assert evidence.pixel_aspect_ratio == 1.0
+
+
+def test_profile_changes_projection_intrinsics():
+    full_frame = _intrinsics_from_profile(50.0, 2000, 1500, BUILTIN_PROFILES["Full Frame 36x24"])
+    aps_c = _intrinsics_from_profile(50.0, 2000, 1500, BUILTIN_PROFILES["APS-C 23.5x15.6"])
+    assert aps_c.fx > full_frame.fx
+    assert aps_c.fy > full_frame.fy
+    assert full_frame.cx == 1000.0
+    assert full_frame.cy == 750.0
+    assert np.allclose(full_frame.to_matrix(), np.array([[full_frame.fx, 0, 1000.0], [0, full_frame.fy, 750.0], [0, 0, 1.0]]))
+
+
+def test_camera_intrinsics_factory_remains_backward_compatible():
+    intr = CameraIntrinsics.from_focal_mm(50.0, 2000, 1500)
+    assert intr.cx == 1000.0
+    assert intr.cy == 750.0
