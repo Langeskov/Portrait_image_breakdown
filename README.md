@@ -2,7 +2,7 @@
 
 Photography Analysis & Reverse Engineering System
 
-A native PySide6 desktop tool for analyzing portrait photographs and exploring plausible camera configurations.
+A native PySide6 desktop tool for analyzing portrait photographs, exploring plausible camera configurations, and turning technical analysis into practical on-set guidance.
 
 ## v2 Architecture
 
@@ -28,6 +28,7 @@ The important design rule is:
 - **Human pose constrains framing** — subject scale, image position, body shape and plausible camera distance/height.
 - **Scene geometry constrains rotation** — Manhattan vanishing points, horizon direction and orthogonal image directions provide evidence for camera yaw/pitch/roll.
 - **Focal length remains a candidate family** — a single image cannot generally determine exact focal length and distance independently.
+- **Action labels provide context, not commands** — pose guidance is driven by body geometry, silhouette, balance, framing and visual intent.
 
 The project deliberately reuses mature components: Ultralytics/YOLO for pose detection, OpenCV for line detection and pinhole projection, NumPy for geometry, and SciPy for bounded numerical fitting where appropriate.
 
@@ -37,16 +38,19 @@ The project deliberately reuses mature components: Ultralytics/YOLO for pose det
 
 ```text
 Image → PoseDetector → Orientation → Action → Camera
-      → Composition → Suggestions → 2D Workspace
+      → Composition → Suggestions → Photographer Cues → 2D Workspace
 ```
 
 Provides:
 - Skeleton detection — YOLO Pose 17 keypoints
 - Body orientation — facing direction, tilt, rotation angle
-- Action recognition — pose types and joint angles
+- Action recognition — pose categories and joint angles
 - Camera analysis — shot type, camera angle, subject ratio
 - Composition — rule-of-thirds, symmetry, headroom, balance
-- Next-action suggestions
+- Goal-oriented pose coaching — geometry-based corrections instead of action matching
+- Photographer-ready verbal cues — short instructions suitable for on-set use
+
+The professional analysis remains available alongside the verbal guidance. The two layers serve different purposes: analysis explains **why** a change is useful; a cue tells the photographer/subject **what to do next**.
 
 ### Phase 2: Reverse Engineering v2
 
@@ -80,6 +84,53 @@ The reverse-engineering layer includes:
 - Shooting-technique classification
 - Camera-action recommendations
 - Multiple plausible camera solutions instead of a single forced answer
+
+## Photographer Guidance
+
+The system intentionally keeps two outputs alive at the same time:
+
+```text
+Technical analysis
+  ↓
+Why is this pose / composition useful?
+
+Photographer cue
+  ↓
+What should I say to the subject right now?
+```
+
+This is important for field use. A photographer may be working without a computer next to the camera, while still wanting access later to the full geometric and compositional explanation.
+
+The cue layer therefore translates analysis into speakable instructions without deleting the underlying data. Typical cues include:
+
+- “重心放到一条腿上，另一条腿放松一点。”
+- “一只手离开身体一点，肘部别夹死。”
+- “两条腿前后错一点，别让膝盖和脚踝落在同一条线上。”
+- “动作往你的右边打开一点。”
+- “身体先不动，下巴往一侧偏一点，看我。”
+
+A cue is a suggestion, not a mandatory target. The system should prefer small, achievable corrections over forcing a named action.
+
+## Action Guidance Philosophy
+
+The system intentionally separates **classification** from **direction**.
+
+```text
+What is happening now?
+        ↓
+   Action classifier
+
+How can this frame be improved?
+        ↓
+ Body geometry + silhouette + balance
+        + orientation + composition + camera
+        ↓
+ Goal-oriented pose guidance
+        ↓
+ Photographer-ready verbal cues
+```
+
+For example, a result should not stop at `站立 → 转身`. It can instead produce a physical adjustment, an explanation, and a concise spoken command. This keeps action recognition useful without allowing the classifier to dictate the pose.
 
 ## Important Interpretation Rule
 
@@ -203,7 +254,7 @@ This makes the 3D view a validation tool rather than a decorative frustum render
 
 ## Performance and Cache
 
-The GUI uses staged background analysis:
+The GUI uses staged background analysis with visible progress feedback:
 
 ```text
 Pose ready → 2D ready → Reverse ready
@@ -220,6 +271,8 @@ photo/
 ├── test_stage2.py
 ├── test_v2_rotation.py
 ├── test_v2_regression.py
+├── test_pose_guidance.py
+├── test_photographer_cues.py
 ├── README.md
 ├── core/
 │   ├── pose_detector.py
@@ -227,7 +280,8 @@ photo/
 │   ├── action_classifier.py
 │   ├── camera_analyzer.py
 │   ├── composition.py
-│   └── suggestion.py
+│   ├── suggestion.py
+│   └── photographer_cues.py
 ├── reverse_engineering/
 │   ├── data_types.py
 │   ├── perspective.py
@@ -264,14 +318,14 @@ python main.py --image path/to/photo.jpg
 python main.py --image path/to/photo.jpg --cli
 ```
 
-The application entry point installs `ReverseEngineeringEngineV2` as the active reconstruction engine for both GUI and CLI.
+The application entry point installs the active reverse-engineering engine for both GUI and CLI.
 
 ## Roadmap
 
 ### v2 Completed
 - 2D analysis workspace
 - Light desktop UI
-- Staged background analysis
+- Staged background analysis with progress feedback
 - Reverse-engineering evidence overlay
 - Standard pinhole projection model
 - Pose/BBox framing candidate generation
@@ -285,12 +339,41 @@ The application entry point installs `ReverseEngineeringEngineV2` as the active 
 - Multi-person 2D pose display
 - In-session LRU analysis cache
 - EXIF focal-length / camera metadata evidence and candidate prior
-- CI regression coverage for camera rotation and camera-fit geometry
+- Candidate visibility checks for unstable off-frame projections
+- Goal-oriented pose guidance
+- Photographer-ready verbal cue generation
+- CI regression coverage for camera rotation, camera fitting and pose guidance
 
-### Next
-- Camera-specific calibration profiles to recover principal point, pixel aspect and exact sensor dimensions
+### v2.5 — Field Photography Assistance
+- Camera-specific calibration profiles: principal point, pixel aspect ratio, sensor dimensions and lens presets
+- Explicit observed / estimated / unknown confidence presentation in the GUI
 - Scene/depth constraints for camera distance and height
-- Mature monocular/stereo/LiDAR depth providers
-- Multi-person 3D layout when independent depth evidence exists
+- Depth-provider abstraction with an optional monocular depth provider first
 - Stronger non-Manhattan scene handling
-- Automatic image-space refinement against the original photo beyond pose/BBox evidence
+- Image-space refinement against the original photograph beyond pose/BBox evidence
+- Better pose landmarks for hands, feet and facial direction
+- On-set photographer cue modes: concise / normal / technical
+- One-screen field mode that keeps verbal instructions visible while preserving technical analysis
+- Cue history and undo so the photographer can compare successive pose adjustments
+- Voice-ready cue text as a device-independent output layer
+
+### v3 — Reference Reconstruction and Scene Understanding
+- Multi-person 3D layout when independent depth evidence exists
+- Room/object plane reconstruction and editable scene anchors
+- Camera-to-scene calibration workflow using manually selected reference points
+- Reference-photo comparison mode for recreating a known shot
+- Pose-to-reference delta analysis: show which body parts need to move and in which direction
+- Composition-aware target pose generation rather than only corrective suggestions
+- Temporal mode for video/live camera input, smoothing pose and camera estimates over time
+
+### v4 — Assisted Shooting
+- Optional live camera/tether integration
+- Near-real-time pose feedback during shooting
+- Voice output for photographer cues so the photographer does not need to look at the screen
+- Session records: image, camera hypothesis, pose state, verbal cues and operator adjustments
+- Offline-first model packaging and inference profiles for field machines without network access
+
+### Out of Scope for the Current Stage
+- Treating monocular reconstruction as metrically exact photogrammetry
+- Requiring cloud services for core analysis
+- Replacing professional photographic judgment with a single “best pose” score
