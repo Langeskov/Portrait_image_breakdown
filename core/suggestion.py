@@ -1,8 +1,9 @@
-"""
-下一动作建议引擎
+"""Photography guidance engine.
 
-综合骨架、朝向、动作、镜头、构图分析结果, 生成具体的下一动作建议。
-支持摄影指导和动画/游戏两个场景。
+The action classifier answers "what is happening now".  This module answers
+"what can the photographer ask the subject to do next".  Guidance is driven
+primarily by pose quality, body lines, balance, framing and visual intent; the
+classified action is only context and is never the sole trigger for advice.
 """
 
 from __future__ import annotations
@@ -12,7 +13,7 @@ from enum import Enum
 
 from core.action_classifier import ActionCategory, ActionResult
 from core.camera_analyzer import ShotType, CameraAngle, CameraResult
-from core.composition import CompositionType, CompositionResult
+from core.composition import CompositionResult
 from core.orientation import FacingDirection, TiltDirection, OrientationResult
 
 
@@ -25,98 +26,240 @@ class SuggestionPriority(Enum):
 @dataclasses.dataclass
 class Suggestion:
     priority: SuggestionPriority
-    category: str           # 分类: "pose" / "camera" / "composition" / "action"
-    title: str              # 建议标题
-    description: str        # 详细描述
-    icon: str               # 表情图标
+    category: str
+    title: str
+    description: str
+    icon: str = ""
 
 
 @dataclasses.dataclass
 class SuggestionResult:
     suggestions: list[Suggestion]
-    next_actions: list[str]       # 推荐的下一动作(动作名)
-    creative_direction: str       # 创意方向总结
+    next_actions: list[str]
+    creative_direction: str
 
     @property
     def summary(self) -> str:
-        top3 = self.suggestions[:3]
-        return "\n".join(f"• {s.title}: {s.description}" for s in top3)
+        return "\n".join(
+            f"• {s.title}: {s.description}" for s in self.suggestions[:3]
+        )
 
 
-# ── 动作转换矩阵: 当前动作 → 推荐下一动作 ──
+# Kept for compatibility and as a secondary source of movement ideas.  The
+# guidance engine no longer exposes this matrix directly as the main advice.
 ACTION_TRANSITIONS: dict[ActionCategory, list[tuple[str, str]]] = {
     ActionCategory.STANDING: [
-        ("行走", "从站立过渡到行走, 增加动感"),
-        ("转身", "自然的身体旋转, 适合侧面/背面拍摄"),
-        ("抬手", "手臂自然上举, 展现优雅线条"),
-        ("坐下", "切换到坐姿, 改变画面重心"),
-        ("跳跃", "从站立直接跳起, 抓拍腾空瞬间"),
+        ("移动重心", "把重量轻轻转移到一条腿，避免僵硬对称"),
+        ("转身", "身体与镜头形成轻微角度，增加侧面线条"),
+        ("抬手", "让一只手离开躯干，打开放松的身体轮廓"),
+        ("坐下", "改变身体高度和画面重心"),
     ],
     ActionCategory.WALKING: [
-        ("跑步", "加速到跑步, 增加速度感"),
-        ("停步回望", "行走中突然停下回望, 增加故事感"),
-        ("转身", "行走中转身, 衣摆飘动"),
-        ("跳跃", "行走中的跳跃, 动态感更强"),
+        ("停步回望", "保留一步的动作感，再回头看镜头"),
+        ("转身", "让转身成为动作高潮，等待衣摆或头发形成线条"),
+        ("减速", "先慢下来，让身体自然落在更好看的瞬间"),
     ],
     ActionCategory.RUNNING: [
-        ("跳跃", "跑步起跳, 最具动感的瞬间"),
-        ("急停", "突然停止, 衣物惯性飘动"),
-        ("转弯", "改变方向, 展现侧面线条"),
+        ("急停", "突然停止，让身体惯性产生自然的动态线条"),
+        ("转弯", "改变运动方向，获得更明显的侧身轮廓"),
     ],
     ActionCategory.JUMPING: [
-        ("落地", "跳跃后的落地瞬间, 展现平衡感"),
-        ("二次跳跃", "连续跳跃, 适合连拍"),
-        ("空中姿态", "腾空中展开四肢, 展现力量感"),
+        ("展开", "在腾空最高点打开手臂和腿，保持轮廓清楚"),
+        ("收腿", "收拢四肢形成紧凑姿态，制造力量感"),
     ],
     ActionCategory.SQUATTING: [
-        ("站起", "从蹲姿站起, 展现爆发力"),
-        ("蹲走", "蹲姿移动, 适合低角度拍摄"),
-        ("伸展", "从蹲姿向上伸展, 对比明显"),
+        ("抬起上身", "保留低姿态，同时让胸口和头部更开放"),
+        ("侧向重心", "把重量稍微放到一侧，避免正面堆叠"),
     ],
     ActionCategory.SITTING: [
-        ("站起", "从坐姿站起的过渡动作"),
-        ("翘腿", "变换坐姿, 展现不同线条"),
-        ("前倾", "坐姿前倾, 增加亲和力"),
-        ("侧靠", "向一侧倾斜, 展现放松感"),
+        ("交错双腿", "让两条腿前后错开，避免腿线完全重叠"),
+        ("身体前倾", "从髋部微微前倾，增加交流感"),
+        ("侧靠", "向一侧靠，形成非对称身体轮廓"),
     ],
     ActionCategory.LYING: [
-        ("翻身", "从仰卧到侧卧/俯卧"),
-        ("坐起", "从躺卧到坐起的过渡"),
-        ("伸展", "躺姿伸展, 展现身体线条"),
+        ("侧转", "让肩胯形成轻微错位，避免身体成为一条直线"),
+        ("伸展", "拉长四肢，利用床面或地面形成线条"),
     ],
     ActionCategory.ARMS_RAISED: [
-        ("放下手臂", "自然放下, 展现放松过渡"),
-        ("交叉手臂", "手臂交叉于胸前, 展现自信"),
-        ("侧展", "手臂向两侧展开, 展现平衡"),
+        ("放松手腕", "不要把手臂锁死，让手腕和手指保持自然弧线"),
+        ("错开双臂", "让两只手处于不同高度，增加层次"),
     ],
     ActionCategory.BALANCING: [
-        ("单脚站立", "保持平衡, 展现优雅"),
-        ("旋转", "单脚旋转, 动态感强"),
-        ("跳跃", "从平衡态跳起"),
+        ("延长轴线", "头顶向上、支撑腿向下，形成清晰的垂直线"),
+        ("打开手臂", "用手臂扩大画面轮廓，提升平衡感"),
     ],
     ActionCategory.BOWING: [
-        ("直起身", "从弯腰到直立的过渡"),
-        ("转身", "弯腰后转身, 增加故事性"),
+        ("抬头", "保持弯腰结构，但让脸部重新进入画面交流方向"),
+        ("直起身", "逐步回到中立姿态，等待自然过渡"),
     ],
     ActionCategory.FIGHTING_STANCE: [
-        ("出拳", "格斗姿态的下一步动作"),
-        ("踢腿", "腿部攻击动作"),
-        ("闪避", "向侧面闪避, 展现敏捷"),
-        ("后撤步", "防御性后退, 保持紧张感"),
+        ("前后错步", "把前后脚拉开，形成更清楚的动作方向"),
+        ("降低重心", "膝盖微弯，强化力量和稳定感"),
     ],
     ActionCategory.DANCING: [
-        ("旋转", "舞蹈中的旋转动作"),
-        ("跳跃", "舞蹈跳跃"),
-        ("伸展", "伸展手臂/腿部, 展现线条"),
+        ("停在延伸点", "不要连续做动作，在身体线条最长的瞬间停住"),
+        ("旋转", "利用转动改变身体方向和衣物线条"),
     ],
 }
 
-# 对没有特定转换的类别, 使用默认建议
 _DEFAULT_TRANSITIONS = [
-    ("站立", "回到基础站姿"),
-    ("行走", "加入移动元素"),
-    ("转身", "身体旋转带来新角度"),
+    ("调整重心", "先让身体从对称状态中释放出来"),
+    ("打开轮廓", "让一只手或一条腿离开身体中心线"),
+    ("改变头部方向", "用头部和视线制造第二层视觉关系"),
 ]
+
+
+def _feature(action: ActionResult, key: str, default: float = 0.0) -> float:
+    return float(action.features.get(key, default))
+
+
+def _generate_pose_guidance(
+    action: ActionResult,
+    orientation: OrientationResult,
+    composition: CompositionResult,
+) -> list[Suggestion]:
+    """Generate pose coaching from visible geometry rather than action labels."""
+    f = action.features
+    angles = action.joint_angles
+    guidance: list[Suggestion] = []
+
+    knee_avg = _feature(action, "knee_angle_avg", 150.0)
+    knee_diff = _feature(action, "knee_angle_diff", 0.0)
+    stance = _feature(action, "stance_width", 0.1)
+    shoulder_y = _feature(action, "shoulder_y", 0.5)
+    hip_y = _feature(action, "hip_y", 0.5)
+    hands_up = bool(_feature(action, "hands_above_shoulders", 0.0))
+    wrist_y_avg = _feature(action, "wrist_y_avg", 0.5)
+    ankle_diff = _feature(action, "ankle_y_diff", 0.0)
+
+    # 1) Symmetry / weight distribution: a high-value universal coaching cue.
+    if knee_diff < 10 and ankle_diff < 0.08 and stance < 0.12:
+        guidance.append(Suggestion(
+            SuggestionPriority.HIGH,
+            "pose",
+            "先释放对称站姿",
+            "把重心轻轻移到一条腿，另一条腿只负责支撑平衡；身体不要刻意挺直。这样通常比直接要求“做一个动作”更自然。",
+        ))
+    elif knee_diff > 20 or ankle_diff > 0.10:
+        guidance.append(Suggestion(
+            SuggestionPriority.MEDIUM,
+            "pose",
+            "保留当前重心差",
+            "左右腿已经形成明显的高低或弯曲差，先不要纠正成对称；微调骨盆方向，让这条不对称线保持干净。",
+        ))
+
+    # 2) Silhouette / arm separation.
+    elbow_l = angles.get("left_elbow", 180.0)
+    elbow_r = angles.get("right_elbow", 180.0)
+    if not hands_up and elbow_l > 155 and elbow_r > 155:
+        guidance.append(Suggestion(
+            SuggestionPriority.HIGH,
+            "pose",
+            "把手臂从躯干上分开",
+            "任选一只手离开身体几厘米，手肘留一点空间；另一只手可以放在腰侧、腿侧或轻触服装。重点不是“抬手”，而是让轮廓不要粘在一起。",
+        ))
+    elif hands_up and wrist_y_avg < shoulder_y - 0.12:
+        guidance.append(Suggestion(
+            SuggestionPriority.MEDIUM,
+            "pose",
+            "上举后先放松手腕",
+            "手臂已经打开，不需要继续抬高；让手腕、手指自然弯曲，避免手臂形成僵硬直线。",
+        ))
+
+    # 3) Legs: especially useful for sitting / crouching / portrait posing.
+    if knee_avg < 125:
+        guidance.append(Suggestion(
+            SuggestionPriority.HIGH,
+            "pose",
+            "让双腿产生前后层次",
+            "不要让两个膝盖、脚踝落在同一条线上。把其中一条腿略微前伸或后收，画面会更容易读出腿部轮廓。",
+        ))
+    elif stance < 0.08 and knee_avg > 145:
+        guidance.append(Suggestion(
+            SuggestionPriority.MEDIUM,
+            "pose",
+            "双脚不要完全并齐",
+            "让一只脚稍微前后错开，或把脚尖转出一点角度，保持小幅度即可。",
+        ))
+
+    # 4) Torso line / head-to-body relation.
+    if abs(shoulder_y - hip_y) < 0.08:
+        guidance.append(Suggestion(
+            SuggestionPriority.MEDIUM,
+            "pose",
+            "给躯干加一点弧线",
+            "肩和髋现在比较接近同一高度，试着让一侧肩稍高或身体略向一侧弯，不要主动做大幅度扭转。",
+        ))
+
+    if orientation.facing in (
+        FacingDirection.FRONT,
+        FacingDirection.FRONT_LEFT,
+        FacingDirection.FRONT_RIGHT,
+    ):
+        guidance.append(Suggestion(
+            SuggestionPriority.MEDIUM,
+            "pose",
+            "头部不要完全锁在正中",
+            "身体可以保持当前方向，只把头或下巴轻轻偏向一侧；这样既保留正面交流，又能减少证件照式的平面感。",
+        ))
+    elif orientation.facing in (
+        FacingDirection.BACK,
+        FacingDirection.BACK_LEFT,
+        FacingDirection.BACK_RIGHT,
+    ):
+        guidance.append(Suggestion(
+            SuggestionPriority.MEDIUM,
+            "pose",
+            "保留背面，同时增加头部信息",
+            "不必整个人转回来；只让头部或肩线回一点，通常就能同时得到背部轮廓和人物交流感。",
+        ))
+
+    # 5) Composition-aware direction: pose should serve the frame.
+    px, py = composition.subject_position
+    if px < 0.38:
+        guidance.append(Suggestion(
+            SuggestionPriority.MEDIUM,
+            "pose",
+            "把视觉动作朝画面中央打开",
+            "主体偏左，手臂、膝盖或视线可以略向右打开，避免身体把可用的负空间堵住。",
+        ))
+    elif px > 0.62:
+        guidance.append(Suggestion(
+            SuggestionPriority.MEDIUM,
+            "pose",
+            "把视觉动作朝画面中央打开",
+            "主体偏右，尽量让手臂、膝盖或视线向左侧打开，为人物留出呼吸空间。",
+        ))
+
+    # 6) The lean feature should produce a coaching cue, not a new category.
+    if orientation.tilt == TiltDirection.LEANING_FORWARD:
+        guidance.append(Suggestion(
+            SuggestionPriority.MEDIUM,
+            "pose",
+            "前倾可以保留，但从髋部发力",
+            "保持前倾的视觉感觉，同时避免只折腰；让髋部先移动，胸口和头部随后跟上，会更像一个主动姿态。",
+        ))
+
+    # Keep the guidance focused: quality of advice matters more than quantity.
+    priority_order = {
+        SuggestionPriority.HIGH: 0,
+        SuggestionPriority.MEDIUM: 1,
+        SuggestionPriority.LOW: 2,
+    }
+    guidance.sort(key=lambda s: priority_order[s.priority])
+    return guidance[:5]
+
+
+def _movement_options(action: ActionResult) -> list[str]:
+    """Return natural-language movement cues, not categorical next actions."""
+    options = list(_DEFAULT_TRANSITIONS)
+    if action.category in ACTION_TRANSITIONS:
+        # Add at most one category-informed option, while keeping pose quality
+        # cues first.  This prevents "action matching" from dominating.
+        label, _ = ACTION_TRANSITIONS[action.category][0]
+        if label not in options:
+            options.append((label, "作为可选变化，不需要为了匹配类别而强行执行"))
+    return [name for name, _ in options[:3]]
 
 
 def generate_suggestions(
@@ -125,193 +268,122 @@ def generate_suggestions(
     camera: CameraResult,
     composition: CompositionResult,
 ) -> SuggestionResult:
-    """
-    生成综合建议
-
-    参数:
-        action: 动作分析结果
-        orientation: 朝向分析结果
-        camera: 镜头分析结果
-        composition: 构图分析结果
-
-    返回:
-        SuggestionResult
-    """
     suggestions: list[Suggestion] = []
 
-    # ══════════════════════════════════════════════════════════════
-    # 1. 动作建议
-    # ══════════════════════════════════════════════════════════════
-    transitions = ACTION_TRANSITIONS.get(action.category, _DEFAULT_TRANSITIONS)
-    next_actions = [name for name, _ in transitions[:3]]
+    # Pose guidance is the primary action-guidance layer.
+    pose_guidance = _generate_pose_guidance(action, orientation, composition)
+    suggestions.extend(pose_guidance)
 
-    # 当前动作的评价
-    if action.confidence < 0.4:
+    # Low-confidence classification is now framed as uncertainty, not as a
+    # reason to force a different action.
+    if action.confidence < 0.40:
         suggestions.append(Suggestion(
-            priority=SuggestionPriority.MEDIUM,
-            category="pose",
-            title="姿态不够明确",
-            description=f"当前识别为「{action.category.value}」但置信度较低({action.confidence:.0%}), "
-                        f"建议调整姿态使动作更清晰",
-            icon="🎭",
+            SuggestionPriority.LOW,
+            "pose",
+            "动作类别仅供参考",
+            f"当前更适合根据身体线条和构图调整，而不是追求“{action.category.value}”这个标签本身。",
         ))
 
-    # 基于当前动作的具体建议
-    for action_name, reason in transitions[:2]:
-        suggestions.append(Suggestion(
-            priority=SuggestionPriority.MEDIUM,
-            category="action",
-            title=f"下一动作: {action_name}",
-            description=reason,
-            icon="🏃",
-        ))
-
-    # ══════════════════════════════════════════════════════════════
-    # 2. 朝向建议
-    # ══════════════════════════════════════════════════════════════
-    if orientation.facing in (FacingDirection.BACK, FacingDirection.BACK_LEFT, FacingDirection.BACK_RIGHT):
-        suggestions.append(Suggestion(
-            priority=SuggestionPriority.LOW,
-            category="pose",
-            title="背面拍摄",
-            description="当前为背面视角, 适合营造意境感。如需更多表情信息, 考虑让人物转头或侧身",
-            icon="🔄",
-        ))
-
-    if orientation.tilt == TiltDirection.LEANING_FORWARD:
-        suggestions.append(Suggestion(
-            priority=SuggestionPriority.LOW,
-            category="pose",
-            title="前倾姿态",
-            description="身体前倾增加动感和亲和力, 但注意不要过度以免画面失衡",
-            icon="↗️",
-        ))
-
-    # ══════════════════════════════════════════════════════════════
-    # 3. 镜头建议
-    # ══════════════════════════════════════════════════════════════
+    # Camera advice remains separate from subject direction.
     if camera.shot_type in (ShotType.LONG, ShotType.EXTREME_LONG):
         suggestions.append(Suggestion(
-            priority=SuggestionPriority.HIGH,
-            category="camera",
-            title="拉近镜头",
-            description="人物在画面中占比过小, 建议靠近或使用长焦, 让人物成为视觉焦点",
-            icon="📷",
+            SuggestionPriority.HIGH,
+            "camera",
+            "先把人物放大到可读范围",
+            "人物占画面比例偏小。优先考虑靠近或使用更长焦段，再决定动作；小人物的复杂姿态很难被读出来。",
         ))
-    elif camera.shot_type in (ShotType.EXTREME_CLOSEUP,):
+    elif camera.shot_type == ShotType.EXTREME_CLOSEUP:
         suggestions.append(Suggestion(
-            priority=SuggestionPriority.MEDIUM,
-            category="camera",
-            title="适当拉远",
-            description="大特写虽然冲击力强, 但适当拉远可以展现更多肢体语言",
-            icon="📷",
+            SuggestionPriority.MEDIUM,
+            "camera",
+            "给肢体留一点空间",
+            "当前构图已经很紧。若希望动作本身成为重点，可以稍微拉远，让肩、手或上半身进入画面。",
         ))
 
     if camera.camera_angle == CameraAngle.HIGH_ANGLE:
         suggestions.append(Suggestion(
-            priority=SuggestionPriority.LOW,
-            category="camera",
-            title="俯拍视角",
-            description="俯拍使人物显得较小, 适合表现脆弱感或环境关系。如需力量感, 尝试平视或仰拍",
-            icon="📐",
+            SuggestionPriority.LOW,
+            "camera",
+            "俯拍下优先扩大身体轮廓",
+            "俯拍会压缩身体的纵向高度；可以让四肢稍微展开，再利用地面或环境线条辅助构图。",
         ))
     elif camera.camera_angle == CameraAngle.LOW_ANGLE:
         suggestions.append(Suggestion(
-            priority=SuggestionPriority.LOW,
-            category="camera",
-            title="仰拍视角",
-            description="仰拍增强人物气势, 适合表现力量感和权威感",
-            icon="📐",
+            SuggestionPriority.LOW,
+            "camera",
+            "仰拍下保持四肢清楚",
+            "仰拍容易让近端肢体占比过大，避免手脚直接贴边；先保证主要轮廓完整。",
         ))
 
     if abs(camera.dutch_angle_deg) > 5:
         suggestions.append(Suggestion(
-            priority=SuggestionPriority.LOW,
-            category="camera",
-            title="画面倾斜",
-            description=f"画面倾斜{camera.dutch_angle_deg:.1f}°, 如非刻意营造不安感, 建议保持水平",
-            icon="📐",
+            SuggestionPriority.LOW,
+            "camera",
+            "检查画面倾斜是否有意",
+            f"当前估计倾斜约 {camera.dutch_angle_deg:.1f}°。如果不是刻意制造失衡感，优先校平相机，再调整人物姿态。",
         ))
 
-    # ══════════════════════════════════════════════════════════════
-    # 4. 构图建议
-    # ══════════════════════════════════════════════════════════════
+    # Composition suggestions from the existing analyzer.
     for comp_suggestion in composition.suggestions:
         suggestions.append(Suggestion(
-            priority=SuggestionPriority.MEDIUM,
-            category="composition",
-            title="构图优化",
-            description=comp_suggestion,
-            icon="🖼️",
+            SuggestionPriority.MEDIUM,
+            "composition",
+            "构图优化",
+            comp_suggestion,
         ))
 
-    # 头部空间
     if composition.headroom < 0.08:
         suggestions.append(Suggestion(
-            priority=SuggestionPriority.HIGH,
-            category="composition",
-            title="头顶空间不足",
-            description="人物头顶紧贴画面上缘, 给人压迫感。下移镜头或后退, 留出呼吸空间",
-            icon="⬆️",
+            SuggestionPriority.HIGH,
+            "composition",
+            "头部需要呼吸空间",
+            "人物顶部过于贴边。先抬高取景或稍微后退，再要求人物做更夸张的动作。",
         ))
-    elif composition.headroom > 0.4:
+    elif composition.headroom > 0.40:
         suggestions.append(Suggestion(
-            priority=SuggestionPriority.MEDIUM,
-            category="composition",
-            title="头顶空间过多",
-            description="画面上方留白过多, 重心偏低。上移镜头让人物更突出",
-            icon="⬇️",
+            SuggestionPriority.MEDIUM,
+            "composition",
+            "减少顶部留白",
+            "上方空间较大。优先重新构图，而不是让人物主动“抬高”姿态去填空。",
         ))
 
-    # 三分法
     if composition.thirds_alignment < 0.4:
         px, py = composition.subject_position
         suggestions.append(Suggestion(
-            priority=SuggestionPriority.MEDIUM,
-            category="composition",
-            title="偏离三分法交叉点",
-            description=f"主体位于({px:.0%}, {py:.0%}), 建议调整到三分法交叉点附近, 增强视觉张力",
-            icon="🎯",
+            SuggestionPriority.MEDIUM,
+            "composition",
+            "让动作服务于画面方向",
+            f"主体位于约 ({px:.0%}, {py:.0%})。不要为了三分法硬搬人物，而是让手、腿或视线朝空余方向展开。",
         ))
 
-    # ══════════════════════════════════════════════════════════════
-    # 5. 综合创意方向
-    # ══════════════════════════════════════════════════════════════
-    creative_parts = []
+    # Creative direction is goal-oriented rather than action-category-driven.
+    goals: list[str] = []
+    if any(s.title == "先释放对称站姿" for s in pose_guidance):
+        goals.append("优先做非对称重心")
+    if any(s.title == "把手臂从躯干上分开" for s in pose_guidance):
+        goals.append("打开身体轮廓")
+    if composition.subject_position[0] < 0.38 or composition.subject_position[0] > 0.62:
+        goals.append("让动作朝负空间展开")
+    if camera.shot_type in (ShotType.LONG, ShotType.EXTREME_LONG):
+        goals.append("先保证人物可读性")
+    if orientation.facing in (FacingDirection.BACK, FacingDirection.BACK_LEFT, FacingDirection.BACK_RIGHT):
+        goals.append("保留背面轮廓并增加头部信息")
 
-    # 基于动作类型的创意方向
-    if action.category in (ActionCategory.STANDING, ActionCategory.SITTING):
-        creative_parts.append("当前姿态较为静态, 可以尝试增加肢体动感")
-    elif action.category in (ActionCategory.WALKING, ActionCategory.RUNNING):
-        creative_parts.append("动态抓拍, 可以用连拍捕捉最佳瞬间")
-    elif action.category == ActionCategory.JUMPING:
-        creative_parts.append("跳跃瞬间充满活力, 注意快门速度确保清晰")
+    if not goals:
+        goals.append("以自然线条为优先，不必追求明确的动作标签")
+    creative_direction = "；".join(goals) + "。"
 
-    # 基于构图的创意方向
-    if composition.thirds_alignment > 0.7:
-        creative_parts.append("构图符合三分法, 可以尝试打破规则寻找新视角")
-    elif composition.primary_type == CompositionType.CENTER:
-        creative_parts.append("居中构图给人稳定感, 可以尝试偏移构图增加动感")
-
-    # 基于镜头的创意方向
-    if camera.shot_type == ShotType.MEDIUM:
-        creative_parts.append("中景适合展现肢体语言, 可以尝试不同景别丰富画面")
-
-    if not creative_parts:
-        creative_parts.append("综合表现良好, 尝试更多创意角度和动作变化")
-
-    creative_direction = " | ".join(creative_parts)
-
-    # 按优先级排序
+    # Stable ordering: high-quality pose guidance first, then camera and composition.
     priority_order = {
         SuggestionPriority.HIGH: 0,
         SuggestionPriority.MEDIUM: 1,
         SuggestionPriority.LOW: 2,
     }
-    suggestions.sort(key=lambda s: priority_order[s.priority])
+    category_order = {"pose": 0, "camera": 1, "composition": 2, "action": 3}
+    suggestions.sort(key=lambda s: (priority_order[s.priority], category_order.get(s.category, 9)))
 
     return SuggestionResult(
-        suggestions=suggestions,
-        next_actions=next_actions,
+        suggestions=suggestions[:12],
+        next_actions=_movement_options(action),
         creative_direction=creative_direction,
     )
