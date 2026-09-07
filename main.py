@@ -112,6 +112,7 @@ def run_cli(image_path, verbose=False, calibration_profile="Generic"):
     from core.action_classifier import classify_action
     from core.camera_analyzer import analyze_camera
     from core.composition import analyze_composition
+    from core.suggestion import generate_suggestions
     from reverse_engineering.engine import ReverseEngineeringEngine
     from reverse_engineering.intrinsics import read_exif_intrinsics
 
