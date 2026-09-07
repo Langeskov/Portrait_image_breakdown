@@ -1,6 +1,5 @@
 """Weak support-plane evidence for camera pitch coherence."""
 from __future__ import annotations
-
 from dataclasses import dataclass
 from typing import Optional
 import numpy as np
@@ -20,6 +19,7 @@ class SupportPlaneEvidence:
         return {"active": bool(self.active), "confidence": round(float(self.confidence), 3), "contact_world_y": round(float(self.contact_world_y), 4), "contact_fraction": round(float(self.contact_fraction), 3), "visible_ankles": int(self.visible_ankles), "basis": list(self.basis)}
 
 def estimate_support_plane(pose_keypoints: np.ndarray, image_width: int, image_height: int) -> SupportPlaneEvidence:
+    """Infer only a weak floor/contact hypothesis from visible lower limbs."""
     kp = np.asarray(pose_keypoints, dtype=float)
     if kp.ndim != 2 or kp.shape[0] < 17 or kp.shape[1] < 3:
         return SupportPlaneEvidence(False, 0.0, 0.0, 0.0, 0, ("insufficient pose evidence",))
@@ -40,9 +40,10 @@ def estimate_support_plane(pose_keypoints: np.ndarray, image_width: int, image_h
     return SupportPlaneEvidence(True, confidence, 0.0, contact_fraction, len(contacts), tuple(basis))
 
 def expected_support_pitch_deg(candidate_distance_m: float, candidate_height_m: float, support_plane: SupportPlaneEvidence) -> float:
+    """Return the application's pitch convention: positive means looking downward."""
     if not support_plane.usable:
         return float("nan")
-    return float(np.degrees(np.arctan2(support_plane.contact_world_y - float(candidate_height_m), max(float(candidate_distance_m), 1e-6))))
+    return float(np.degrees(np.arctan2(float(candidate_height_m) - support_plane.contact_world_y, max(float(candidate_distance_m), 1e-6))))
 
 def candidate_support_plane_score(candidate, support_plane: Optional[SupportPlaneEvidence]) -> Optional[float]:
     if support_plane is None or not support_plane.usable:
