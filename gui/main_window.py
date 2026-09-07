@@ -258,13 +258,14 @@ class MainWindow(QMainWindow):
         self._progress.setVisible(False)
 
     def _la(self, path: str):
-        img = cv2.imread(path)
+        from core.image_io import load_image, frame_orientation
+        img = load_image(path)
         if img is None: QMessageBox.warning(self, "Error", "Cannot read image"); return
         self._img = img; self._bundle = AnalysisBundle(); self._w2.set_image(img)
         cache_key = _image_hash(img)
         if cache_key in self._result_cache:
-            self._bundle = self._result_cache[cache_key]; self._apply_bundle(self._bundle); self._finish_progress("Loaded from cache | " + os.path.basename(path)); return
-        self._set_progress(0, "Preparing analysis | " + os.path.basename(path))
+            self._bundle = self._result_cache[cache_key]; self._apply_bundle(self._bundle); self._finish_progress(f"Loaded from cache | {frame_orientation(img)} | " + os.path.basename(path)); return
+        self._set_progress(0, f"Preparing analysis | {frame_orientation(img)} | " + os.path.basename(path))
         if self._wk and self._wk.isRunning(): self._wk.terminate(); self._wk.wait()
         analysis_img = _resize_for_analysis(img, max_side=1600)
         if self._re_enabled and self._eng is None:
@@ -283,32 +284,24 @@ class MainWindow(QMainWindow):
 
     def _on_reverse_ready(self, bundle: AnalysisBundle):
         self._bundle = bundle; self._w3.update_results(bundle); self._wr.update_results(bundle)
-        if bundle.reverse_result: self._w2._sp.update_camera_actions(bundle.reverse_result)
-        self._progress.setValue(100)
+        if hasattr(self, '_reference_mode'): self._reference_mode.set_current(bundle.pose, self._img)
+        if hasattr(self, '_field_mode') and bundle.action and bundle.orientation and bundle.camera and bundle.composition:
+            confidence = float(bundle.reverse_result.overall_confidence) if bundle.reverse_result else None
+            self._field_mode.set_analysis(bundle.action, bundle.orientation, bundle.camera, bundle.composition, bundle.pose, confidence)
+        self._finish_progress("Analysis complete")
+        if self._img is not None: self._result_cache[_image_hash(self._img)] = bundle
 
-    def _err(self, m: str):
-        self._progress.setVisible(False); self._st.showMessage("Error: " + m)
+    def _apply_bundle(self, bundle):
+        self._w2.update_results(bundle)
+        if bundle.reverse_result: self._w3.update_results(bundle); self._wr.update_results(bundle)
+        if hasattr(self, '_reference_mode') and bundle.pose and self._img is not None: self._reference_mode.set_current(bundle.pose, self._img)
+        if hasattr(self, '_field_mode') and bundle.action and bundle.orientation and bundle.camera and bundle.composition:
+            confidence = float(bundle.reverse_result.overall_confidence) if bundle.reverse_result else None
+            self._field_mode.set_analysis(bundle.action, bundle.orientation, bundle.camera, bundle.composition, bundle.pose, confidence)
 
     def _update_overlays(self):
         self._w2.set_overlay_options(skeleton=self._chk_skeleton.isChecked(), thirds=self._chk_thirds.isChecked(), center=self._chk_center.isChecked(), bbox=self._chk_bbox.isChecked(), visual_weight=self._chk_vweight.isChecked(), headroom=self._chk_headroom.isChecked())
 
-    def _apply_bundle(self, bundle: AnalysisBundle):
-        self._w2.update_results(bundle)
-        if bundle.reverse_result:
-            self._w3.update_results(bundle); self._wr.update_results(bundle); self._w2._sp.update_camera_actions(bundle.reverse_result)
-
     def _sw(self, i): self._ws.setCurrentIndex(i)
 
-    def dragEnterEvent(self, e):
-        if e.mimeData().hasUrls(): e.acceptProposedAction()
-
-    def dropEvent(self, e):
-        u = e.mimeData().urls()
-        if u:
-            p = u[0].toLocalFile()
-            if p.lower().endswith((".jpg", ".jpeg", ".png", ".bmp", ".webp")): self._la(p)
-
-    def closeEvent(self, e):
-        self._det.close()
-        if self._wk and self._wk.isRunning(): self._wk.terminate(); self._wk.wait()
-        e.accept()
+    def _err(self, msg): self._finish_progress("Analysis error"); QMessageBox.warning(self, "Analysis Error", msg)
