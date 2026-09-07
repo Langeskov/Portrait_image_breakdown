@@ -204,7 +204,6 @@ class SceneView(QWidget):
         target = self.scene.camera_target()
         forward, right, up = self._camera_axes()
         self._draw_camera_body(painter, position)
-
         subject_depth = float(np.dot(target - position, forward))
         depth = max(2.5, subject_depth if subject_depth > 0 else self.scene.camera.distance)
         depth = min(depth * 1.06, 60.0)
@@ -214,32 +213,24 @@ class SceneView(QWidget):
         fov_y = math.radians(self.scene.camera.vertical_fov_deg)
         hw, hh = math.tan(fov_x * 0.5) * depth, math.tan(fov_y * 0.5) * depth
         frame = [far+right*hw+up*hh, far-right*hw+up*hh, far-right*hw-up*hh, far+right*hw-up*hh]
-
         self._line(painter, position, position+forward*near, CAMERA, 3)
         self._line(painter, position+forward*near, far, CAMERA, 2, True)
         self._line(painter, position, target, CAMERA, 2)
         painter.setPen(QPen(FRUSTUM, 2))
         painter.setBrush(QBrush(FRUSTUM_SOFT))
         painter.drawPolygon(QPolygonF([self._project(p) for p in frame]))
-        for p in frame:
-            self._line(painter, position+forward*near, p, FRUSTUM, 2)
-        for i in range(4):
-            self._line(painter, frame[i], frame[(i+1)%4], FRUSTUM, 2)
+        for p in frame: self._line(painter, position+forward*near, p, FRUSTUM, 2)
+        for i in range(4): self._line(painter, frame[i], frame[(i+1)%4], FRUSTUM, 2)
         self._line(painter, frame[0], frame[2], FRUSTUM_SOFT, 1, True)
         self._line(painter, frame[1], frame[3], FRUSTUM_SOFT, 1, True)
         self._line(painter, position+forward*near, far, FRUSTUM, 1)
-
         tp = self._project(target)
-        painter.setPen(QPen(SELECTED, 2))
-        painter.setBrush(QBrush(QColor(255,255,255,210)))
-        painter.drawEllipse(tp, 5, 5)
-        painter.drawLine(tp.x()-11, tp.y(), tp.x()+11, tp.y())
-        painter.drawLine(tp.x(), tp.y()-11, tp.x(), tp.y()+11)
+        painter.setPen(QPen(SELECTED, 2)); painter.setBrush(QBrush(QColor(255,255,255,210)))
+        painter.drawEllipse(tp, 5, 5); painter.drawLine(tp.x()-11,tp.y(),tp.x()+11,tp.y()); painter.drawLine(tp.x(),tp.y()-11,tp.x(),tp.y()+11)
         self._line(painter, position, position + up*1.0, SELECTED if abs(self.scene.camera.roll)>1 else AXIS, 2)
 
     def _draw_labels(self, painter):
-        painter.setPen(TEXT)
-        painter.setFont(QFont("Segoe UI", 9))
+        painter.setPen(TEXT); painter.setFont(QFont("Segoe UI", 9))
         painter.drawText(12,22,"3D scene — drag to orbit, wheel to zoom")
         painter.drawText(12,40,"Camera / frustum / optical axis / subject target")
         c=self.scene.camera
@@ -249,73 +240,45 @@ class SceneView(QWidget):
 class ProjectionPreview(QWidget):
     """Source image plus observed multi-person poses and predicted primary framing."""
     def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setMinimumHeight(300)
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self._pixmap: Optional[QPixmap] = None
-        self._projection: Optional[ProjectionPreviewResult] = None
-        self._observed_bbox = None
-        self._observed_points = []
-        self._metrics = "No projection yet"
+        super().__init__(parent); self.setMinimumHeight(300); self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self._pixmap: Optional[QPixmap] = None; self._projection: Optional[ProjectionPreviewResult] = None
+        self._observed_bbox = None; self._observed_points = []; self._metrics = "No projection yet"
 
     def set_image(self, image: Optional[np.ndarray]):
-        if image is None:
-            self._pixmap = None
+        if image is None: self._pixmap = None
         else:
-            rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-            h, w = rgb.shape[:2]
+            rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB); h, w = rgb.shape[:2]
             self._pixmap = QPixmap.fromImage(QImage(rgb.data, w, h, rgb.strides[0], QImage.Format_RGB888).copy())
         self.update()
 
     def update_projection(self, scene, observed_bbox=None, observed_points=None):
         self._observed_bbox, self._observed_points = observed_bbox, observed_points or []
         if self._pixmap is None:
-            self._projection = None
-            self._metrics = "No source image"
-            self.update()
-            return
-        w, h = self._pixmap.width(), self._pixmap.height()
-        self._projection = project_subject(scene, w, h)
+            self._projection = None; self._metrics = "No source image"; self.update(); return
+        w, h = self._pixmap.width(), self._pixmap.height(); self._projection = project_subject(scene, w, h)
         if self._projection.bbox is None:
-            self._metrics = "3D proxy is outside the camera-facing half-space"
-            self.update()
-            return
-        x0,y0,x1,y1 = self._projection.bbox
-        metrics=[f"3D primary {max(0,x1-x0)/max(w,1):.0%} W × {max(0,y1-y0)/max(h,1):.0%} H"]
+            self._metrics = "3D proxy is outside the camera-facing half-space"; self.update(); return
+        x0,y0,x1,y1 = self._projection.bbox; metrics=[f"3D primary {max(0,x1-x0)/max(w,1):.0%} W × {max(0,y1-y0)/max(h,1):.0%} H"]
         if observed_bbox is not None and len(observed_bbox)>=4:
-            ox0,oy0,ox1,oy1=map(float, observed_bbox[:4])
-            inter=max(0,min(x1,ox1)-max(x0,ox0))*max(0,min(y1,oy1)-max(y0,oy0))
-            ap=max(0,x1-x0)*max(0,y1-y0); ao=max(0,ox1-ox0)*max(0,oy1-oy0)
-            union=ap+ao-inter
-            iou=inter/union if union>1e-9 else 0
-            dc=math.hypot((x0+x1-ox0-ox1)/2,(y0+y1-oy0-oy1)/2)/max(math.hypot(w,h),1)
-            metrics += [f"bbox IoU {iou:.0%}", f"center Δ {dc:.1%}"]
-        if len(self._observed_points)>1:
-            metrics.append(f"{len(self._observed_points)} people detected")
-        self._metrics=" · ".join(metrics)
-        self.update()
+            ox0,oy0,ox1,oy1=map(float, observed_bbox[:4]); inter=max(0,min(x1,ox1)-max(x0,ox0))*max(0,min(y1,oy1)-max(y0,oy0))
+            ap=max(0,x1-x0)*max(0,y1-y0); ao=max(0,ox1-ox0)*max(0,oy1-oy0); union=ap+ao-inter; iou=inter/union if union>1e-9 else 0
+            dc=math.hypot((x0+x1-ox0-ox1)/2,(y0+y1-oy0-oy1)/2)/max(math.hypot(w,h),1); metrics += [f"bbox IoU {iou:.0%}", f"center Δ {dc:.1%}"]
+        if len(self._observed_points)>1: metrics.append(f"{len(self._observed_points)} people detected")
+        self._metrics=" · ".join(metrics); self.update()
 
-    def _map(self,x,y,ox,oy,sx,sy):
-        return QPointF(ox+float(x)*sx,oy+float(y)*sy)
+    def _map(self,x,y,ox,oy,sx,sy): return QPointF(ox+float(x)*sx,oy+float(y)*sy)
 
     def paintEvent(self,event):
-        painter=QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-        painter.fillRect(self.rect(),QColor("#111827"))
+        painter=QPainter(self); painter.setRenderHint(QPainter.Antialiasing); painter.fillRect(self.rect(),QColor("#111827"))
         if self._pixmap is None:
             painter.setPen(QColor("#CBD5E1")); painter.drawText(self.rect(),Qt.AlignCenter,"Projection preview"); painter.end(); return
-        area=QRectF(6,6,self.width()-12,self.height()-38)
-        scaled=self._pixmap.scaled(area.size().toSize(),Qt.KeepAspectRatio,Qt.SmoothTransformation)
-        ox=area.x()+(area.width()-scaled.width())*0.5; oy=area.y()+(area.height()-scaled.height())*0.5
-        painter.drawPixmap(int(ox),int(oy),scaled)
+        area=QRectF(6,6,self.width()-12,self.height()-38); scaled=self._pixmap.scaled(area.size().toSize(),Qt.KeepAspectRatio,Qt.SmoothTransformation)
+        ox=area.x()+(area.width()-scaled.width())*0.5; oy=area.y()+(area.height()-scaled.height())*0.5; painter.drawPixmap(int(ox),int(oy),scaled)
         sx,sy=scaled.width()/max(self._pixmap.width(),1),scaled.height()/max(self._pixmap.height(),1)
-        def rect_of(r):
-            x0,y0,x1,y1=map(float,r[:4]); return QRectF(ox+x0*sx,oy+y0*sy,(x1-x0)*sx,(y1-y0)*sy)
+        def rect_of(r): x0,y0,x1,y1=map(float,r[:4]); return QRectF(ox+x0*sx,oy+y0*sy,(x1-x0)*sx,(y1-y0)*sy)
         def pt(x,y): return self._map(x,y,ox,oy,sx,sy)
         for idx, points in enumerate(self._observed_points):
-            points=np.asarray(points,dtype=float)
-            links=[(5,6),(5,7),(7,9),(6,8),(8,10),(5,11),(6,12),(11,12),(11,13),(13,15),(12,14),(14,16),(0,1),(0,2),(1,3),(2,4)]
-            col=OBSERVED if idx==0 else SECONDARY
+            points=np.asarray(points,dtype=float); links=[(5,6),(5,7),(7,9),(6,8),(8,10),(5,11),(6,12),(11,12),(11,13),(13,15),(12,14),(14,16),(0,1),(0,2),(1,3),(2,4)]; col=OBSERVED if idx==0 else SECONDARY
             painter.setPen(QPen(col,1.6))
             for a,b in links:
                 if a<len(points) and b<len(points) and np.isfinite(points[[a,b]]).all(): painter.drawLine(pt(points[a,0],points[a,1]),pt(points[b,0],points[b,1]))
@@ -333,13 +296,9 @@ class Reverse3DWorkspace(QWidget):
     camera_edited=Signal()
 
     def __init__(self,parent=None):
-        super().__init__(parent)
-        self.scene=SceneModel(); self._result:Optional[ReverseEngineeringResult]=None
-        self._source_image=None; self._observed_bbox=None; self._observed_points=[]
-        root=QVBoxLayout(self); root.setContentsMargins(0,0,0,0)
-        splitter=QSplitter(Qt.Horizontal)
-        left=QWidget(); llo=QVBoxLayout(left); llo.setContentsMargins(0,0,0,0)
-        self._view=SceneView(self.scene); llo.addWidget(self._view,1)
+        super().__init__(parent); self.scene=SceneModel(); self._result:Optional[ReverseEngineeringResult]=None; self._source_image=None; self._observed_bbox=None; self._observed_points=[]
+        root=QVBoxLayout(self); root.setContentsMargins(0,0,0,0); splitter=QSplitter(Qt.Horizontal)
+        left=QWidget(); llo=QVBoxLayout(left); llo.setContentsMargins(0,0,0,0); self._view=SceneView(self.scene); llo.addWidget(self._view,1)
         reset=QPushButton("Reset 3D view"); reset.clicked.connect(self._view.reset_view); reset.setMaximumWidth(130); llo.addWidget(reset,0,Qt.AlignRight)
         splitter.addWidget(left); splitter.addWidget(self._build_panel()); splitter.setSizes([940,440]); splitter.setStretchFactor(0,1); splitter.setStretchFactor(1,0); root.addWidget(splitter)
 
@@ -352,6 +311,9 @@ class Reverse3DWorkspace(QWidget):
         for b in (self._distance,self._height,self._yaw,self._pitch,self._roll,self._focal): b.valueChanged.connect(self._camera_spin_changed)
         for label,b in (("Distance",self._distance),("Height",self._height),("Yaw",self._yaw),("Pitch",self._pitch),("Roll",self._roll),("Focal",self._focal)): form.addRow(label,b)
         lo.addWidget(group)
+        hint=QLabel("提示：可以使用参数输入框的鼠标滚轮微调数值，快速复现画面。")
+        hint.setWordWrap(True); hint.setStyleSheet("color:#64748B; font-size:9pt;"); lo.addWidget(hint)
+        for box in (self._distance,self._height,self._yaw,self._pitch,self._roll,self._focal): box.setToolTip("可使用鼠标滚轮微调参数，实时观察 2D 画面复现效果。")
         pg=QGroupBox("2D projection preview"); plo=QVBoxLayout(pg); self._preview=ProjectionPreview(); plo.addWidget(self._preview)
         self._preview_metrics=QLabel("No projection yet"); self._preview_metrics.setStyleSheet("color:#475569; font-size:9pt;"); self._preview_metrics.setWordWrap(True); plo.addWidget(self._preview_metrics)
         note=QLabel("Orange = primary observed pose · purple = additional people · blue = current 3D projection"); note.setStyleSheet("color:#64748B; font-size:9pt;"); plo.addWidget(note); lo.addWidget(pg)
@@ -368,16 +330,10 @@ class Reverse3DWorkspace(QWidget):
 
     def _resync_observed_geometry(self):
         pose=getattr(self._result,"subject_keypoints",None) if self._result else None
-        if isinstance(pose, list):
-            # Reverse result stores the primary pose landmarks, so prefer the
-            # live primary/multi-person pose supplied through _observed_points.
-            return
+        if isinstance(pose, list): return
 
     def set_result(self,result:Optional[ReverseEngineeringResult],observed_bbox=None,observed_points=None):
-        self._result=result; self._observed_bbox=observed_bbox; self._observed_points=observed_points or []
-        self.scene=SceneModel.from_reverse_result(result); self._view.set_scene(self.scene); self._sync_controls(); self._populate_candidates()
-        self._confidence.setText(f"Overall confidence: {result.overall_confidence:.0%}" if result else "No reverse-engineering result yet")
-        self._refresh_projection()
+        self._result=result; self._observed_bbox=observed_bbox; self._observed_points=observed_points or []; self.scene=SceneModel.from_reverse_result(result); self._view.set_scene(self.scene); self._sync_controls(); self._populate_candidates(); self._confidence.setText(f"Overall confidence: {result.overall_confidence:.0%}" if result else "No reverse-engineering result yet"); self._refresh_projection()
 
     def _sync_controls(self):
         c=self.scene.camera
@@ -395,8 +351,7 @@ class Reverse3DWorkspace(QWidget):
         self.scene.set_candidate(row); self._sync_controls(); self._view.update(); self._refresh_projection(); self.camera_edited.emit()
 
     def _camera_spin_changed(self):
-        self.scene.camera=SceneCamera(distance=float(self._distance.value()),height=float(self._height.value()),yaw=float(self._yaw.value()),pitch=float(self._pitch.value()),roll=float(self._roll.value()),focal_length_mm=float(self._focal.value()))
-        self._view.set_scene(self.scene); self._refresh_projection(); self.camera_edited.emit()
+        self.scene.camera=SceneCamera(distance=float(self._distance.value()),height=float(self._height.value()),yaw=float(self._yaw.value()),pitch=float(self._pitch.value()),roll=float(self._roll.value()),focal_length_mm=float(self._focal.value())); self._view.set_scene(self.scene); self._refresh_projection(); self.camera_edited.emit()
 
     def _refresh_projection(self):
         self._preview.update_projection(self.scene,self._observed_bbox,self._observed_points); self._preview_metrics.setText(self._preview._metrics)
@@ -407,16 +362,11 @@ class Reverse3DWorkspace(QWidget):
             if pose is not None:
                 people=getattr(pose,"persons",None) or [pose]
                 if self._source_image is not None:
-                    tw,th=self._source_image.shape[1],self._source_image.shape[0]
-                    people=[p.rescaled(tw,th) if (p.image_width,p.image_height)!=(tw,th) else p for p in people]
-                self._observed_points=[np.array([[lm.x,lm.y] for lm in p.landmarks[:17]],dtype=float) for p in people]
-                self._observed_bbox=getattr(people[0],"bbox",None)
+                    tw,th=self._source_image.shape[1],self._source_image.shape[0]; people=[p.rescaled(tw,th) if (p.image_width,p.image_height)!=(tw,th) else p for p in people]
+                self._observed_points=[np.array([[lm.x,lm.y] for lm in p.landmarks[:17]],dtype=float) for p in people]; self._observed_bbox=getattr(people[0],"bbox",None)
             self.set_result(bundle.reverse_result,self._observed_bbox,self._observed_points)
         elif getattr(bundle,"pose",None):
             pose=bundle.pose; people=getattr(pose,"persons",None) or [pose]
             if self._source_image is not None:
-                tw,th=self._source_image.shape[1],self._source_image.shape[0]
-                people=[p.rescaled(tw,th) if (p.image_width,p.image_height)!=(tw,th) else p for p in people]
-            self._observed_points=[np.array([[lm.x,lm.y] for lm in p.landmarks[:17]],dtype=float) for p in people]
-            self._observed_bbox=getattr(people[0],"bbox",None)
-            self._refresh_projection()
+                tw,th=self._source_image.shape[1],self._source_image.shape[0]; people=[p.rescaled(tw,th) if (p.image_width,p.image_height)!=(tw,th) else p for p in people]
+            self._observed_points=[np.array([[lm.x,lm.y] for lm in p.landmarks[:17]],dtype=float) for p in people]; self._observed_bbox=getattr(people[0],"bbox",None); self._refresh_projection()
