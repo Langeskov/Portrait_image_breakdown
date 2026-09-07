@@ -38,6 +38,27 @@ def run_gui(image_path=None):
 
     main_window_module.Analysis2DWorkspace.update_results = update_results_with_reverse
 
+    original_results_update = main_window_module.ResultsWorkspace.update_results
+
+    def update_results_with_evidence_state(self, bundle):
+        original_results_update(self, bundle)
+        if not bundle.reverse_result:
+            return
+        summary = bundle.reverse_result.evidence_summary()
+        counts = summary["counts"]
+        evidence_text = (
+            "\n\n" + "=" * 55 + "\n"
+            "EVIDENCE STATE\n"
+            "=" * 55 + "\n"
+            f"Observed: {counts['observed']}  |  Estimated: {counts['estimated']}  |  Unknown: {counts['unknown']}\n"
+            "Observed = directly supported by image/metadata.\n"
+            "Estimated = inferred from available evidence and model confidence.\n"
+            "Unknown = insufficient evidence; do not treat as a measured value."
+        )
+        self._rl.setText(self._rl.text() + evidence_text)
+
+    main_window_module.ResultsWorkspace.update_results = update_results_with_evidence_state
+
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
     apply_light_theme(app)
