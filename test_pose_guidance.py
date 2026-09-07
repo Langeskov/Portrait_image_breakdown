@@ -1,5 +1,4 @@
 """Regression tests for goal-oriented pose guidance."""
-from types import SimpleNamespace
 
 from core.action_classifier import ActionCategory, ActionResult
 from core.camera_analyzer import CameraAngle, CameraResult, ShotType
@@ -32,7 +31,14 @@ def _action(**features):
 
 
 def _orientation(facing=FacingDirection.FRONT, tilt=TiltDirection.UPRIGHT):
-    return OrientationResult(facing=facing, tilt=tilt, facing_angle=0.0, confidence=0.9)
+    return OrientationResult(
+        facing=facing,
+        tilt=tilt,
+        facing_angle=0.0,
+        tilt_angle=0.0,
+        confidence=0.9,
+        detail="fixture",
+    )
 
 
 def _camera():
@@ -40,18 +46,24 @@ def _camera():
         shot_type=ShotType.MEDIUM,
         camera_angle=CameraAngle.EYE_LEVEL,
         subject_ratio=0.4,
+        subject_center_offset=(0.0, 0.0),
         dutch_angle_deg=0.0,
+        detail="fixture",
     )
 
 
 def _composition(x=0.5, y=0.5):
     return CompositionResult(
-        styles=[],
+        primary_type=CompositionType.CENTER,
         subject_position=(x, y),
-        subject_scale=0.4,
+        thirds_alignment=0.8,
+        symmetry_score=0.5,
         headroom=0.15,
-        look_room="balanced",
-        negative_space_ratio=0.5,
+        lead_space="balanced",
+        visual_weight=(x, y),
+        balance_score=0.8,
+        suggestions=[],
+        detail="fixture",
     )
 
 
