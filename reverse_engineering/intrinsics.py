@@ -1,14 +1,16 @@
 """Camera-intrinsics evidence from EXIF and optional calibration metadata.
 
-EXIF is treated as an observed source when the camera actually wrote the
-metadata.  Values derived from 35mm-equivalent focal length are marked as
-estimated because crop factor/sensor format may still be unknown.
+EXIF is observed evidence. Calibration profiles are explicit priors that can
+fill otherwise unknown sensor/principal-point information without pretending
+that the image itself revealed those values.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
+
+from reverse_engineering.calibration import CalibrationProfile
 
 
 @dataclass(frozen=True)
@@ -17,6 +19,9 @@ class IntrinsicsEvidence:
     focal_length_35mm: Optional[float] = None
     sensor_width_mm: Optional[float] = None
     sensor_height_mm: Optional[float] = None
+    principal_point_x: Optional[float] = None
+    principal_point_y: Optional[float] = None
+    pixel_aspect_ratio: Optional[float] = None
     make: Optional[str] = None
     model: Optional[str] = None
     lens_model: Optional[str] = None
@@ -24,6 +29,7 @@ class IntrinsicsEvidence:
     confidence: float = 0.0
     observed_fields: tuple[str, ...] = ()
     notes: tuple[str, ...] = ()
+    calibration_profile: Optional[str] = None
 
     @property
     def has_focal_prior(self) -> bool:
@@ -42,6 +48,9 @@ class IntrinsicsEvidence:
             "focal_length_35mm": self.focal_length_35mm,
             "sensor_width_mm": self.sensor_width_mm,
             "sensor_height_mm": self.sensor_height_mm,
+            "principal_point_x": self.principal_point_x,
+            "principal_point_y": self.principal_point_y,
+            "pixel_aspect_ratio": self.pixel_aspect_ratio,
             "make": self.make,
             "model": self.model,
             "lens_model": self.lens_model,
@@ -49,6 +58,7 @@ class IntrinsicsEvidence:
             "confidence": round(float(self.confidence), 3),
             "observed_fields": list(self.observed_fields),
             "notes": list(self.notes),
+            "calibration_profile": self.calibration_profile,
         }
 
 
@@ -60,8 +70,12 @@ def _number(value) -> Optional[float]:
     return value if value > 0 else None
 
 
-def read_exif_intrinsics(path: str | Path) -> IntrinsicsEvidence:
-    """Read focal/camera identity information from an image's EXIF block."""
+def read_exif_intrinsics(
+    path: str | Path,
+    profile: Optional[CalibrationProfile] = None,
+    image_size: Optional[tuple[int, int]] = None,
+) -> IntrinsicsEvidence:
+    """Read EXIF and optionally merge a user-selected calibration profile."""
     try:
         from PIL import Image, ExifTags
     except ImportError:
@@ -71,6 +85,8 @@ def read_exif_intrinsics(path: str | Path) -> IntrinsicsEvidence:
         with Image.open(path) as image:
             raw = image.getexif()
             tags = {ExifTags.TAGS.get(key, key): value for key, value in raw.items()}
+            if image_size is None:
+                image_size = (image.width, image.height)
     except Exception as exc:
         return IntrinsicsEvidence(source="unavailable", notes=(f"EXIF read failed: {type(exc).__name__}",))
 
@@ -93,8 +109,12 @@ def read_exif_intrinsics(path: str | Path) -> IntrinsicsEvidence:
         fields.append("LensModel")
 
     notes = []
+    sensor_width = None
+    sensor_height = None
+    pp_x = None
+    pp_y = None
+    pixel_aspect = None
     if focal is not None and focal_35 is not None:
-        # This ratio is a crop-factor estimate, not a guaranteed sensor spec.
         crop = focal_35 / focal
         if 0.5 < crop < 8.0:
             sensor_width = 36.0 / crop
@@ -109,14 +129,39 @@ def read_exif_intrinsics(path: str | Path) -> IntrinsicsEvidence:
         confidence = 0.0
         notes.append("no focal-length EXIF field")
 
+    source = "EXIF"
+    profile_name = None
+    if profile is not None:
+        profile_name = profile.name
+        if sensor_width is None:
+            sensor_width = profile.sensor_width_mm
+        if sensor_height is None:
+            sensor_height = profile.sensor_height_mm
+        if image_size is not None:
+            applied = profile.for_image(*image_size)
+            pp_x = applied.principal_point_x
+            pp_y = applied.principal_point_y
+        else:
+            pp_x = profile.principal_point_x
+            pp_y = profile.principal_point_y
+        pixel_aspect = profile.pixel_aspect_ratio
+        source = "EXIF+CALIBRATION" if fields else "CALIBRATION"
+        notes.append(f"calibration profile applied: {profile.name}")
+
     return IntrinsicsEvidence(
         focal_length_mm=focal,
         focal_length_35mm=focal_35,
+        sensor_width_mm=sensor_width,
+        sensor_height_mm=sensor_height,
+        principal_point_x=pp_x,
+        principal_point_y=pp_y,
+        pixel_aspect_ratio=pixel_aspect,
         make=make,
         model=model,
         lens_model=lens,
-        source="EXIF",
+        source=source,
         confidence=confidence,
         observed_fields=tuple(fields),
         notes=tuple(notes),
+        calibration_profile=profile_name,
     )
