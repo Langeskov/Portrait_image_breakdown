@@ -1,14 +1,17 @@
 """Automatic camera reconstruction from 2D pose and scene evidence."""
 from __future__ import annotations
 
+import math
 import numpy as np
 
 from reverse_engineering.geometry import (
     CameraIntrinsics,
+    CameraModel,
     PoseCandidate,
     PoseSolver,
     REF_PERSON_HEIGHT,
     _camera_pose_from_params,
+    pose_driven_person_points,
 )
 from reverse_engineering.intrinsics import IntrinsicsEvidence
 from reverse_engineering.rotation_solver import fuse_pose_and_scene, estimate_rotation_candidates
@@ -22,10 +25,7 @@ def _subject_position_loss(observed: tuple[float, float]) -> float:
 
 def _dedupe_candidates(candidates, max_candidates):
     out = []
-    for c in sorted(
-        candidates,
-        key=lambda x: (-float(x.score), float(x.losses.get("mean_reprojection_px", 1e9))),
-    ):
+    for c in sorted(candidates, key=lambda x: (-float(x.score), float(x.losses.get("mean_reprojection_px", 1e9)))):
         if any(
             abs(c.focal_equiv_35mm - u.focal_equiv_35mm) < 5.0
             and abs(c.distance - u.distance) < 0.25
@@ -55,39 +55,76 @@ def _fallback_candidate(image_w, image_h, pose_keypoints, focal_mm=50.0):
     height = float(np.clip(REF_PERSON_HEIGHT * (0.8 - 0.45 * center_y), 0.5, 1.8))
     position, extrinsics = _camera_pose_from_params(distance, height, 0.0, 0.0, 0.0)
     return PoseCandidate(
-        intrinsics=intr,
-        extrinsics=extrinsics,
-        distance=float(distance),
-        height=float(height),
-        focal_equiv_35mm=float(focal_mm),
-        score=0.18,
-        losses={
-            "mean_reprojection_px": float(body_h),
-            "median_reprojection_px": float(body_h),
-            "bbox_iou": 0.0,
-            "fallback": 1.0,
-            "fallback_reason": "numerical camera fit returned no solution",
-        },
+        intrinsics=intr, extrinsics=extrinsics, distance=float(distance), height=float(height),
+        focal_equiv_35mm=float(focal_mm), score=0.18,
+        losses={"mean_reprojection_px": float(body_h), "median_reprojection_px": float(body_h), "bbox_iou": 0.0, "fallback": 1.0, "fallback_reason": "numerical camera fit returned no solution"},
     )
 
 
+def _camera_candidate_visibility(candidate, pose_keypoints, image_w, image_h, subject_bbox=None):
+    """Score how safely the reconstructed proxy remains inside the image."""
+    kp = np.asarray(pose_keypoints, dtype=float)
+    proxy = pose_driven_person_points(kp, image_w, image_h)
+    projected = CameraModel(candidate.intrinsics, candidate.extrinsics).project_points(proxy)
+    valid = np.isfinite(projected).all(axis=1) & (kp[:, 2] > 0.35)
+    if int(valid.sum()) < 5:
+        return 0.0, 0.0
+    p = projected[valid]
+    inside = ((p[:, 0] >= 0.0) & (p[:, 0] <= image_w) & (p[:, 1] >= 0.0) & (p[:, 1] <= image_h))
+    point_inside = float(np.mean(inside))
+    if subject_bbox is None:
+        return point_inside, point_inside
+    x0, y0, x1, y1 = subject_bbox
+    pb = np.array([p[:, 0].min(), p[:, 1].min(), p[:, 0].max(), p[:, 1].max()])
+    iw = max(0.0, min(pb[2], float(x1)) - max(pb[0], float(x0)))
+    ih = max(0.0, min(pb[3], float(y1)) - max(pb[1], float(y0)))
+    inter = iw * ih
+    pred_area = max(0.0, pb[2] - pb[0]) * max(0.0, pb[3] - pb[1])
+    observed_area = max(0.0, float(x1 - x0)) * max(0.0, float(y1 - y0))
+    union = pred_area + observed_area - inter
+    bbox_iou = inter / union if union > 1e-9 else 0.0
+    return point_inside, bbox_iou
+
+
+def _scene_has_level_reference(scene_evidence: SceneGeometryEvidence | None) -> bool:
+    """Return true when vertical scene lines are effectively parallel in the image."""
+    if scene_evidence is None or scene_evidence.vertical_cluster is None:
+        return False
+    clusters = scene_evidence.clusters
+    if scene_evidence.vertical_cluster >= len(clusters):
+        return False
+    vertical_lines = [scene_evidence.lines[i] for i in clusters[scene_evidence.vertical_cluster]]
+    if len(vertical_lines) < 3:
+        return False
+    deviations = [abs(((line.angle_deg - 90.0 + 90.0) % 180.0) - 90.0) for line in vertical_lines]
+    return float(np.median(deviations)) < 2.5 and float(np.percentile(deviations, 90)) < 5.0
+
+
+def _apply_level_reference(candidate, scene_evidence: SceneGeometryEvidence | None):
+    """Suppress spurious large pitch when the detected verticals are near-parallel."""
+    if not _scene_has_level_reference(scene_evidence):
+        return candidate
+    pitch = float(candidate.extrinsics.pitch)
+    if abs(pitch) <= 8.0:
+        return candidate
+    clamped = math.copysign(8.0, pitch)
+    position, extrinsics = _camera_pose_from_params(
+        candidate.distance, candidate.height,
+        candidate.extrinsics.yaw, clamped, candidate.extrinsics.roll,
+    )
+    candidate.extrinsics = extrinsics
+    candidate.losses["pitch_level_reference"] = True
+    candidate.losses["original_pitch_deg"] = round(pitch, 3)
+    return candidate
+
+
 def optimize_parameters(
-    image_w,
-    image_h,
-    subject_scale,
-    subject_position,
-    perspective_strength,
-    pose_keypoints=None,
-    num_candidates=5,
-    subject_bbox=None,
+    image_w, image_h, subject_scale, subject_position, perspective_strength,
+    pose_keypoints=None, num_candidates=5, subject_bbox=None,
     scene_evidence: SceneGeometryEvidence | None = None,
     intrinsics_evidence: IntrinsicsEvidence | None = None,
 ):
-    """Build ranked camera solutions from pose, scene and optional EXIF evidence.
-
-    A pose-fit failure is not terminal: scene geometry can still recover camera
-    orientation, so the fallback pose is retained as a seed for scene fusion.
-    """
+    """Build ranked camera solutions from pose, scene and optional EXIF evidence."""
     del subject_scale, perspective_strength
     if pose_keypoints is None:
         return []
@@ -99,20 +136,12 @@ def optimize_parameters(
     if intrinsics_evidence is not None and intrinsics_evidence.has_focal_prior:
         focal = intrinsics_evidence.preferred_focal_mm()
         if focal is not None:
-            focal_seeds = sorted({
-                round(float(np.clip(focal + delta, 20.0, 220.0)), 2)
-                for delta in (-8.0, -4.0, 0.0, 4.0, 8.0)
-            } | {float(v) for v in focal_seeds})
+            focal_seeds = sorted({round(float(np.clip(focal + delta, 20.0, 220.0)), 2) for delta in (-8.0, -4.0, 0.0, 4.0, 8.0)} | {float(v) for v in focal_seeds})
 
     pose_candidates = []
     fit_exception = None
     try:
-        pose_candidates = PoseSolver.fit_camera_to_pose(
-            kp, image_w, image_h,
-            subject_bbox=subject_bbox,
-            focal_seeds=tuple(focal_seeds),
-            num_candidates=max(8, num_candidates),
-        )
+        pose_candidates = PoseSolver.fit_camera_to_pose(kp, image_w, image_h, subject_bbox=subject_bbox, focal_seeds=tuple(focal_seeds), num_candidates=max(8, num_candidates))
     except Exception as exc:
         fit_exception = f"{type(exc).__name__}: {exc}"
 
@@ -126,7 +155,9 @@ def optimize_parameters(
         pose_candidates = [fallback]
 
     position_penalty = min(_subject_position_loss(subject_position), 0.05)
+    stable_candidates = []
     for c in pose_candidates:
+        c = _apply_level_reference(c, scene_evidence)
         c.losses["subject_position_prior"] = round(position_penalty, 5)
         if intrinsics_evidence is not None and intrinsics_evidence.preferred_focal_mm() is not None:
             hint = intrinsics_evidence.preferred_focal_mm()
@@ -134,24 +165,34 @@ def optimize_parameters(
             exif_score = float(np.exp(-focal_delta / max(8.0, 0.10 * float(hint))))
             c.losses["exif_focal_mm"] = round(float(hint), 3)
             c.losses["exif_focal_score"] = round(exif_score, 4)
-            c.score = float(
-                np.clip(c.score * (0.82 + 0.18 * exif_score) - position_penalty, 0.05, 0.99)
-            )
+            c.score = float(np.clip(c.score * (0.82 + 0.18 * exif_score) - position_penalty, 0.05, 0.99))
         else:
             c.score = float(np.clip(c.score - position_penalty, 0.05, 0.99))
+        point_inside, bbox_iou = _camera_candidate_visibility(c, kp, image_w, image_h, subject_bbox)
+        c.losses["in_frame_fraction"] = round(point_inside, 4)
+        c.losses["visibility_bbox_iou"] = round(bbox_iou, 4)
+        if point_inside < 0.55 and not c.losses.get("fallback"):
+            continue
+        c.score = float(np.clip(c.score + 0.10 * (point_inside - 0.5) + 0.06 * (bbox_iou - 0.5), 0.01, 0.99))
+        stable_candidates.append(c)
+
+    if stable_candidates:
+        pose_candidates = stable_candidates
 
     if scene_evidence is not None:
-        rotation_candidates = estimate_rotation_candidates(
-            scene_evidence, image_w, image_h, max_candidates=8
-        )
-        fused = fuse_pose_and_scene(
-            pose_candidates,
-            rotation_candidates,
-            image_w, image_h, kp,
-            subject_bbox=subject_bbox,
-            max_candidates=max(8, num_candidates),
-        )
+        rotation_candidates = estimate_rotation_candidates(scene_evidence, image_w, image_h, max_candidates=8)
+        fused = fuse_pose_and_scene(pose_candidates, rotation_candidates, image_w, image_h, kp, subject_bbox=subject_bbox, max_candidates=max(8, num_candidates))
         if fused:
-            return _dedupe_candidates(fused, num_candidates)
+            visible_fused = []
+            for c in fused:
+                c = _apply_level_reference(c, scene_evidence)
+                point_inside, bbox_iou = _camera_candidate_visibility(c, kp, image_w, image_h, subject_bbox)
+                c.losses["in_frame_fraction"] = round(point_inside, 4)
+                c.losses["visibility_bbox_iou"] = round(bbox_iou, 4)
+                if point_inside >= 0.55:
+                    c.score = float(np.clip(c.score + 0.10 * (point_inside - 0.5) + 0.06 * (bbox_iou - 0.5), 0.01, 0.99))
+                    visible_fused.append(c)
+            if visible_fused:
+                return _dedupe_candidates(visible_fused, num_candidates)
 
     return _dedupe_candidates(pose_candidates, num_candidates)
