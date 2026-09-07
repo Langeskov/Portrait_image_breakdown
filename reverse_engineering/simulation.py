@@ -21,12 +21,13 @@ from reverse_engineering.scene_constraints import (
     DepthConstraintEvidence,
     candidate_depth_score,
     candidate_feasibility_score,
+    candidate_support_plane_score,
     estimate_camera_feasibility,
+    estimate_support_plane,
 )
 
 
 def _intrinsics_from_profile(focal_mm, image_w, image_h, profile: CalibrationProfile | None = None):
-    """Build pixel intrinsics using a selected calibration profile."""
     profile = profile or resolve_profile("Generic")
     sensor_width = float(profile.sensor_width_mm) if profile.sensor_width_mm else 36.0
     sensor_height = float(profile.sensor_height_mm) if profile.sensor_height_mm else None
@@ -50,14 +51,7 @@ def _subject_position_loss(observed: tuple[float, float]) -> float:
 def _dedupe_candidates(candidates, max_candidates):
     out = []
     for c in sorted(candidates, key=lambda x: (-float(x.score), float(x.losses.get("mean_reprojection_px", 1e9)))):
-        if any(
-            abs(c.focal_equiv_35mm - u.focal_equiv_35mm) < 5.0
-            and abs(c.distance - u.distance) < 0.25
-            and abs(c.extrinsics.yaw - u.extrinsics.yaw) < 4.0
-            and abs(c.extrinsics.pitch - u.extrinsics.pitch) < 4.0
-            and abs(c.extrinsics.roll - u.extrinsics.roll) < 2.0
-            for u in out
-        ):
+        if any(abs(c.focal_equiv_35mm - u.focal_equiv_35mm) < 5.0 and abs(c.distance - u.distance) < 0.25 and abs(c.extrinsics.yaw - u.extrinsics.yaw) < 4.0 and abs(c.extrinsics.pitch - u.extrinsics.pitch) < 4.0 and abs(c.extrinsics.roll - u.extrinsics.roll) < 2.0 for u in out):
             continue
         out.append(c)
         if len(out) >= max(1, max_candidates):
@@ -78,11 +72,7 @@ def _fallback_candidate(image_w, image_h, pose_keypoints, focal_mm=50.0, calibra
     center_y = float(np.mean(kp[:17, 1][valid]) / max(image_h, 1))
     height = float(np.clip(REF_PERSON_HEIGHT * (0.8 - 0.45 * center_y), 0.5, 1.8))
     _, extrinsics = _camera_pose_from_params(distance, height, 0.0, 0.0, 0.0)
-    return PoseCandidate(
-        intrinsics=intr, extrinsics=extrinsics, distance=float(distance), height=float(height),
-        focal_equiv_35mm=float(focal_mm), score=0.18,
-        losses={"mean_reprojection_px": float(body_h), "median_reprojection_px": float(body_h), "bbox_iou": 0.0, "fallback": 1.0, "fallback_reason": "numerical camera fit returned no solution"},
-    )
+    return PoseCandidate(intrinsics=intr, extrinsics=extrinsics, distance=float(distance), height=float(height), focal_equiv_35mm=float(focal_mm), score=0.18, losses={"mean_reprojection_px": float(body_h), "median_reprojection_px": float(body_h), "bbox_iou": 0.0, "fallback": 1.0, "fallback_reason": "numerical camera fit returned no solution"})
 
 
 def _camera_candidate_visibility(candidate, pose_keypoints, image_w, image_h, subject_bbox=None):
@@ -123,16 +113,15 @@ def _scene_has_level_reference(scene_evidence: SceneGeometryEvidence | None):
 
 
 def _apply_level_reference(candidate, scene_evidence):
-    if not _scene_has_level_reference(scene_evidence):
-        return candidate
-    pitch = float(candidate.extrinsics.pitch)
-    if abs(pitch) <= 8.0:
-        return candidate
-    clamped = math.copysign(8.0, pitch)
-    _, extrinsics = _camera_pose_from_params(candidate.distance, candidate.height, candidate.extrinsics.yaw, clamped, candidate.extrinsics.roll)
-    candidate.extrinsics = extrinsics
-    candidate.losses["pitch_level_reference"] = True
-    candidate.losses["original_pitch_deg"] = round(pitch, 3)
+    """Record a vertical reference without clamping pitch.
+
+    A set of image-vertical room lines is evidence for roll/scene orientation,
+    but by itself it does not justify forcing pitch to +/-8 degrees. Previous
+    hard clamping caused the 3D optical axis to miss elevated subjects.
+    """
+    if _scene_has_level_reference(scene_evidence):
+        candidate.losses["vertical_level_reference"] = True
+        candidate.losses["vertical_reference_note"] = "vertical scene lines support level reference; pitch left to camera/scene fit"
     return candidate
 
 
@@ -145,31 +134,30 @@ def _apply_depth_constraint(candidate, pose_keypoints, image_w, image_h, depth_e
     candidate.score = float(np.clip(candidate.score + 0.12 * depth_evidence.confidence * (score - 0.5), 0.01, 0.99))
 
 
-def _apply_feasibility_constraint(candidate, pose_keypoints, image_w, image_h, depth_evidence):
-    feasibility = estimate_camera_feasibility(pose_keypoints, image_w, image_h, candidate.focal_equiv_35mm, depth_evidence)
+def _apply_feasibility_constraint(candidate, pose_keypoints, image_w, image_h, depth_evidence, support_plane):
+    feasibility = estimate_camera_feasibility(pose_keypoints, image_w, image_h, candidate.focal_equiv_35mm, depth_evidence, support_plane)
     score = candidate_feasibility_score(candidate, feasibility)
-    if score is None:
-        return feasibility
-    candidate.losses["feasibility_score"] = round(float(score), 4)
-    candidate.losses["feasibility_confidence"] = round(float(feasibility.confidence), 4)
-    candidate.score = float(np.clip(candidate.score + 0.08 * feasibility.confidence * (score - 0.5), 0.01, 0.99))
+    if score is not None:
+        candidate.losses["feasibility_score"] = round(float(score), 4)
+        candidate.losses["feasibility_confidence"] = round(float(feasibility.confidence), 4)
+        candidate.score = float(np.clip(candidate.score + 0.08 * feasibility.confidence * (score - 0.5), 0.01, 0.99))
+    support_score = candidate_support_plane_score(candidate, support_plane)
+    if support_score is not None:
+        candidate.losses["support_plane_score"] = round(float(support_score), 4)
+        candidate.losses["support_plane_confidence"] = round(float(support_plane.confidence), 4)
+        candidate.losses["expected_support_pitch_deg"] = round(float(np.degrees(np.arctan2(support_plane.contact_world_y - candidate.height, max(candidate.distance, 1e-6)))), 3)
+        candidate.score = float(np.clip(candidate.score + 0.10 * support_plane.confidence * (support_score - 0.5), 0.01, 0.99))
     return feasibility
 
 
 def _apply_profile_to_candidate(candidate, image_w, image_h, profile):
-    """Rebuild intrinsics after the legacy solver; preserves existing solver API."""
     candidate.intrinsics = _intrinsics_from_profile(candidate.focal_equiv_35mm, image_w, image_h, profile)
     candidate.losses["calibration_profile"] = profile.name
     return candidate
 
 
-def optimize_parameters(
-    image_w, image_h, subject_scale, subject_position, perspective_strength,
-    pose_keypoints=None, num_candidates=5, subject_bbox=None,
-    scene_evidence=None, intrinsics_evidence=None, calibration_profile=None,
-    depth_evidence=None,
-):
-    """Build ranked camera solutions from pose, scene, EXIF, calibration and depth evidence."""
+def optimize_parameters(image_w, image_h, subject_scale, subject_position, perspective_strength, pose_keypoints=None, num_candidates=5, subject_bbox=None, scene_evidence=None, intrinsics_evidence=None, calibration_profile=None, depth_evidence=None, support_plane=None):
+    """Build ranked camera solutions from pose, scene, EXIF, calibration and depth/contact evidence."""
     del subject_scale, perspective_strength
     if pose_keypoints is None:
         return []
@@ -186,16 +174,13 @@ def optimize_parameters(
         if focal is not None:
             focal_seeds = sorted({round(float(np.clip(focal + delta, 20.0, 220.0)), 2) for delta in (-8.0, -4.0, 0.0, 4.0, 8.0)} | {float(v) for v in focal_seeds})
 
+    if support_plane is None:
+        support_plane = estimate_support_plane(kp, image_w, image_h)
+
     pose_candidates = []
     fit_exception = None
     try:
-        # Current PoseSolver predates calibration-aware intrinsics_factory.
-        # Keep its proven multi-start fitting path, then replace candidate
-        # intrinsics with the selected calibrated model before validation.
-        pose_candidates = PoseSolver.fit_camera_to_pose(
-            kp, image_w, image_h, subject_bbox=subject_bbox,
-            focal_seeds=tuple(focal_seeds), num_candidates=max(8, num_candidates),
-        )
+        pose_candidates = PoseSolver.fit_camera_to_pose(kp, image_w, image_h, subject_bbox=subject_bbox, focal_seeds=tuple(focal_seeds), num_candidates=max(8, num_candidates))
     except Exception as exc:
         fit_exception = f"{type(exc).__name__}: {exc}"
 
@@ -227,7 +212,7 @@ def optimize_parameters(
         c.losses["in_frame_fraction"] = round(point_inside, 4)
         c.losses["visibility_bbox_iou"] = round(bbox_iou, 4)
         _apply_depth_constraint(c, kp, image_w, image_h, depth_evidence)
-        _apply_feasibility_constraint(c, kp, image_w, image_h, depth_evidence)
+        _apply_feasibility_constraint(c, kp, image_w, image_h, depth_evidence, support_plane)
         if point_inside < 0.55:
             c.losses["visibility_penalty"] = round(0.20 * (0.55 - point_inside), 4)
             c.score = float(np.clip(c.score - 0.20 * (0.55 - point_inside), 0.01, 0.99))
@@ -249,7 +234,7 @@ def optimize_parameters(
                 c.losses["in_frame_fraction"] = round(point_inside, 4)
                 c.losses["visibility_bbox_iou"] = round(bbox_iou, 4)
                 _apply_depth_constraint(c, kp, image_w, image_h, depth_evidence)
-                _apply_feasibility_constraint(c, kp, image_w, image_h, depth_evidence)
+                _apply_feasibility_constraint(c, kp, image_w, image_h, depth_evidence, support_plane)
                 if point_inside < 0.55:
                     c.losses["visibility_penalty"] = round(0.20 * (0.55 - point_inside), 4)
                     c.score = float(np.clip(c.score - 0.20 * (0.55 - point_inside), 0.01, 0.99))
