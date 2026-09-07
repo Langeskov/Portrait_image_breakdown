@@ -77,7 +77,7 @@ def _fallback_candidate(image_w, image_h, pose_keypoints, focal_mm=50.0, calibra
     distance = max(1.0, REF_PERSON_HEIGHT * intr.fy / body_h)
     center_y = float(np.mean(kp[:17, 1][valid]) / max(image_h, 1))
     height = float(np.clip(REF_PERSON_HEIGHT * (0.8 - 0.45 * center_y), 0.5, 1.8))
-    position, extrinsics = _camera_pose_from_params(distance, height, 0.0, 0.0, 0.0)
+    _, extrinsics = _camera_pose_from_params(distance, height, 0.0, 0.0, 0.0)
     return PoseCandidate(
         intrinsics=intr, extrinsics=extrinsics, distance=float(distance), height=float(height),
         focal_equiv_35mm=float(focal_mm), score=0.18,
@@ -146,9 +146,7 @@ def _apply_depth_constraint(candidate, pose_keypoints, image_w, image_h, depth_e
 
 
 def _apply_feasibility_constraint(candidate, pose_keypoints, image_w, image_h, depth_evidence):
-    feasibility = estimate_camera_feasibility(
-        pose_keypoints, image_w, image_h, candidate.focal_equiv_35mm, depth_evidence,
-    )
+    feasibility = estimate_camera_feasibility(pose_keypoints, image_w, image_h, candidate.focal_equiv_35mm, depth_evidence)
     score = candidate_feasibility_score(candidate, feasibility)
     if score is None:
         return feasibility
@@ -156,6 +154,13 @@ def _apply_feasibility_constraint(candidate, pose_keypoints, image_w, image_h, d
     candidate.losses["feasibility_confidence"] = round(float(feasibility.confidence), 4)
     candidate.score = float(np.clip(candidate.score + 0.08 * feasibility.confidence * (score - 0.5), 0.01, 0.99))
     return feasibility
+
+
+def _apply_profile_to_candidate(candidate, image_w, image_h, profile):
+    """Rebuild intrinsics after the legacy solver; preserves existing solver API."""
+    candidate.intrinsics = _intrinsics_from_profile(candidate.focal_equiv_35mm, image_w, image_h, profile)
+    candidate.losses["calibration_profile"] = profile.name
+    return candidate
 
 
 def optimize_parameters(
@@ -184,8 +189,13 @@ def optimize_parameters(
     pose_candidates = []
     fit_exception = None
     try:
-        factory = lambda focal: _intrinsics_from_profile(focal, image_w, image_h, profile)
-        pose_candidates = PoseSolver.fit_camera_to_pose(kp, image_w, image_h, subject_bbox=subject_bbox, focal_seeds=tuple(focal_seeds), num_candidates=max(8, num_candidates), intrinsics_factory=factory)
+        # Current PoseSolver predates calibration-aware intrinsics_factory.
+        # Keep its proven multi-start fitting path, then replace candidate
+        # intrinsics with the selected calibrated model before validation.
+        pose_candidates = PoseSolver.fit_camera_to_pose(
+            kp, image_w, image_h, subject_bbox=subject_bbox,
+            focal_seeds=tuple(focal_seeds), num_candidates=max(8, num_candidates),
+        )
     except Exception as exc:
         fit_exception = f"{type(exc).__name__}: {exc}"
 
@@ -201,9 +211,9 @@ def optimize_parameters(
     position_penalty = min(_subject_position_loss(subject_position), 0.05)
     scored_pose = []
     for c in pose_candidates:
+        c = _apply_profile_to_candidate(c, image_w, image_h, profile)
         c = _apply_level_reference(c, scene_evidence)
         c.losses["subject_position_prior"] = round(position_penalty, 5)
-        c.losses["calibration_profile"] = profile.name
         if intrinsics_evidence is not None and intrinsics_evidence.preferred_focal_mm() is not None:
             hint = intrinsics_evidence.preferred_focal_mm()
             focal_delta = abs(float(c.focal_equiv_35mm) - float(hint))
@@ -233,11 +243,11 @@ def optimize_parameters(
         if fused:
             fused_scored = []
             for c in fused:
+                c = _apply_profile_to_candidate(c, image_w, image_h, profile)
                 c = _apply_level_reference(c, scene_evidence)
                 point_inside, bbox_iou = _camera_candidate_visibility(c, kp, image_w, image_h, subject_bbox)
                 c.losses["in_frame_fraction"] = round(point_inside, 4)
                 c.losses["visibility_bbox_iou"] = round(bbox_iou, 4)
-                c.losses["calibration_profile"] = profile.name
                 _apply_depth_constraint(c, kp, image_w, image_h, depth_evidence)
                 _apply_feasibility_constraint(c, kp, image_w, image_h, depth_evidence)
                 if point_inside < 0.55:
@@ -249,8 +259,6 @@ def optimize_parameters(
             ranked = _dedupe_candidates(fused_scored, num_candidates)
             if len(ranked) >= 2:
                 return ranked
-            # Do not allow a single fused solution to erase the alternative
-            # focal/distance family found from the pose fit.
             return _dedupe_candidates(ranked + pose_candidates, num_candidates)
 
     return _dedupe_candidates(pose_candidates, num_candidates)
