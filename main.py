@@ -62,6 +62,7 @@ def run_gui(image_path=None):
     from gui.main_window import MainWindow, apply_light_theme
     from gui.reverse_3d import Reverse3DWorkspace as RealReverse3DWorkspace
     from gui.cache import AnalysisCache, image_cache_key
+    from gui.field_mode import install_field_mode
     from reverse_engineering.calibration import BUILTIN_PROFILES
     import reverse_engineering.engine as engine_module
 
@@ -87,6 +88,7 @@ def run_gui(image_path=None):
     apply_light_theme(app)
     window = MainWindow()
     window._result_cache = AnalysisCache(capacity=8)
+    install_field_mode(window)
 
     selected_profile = {"name": "Generic"}
     EngineV2 = engine_module.ReverseEngineeringEngine
