@@ -189,6 +189,10 @@ def install_reference_mode(window):
         old_update(bundle)
         if bundle.pose and window._img is not None:
             widget.set_current(bundle.pose, window._img)
-
+            if widget._reference is not None:
+                current = build_reference_composition(bundle.pose, window._img.shape[1], window._img.shape[0])
+                deltas = compare_pose_to_reference(widget._reference_pose, bundle.pose, window._img.shape[1], window._img.shape[0])
+                plan = build_reference_target_plan(widget._reference, current, deltas)
+                window._w2._cv.set_reference_target(widget._reference, current, deltas, visible=True)
     window._w2.update_results = update_results
     return widget
