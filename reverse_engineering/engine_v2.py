@@ -8,6 +8,7 @@ import numpy as np
 
 from core.pose_detector import PoseResult, LandmarkIndex as LI
 from reverse_engineering.camera_pose import estimate_camera_pose
+from reverse_engineering.calibration import CalibrationProfile, resolve_profile
 from reverse_engineering.data_types import CameraAction, CameraPoseResult, CompositionResult, EstimatedValue, ReverseEngineeringResult
 from reverse_engineering.depth_of_field import analyze_depth_of_field
 from reverse_engineering.depth_provider import MonocularDepthProvider
@@ -95,9 +96,17 @@ def _camera_pose_from_candidate(candidate) -> CameraPoseResult:
 class ReverseEngineeringEngineV2:
     VERSION = "2.0"
 
-    def __init__(self, enable_simulation=True):
+    def __init__(self, enable_simulation=True, calibration_profile: CalibrationProfile | str | None = None):
         self._enable_simulation = enable_simulation
         self._depth_provider = MonocularDepthProvider()
+        if isinstance(calibration_profile, str):
+            self._calibration_profile = resolve_profile(calibration_profile)
+        else:
+            self._calibration_profile = calibration_profile or resolve_profile("Generic")
+
+    @property
+    def calibration_profile(self) -> CalibrationProfile:
+        return self._calibration_profile
 
     def analyze(self, image, pose=None, bbox=None, intrinsics_evidence: IntrinsicsEvidence | None = None):
         h, w = image.shape[:2]
@@ -112,6 +121,7 @@ class ReverseEngineeringEngineV2:
                 perspective.perspective_strength.value, kp, num_candidates=6,
                 subject_bbox=bbox, scene_evidence=scene_evidence,
                 intrinsics_evidence=intrinsics_evidence,
+                calibration_profile=self._calibration_profile,
             )
         if candidates:
             camera_pose = _camera_pose_from_candidate(candidates[0])
@@ -143,6 +153,7 @@ class ReverseEngineeringEngineV2:
             uncertainties.append("rotation uses Manhattan scene geometry; quality depends on reliable orthogonal scene lines")
         else:
             uncertainties.append("insufficient orthogonal scene structure for reliable absolute rotation")
+        uncertainties.append(f"calibration profile: {self._calibration_profile.name}")
         if intrinsics_evidence is not None:
             uncertainties.append(f"intrinsics source: {intrinsics_evidence.source}; observed fields: {', '.join(intrinsics_evidence.observed_fields) or 'none'}")
             uncertainties.extend(intrinsics_evidence.notes)
