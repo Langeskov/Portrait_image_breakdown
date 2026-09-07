@@ -7,7 +7,7 @@ It does not claim metric room reconstruction from a single image.
 from __future__ import annotations
 
 from dataclasses import dataclass, asdict
-from typing import Iterable, Optional
+from typing import Optional
 
 import math
 import numpy as np
@@ -31,6 +31,8 @@ class PoseDelta:
     dy: float
     distance: float
     instruction: str
+    target_x: float = 0.0
+    target_y: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -116,7 +118,11 @@ def compare_pose_to_reference(reference: PoseResult, current: PoseResult, width:
             instruction = f"{name} 向{vertical}移动 {abs(dy):.0%} 画面高度"
         else:
             instruction = f"{name} 向{horizontal}{vertical}移动"
-        deltas.append(PoseDelta(name, float(dx), float(dy), float(distance), instruction))
+        deltas.append(PoseDelta(
+            name, float(dx), float(dy), float(distance), instruction,
+            target_x=float(r.x / max(reference.image_width if hasattr(reference, 'image_width') else width, 1)),
+            target_y=float(r.y / max(reference.image_height if hasattr(reference, 'image_height') else height, 1)),
+        ))
     deltas.sort(key=lambda d: d.distance, reverse=True)
     return deltas[:8]
 
