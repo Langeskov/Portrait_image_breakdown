@@ -98,12 +98,7 @@ class ImageCanvas(QWidget):
         self.update()
 
     def set_reference_target(self, reference, current=None, deltas=None, visible=True):
-        """Attach the v3 target plan to the current-image canvas.
-
-        Reference coordinates are normalized onto the current image. This keeps
-        the overlay resolution-independent and makes the target frame stable
-        even when the reference and current photos have different dimensions.
-        """
+        """Attach v3 reference targets to the current-image canvas."""
         self._reference_target = reference
         self._reference_current = current
         self._reference_deltas = list(deltas or [])
@@ -227,7 +222,7 @@ class ImageCanvas(QWidget):
 
         target_c = getattr(target, "subject_center", (0.5 * ref_w, 0.5 * ref_h))
         tx, ty = target_c[0] / ref_w, target_c[1] / ref_h
-        target_pt = QPoint(ox + int(tx * dw), oy + int(ty * dh))
+        target_pt = QPoint(ox + int(np.clip(tx, 0.0, 1.0) * dw), oy + int(np.clip(ty, 0.0, 1.0) * dh))
         current_center = None
         if current is not None:
             cw = max(float(getattr(current, "width", 1)), 1.0)
@@ -244,8 +239,6 @@ class ImageCanvas(QWidget):
             painter.setFont(QFont("Consolas", 8, QFont.Bold))
             painter.drawText(target_pt.x() + 10, target_pt.y() - 8, "TARGET CENTER")
 
-        # Pose arrows: reference normalized landmark locations become target
-        # positions on the current canvas. Limit to the largest actionable deltas.
         labels = {
             "nose": 0, "left_shoulder": 5, "right_shoulder": 6,
             "left_elbow": 7, "right_elbow": 8, "left_wrist": 9,
@@ -255,14 +248,7 @@ class ImageCanvas(QWidget):
         }
         if self._pose is None:
             return
-        current_w = max(float(self._pose.image_width), 1.0)
-        current_h = max(float(self._pose.image_height), 1.0)
         ranked = sorted(self._reference_deltas, key=lambda d: float(getattr(d, "distance", 0.0)), reverse=True)[:5]
-        reference_pose = getattr(self, "_reference_pose", None)
-        # The ReferenceComposition itself does not carry pose landmarks. When
-        # a delta exposes dx/dy, reconstruct the target from current + delta.
-        # dx/dy are normalized reference-current deltas, so the target point is
-        # current point shifted by that amount.
         for delta in ranked:
             idx = labels.get(getattr(delta, "landmark", ""))
             if idx is None or idx >= len(self._pose.landmarks):
@@ -271,8 +257,8 @@ class ImageCanvas(QWidget):
             if lm.visibility < 0.35:
                 continue
             start = QPoint(ox + int(lm.world_x * dw), oy + int(lm.world_y * dh))
-            tx_norm = float(np.clip(lm.world_x + getattr(delta, "dx", 0.0), 0.0, 1.0))
-            ty_norm = float(np.clip(lm.world_y + getattr(delta, "dy", 0.0), 0.0, 1.0))
+            tx_norm = float(np.clip(getattr(delta, "target_x", lm.world_x), 0.0, 1.0))
+            ty_norm = float(np.clip(getattr(delta, "target_y", lm.world_y), 0.0, 1.0))
             end = QPoint(ox + int(tx_norm * dw), oy + int(ty_norm * dh))
             self._draw_arrow(painter, start, end, COLOR_TARGET, 1)
             painter.setPen(QPen(COLOR_TARGET, 1))
