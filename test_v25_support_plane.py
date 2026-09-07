@@ -27,7 +27,6 @@ def test_support_pitch_matches_application_downward_positive_convention():
     evidence = SupportPlaneEvidence(True, 0.7, 0.0, 0.95, 2, ("test",))
     expected = expected_support_pitch_deg(4.0, 1.5, evidence)
     assert np.isclose(expected, np.degrees(np.arctan2(1.5, 4.0)))
-    _, _, = (), ()
 
 
 def test_candidate_support_score_prefers_coherent_pitch():
