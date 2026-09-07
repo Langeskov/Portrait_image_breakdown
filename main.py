@@ -50,14 +50,15 @@ def run_gui(image_path=None):
     def engine_factory(enable_simulation=True):
         return EngineV2(enable_simulation=enable_simulation, calibration_profile=selected_profile["name"])
 
-    # AnalysisWorker imports the engine class from this module at load time;
-    # replacing it with a callable factory keeps the existing GUI architecture
-    # while allowing the profile to be selected from the toolbar.
+    # AnalysisWorker imports the engine from the reverse_engineering.engine
+    # module when an analysis starts. Replacing it with a factory preserves the
+    # existing worker while making the selected profile effective.
     engine_module.ReverseEngineeringEngine = engine_factory
 
     original_load = window._la
 
     def load_with_projection_sync(path):
+        window._current_path = str(path)
         original_load(path)
         if window._img is not None:
             window._w3.set_image(window._img)
@@ -90,11 +91,9 @@ def run_gui(image_path=None):
 
         def on_profile_changed(name):
             selected_profile["name"] = name or "Generic"
-            # Force a fresh engine; the current cached bundle remains readable,
-            # but the next analysis uses the new intrinsics model.
             window._eng = None
-            if window._img is not None:
-                window._la(str(window._current_path)) if hasattr(window, "_current_path") else None
+            if getattr(window, "_current_path", None):
+                window._la(window._current_path)
 
         calibration_combo.currentTextChanged.connect(on_profile_changed)
         bars[0].addWidget(calibration_combo)
