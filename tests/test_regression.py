@@ -248,7 +248,6 @@ def test_scene_rotation_solver_contract():
 
 
 def test_exif_orientation_normalizes_landscape_storage_to_portrait_display(tmp_path):
-    # Build a JPEG carrying the minimal EXIF Orientation=6 tag.
     raw = cv2.imencode('.jpg', np.full((60, 40, 3), 220, dtype=np.uint8))[1].tobytes()
     tiff = bytearray(b'II*\x00\x08\x00\x00\x00\x01\x00')
     tiff += b'\x12\x01\x03\x00\x01\x00\x00\x00\x06\x00\x00\x00' + b'\x00\x00\x00\x00'
@@ -292,10 +291,9 @@ def test_v3_phase2_canvas_target_geometry_is_resolution_independent():
     deltas = compare_pose_to_reference(reference, current, 800, 1200)
     assert deltas
     assert all(0.0 <= d.target_x <= 1.0 and 0.0 <= d.target_y <= 1.0 for d in deltas)
-    # Target positions are expressed in the reference frame, so they do not
-    # depend on the current image pixel dimensions.
-    assert np.isclose(deltas[0].target_x, reference.landmarks[0].x / reference.image_width)
-    assert np.isclose(deltas[0].target_y, reference.landmarks[0].y / reference.image_height)
+    nose = next(d for d in deltas if d.landmark == 'nose')
+    assert np.isclose(nose.target_x, reference.landmarks[0].x / reference.image_width)
+    assert np.isclose(nose.target_y, reference.landmarks[0].y / reference.image_height)
 
 
 def test_v3_phase2_canvas_exposes_reference_target_api():
