@@ -48,7 +48,7 @@ Provides:
 - Camera analysis — shot type, camera angle, subject ratio
 - Composition — rule-of-thirds, symmetry, headroom, balance
 - Goal-oriented pose coaching — geometry-based corrections instead of action matching
-- Photographer-ready verbal cues — concise instructions suitable for on-set use
+- Photographer-ready verbal cues — short instructions suitable for on-set use
 
 The professional analysis remains available alongside the verbal guidance. The two layers serve different purposes: analysis explains **why** a change is useful; a cue tells the photographer/subject **what to do next**.
 
@@ -61,7 +61,8 @@ Scene Geometry ─────────────┐
   line detection             │
   orientation clustering     │
   vanishing points           │
-  horizon                    ↓
+  horizon                    │
+                            ↓
                      Camera Candidate Fusion
 Pose / framing ─────────────┤
                             ↓
@@ -99,54 +100,27 @@ Photographer cue
 What should I say to the subject right now?
 ```
 
-This is important for field use. A photographer may be working without a computer next to the camera, while still wanting access later to the full geometric and compositional explanation.
+The cue layer translates useful analysis into speakable instructions without deleting the underlying evidence. It prefers small, achievable corrections over forcing a named action.
 
-The cue layer therefore translates analysis into speakable instructions without deleting the underlying data. A cue is a suggestion, not a mandatory target. The system prefers small, achievable corrections over forcing a named action.
+## Intrinsics and Calibration
 
-### Field cue modes
+v2.5 includes a reusable `CalibrationProfile` abstraction with built-in generic, full-frame, APS-C and Micro Four Thirds priors. A profile can provide sensor dimensions, pixel aspect ratio, principal point and an optional default focal length.
 
-v2.5 introduces three presentation modes over the same underlying cue data:
-
-| Mode | Purpose |
-|---|---|
-| Concise | One immediate spoken instruction for fast on-set use |
-| Normal | A short sequence of practical cues |
-| Technical | Cue plus the analytical reason behind it |
-
-The mode changes presentation, not the underlying professional analysis.
-
-## Action Guidance Philosophy
-
-The system intentionally separates **classification** from **direction**.
+Calibration is now part of the active camera reconstruction path rather than metadata only:
 
 ```text
-What is happening now?
-        ↓
-   Action classifier
-
-How can this frame be improved?
-        ↓
- Body geometry + silhouette + balance
-        + orientation + composition + camera
-        ↓
- Goal-oriented pose guidance
-        ↓
- Photographer-ready verbal cues
+Calibration profile + EXIF evidence
+              ↓
+          pixel intrinsics
+              ↓
+      camera candidate fitting
+              ↓
+       2D / 3D projection
 ```
 
-For example, a result should not stop at `站立 → 转身`. It can instead produce a physical adjustment, an explanation, and a concise spoken command. This keeps action recognition useful without allowing the classifier to dictate the pose.
+The GUI exposes the built-in profiles from the toolbar. The selected profile is applied to subsequent analysis and can be changed to trigger a fresh reconstruction. CLI users can select one with `--calibration-profile`.
 
-## Important Interpretation Rule
-
-A single 2D photograph normally does not uniquely determine focal length, camera distance, sensor format, or camera height. Camera rotation also requires scene evidence; a human pose alone is not enough to establish absolute world orientation.
-
-The system therefore distinguishes:
-
-- **Observed** — image measurements such as keypoints, BBox, line segments and vanishing-point candidates
-- **Estimated** — quantities inferred from geometry or constrained fitting
-- **Unknown** — quantities that remain under-constrained
-
-Candidate solutions are displayed explicitly in the 3D workspace rather than presenting one candidate as ground truth.
+Profile values remain explicit priors. They do not turn monocular reconstruction into metrically exact photogrammetry.
 
 ## 2D Workspace
 
@@ -191,12 +165,6 @@ Interaction:
 
 The viewer is a geometric explanation/validation view, not a claim of full photogrammetric reconstruction.
 
-## Intrinsics and Calibration
-
-v2.5 adds a reusable `CalibrationProfile` abstraction with built-in generic, full-frame, APS-C and Micro Four Thirds priors. A profile can provide sensor dimensions, pixel aspect ratio, principal point and an optional default focal length, while remaining an explicit prior rather than silently becoming ground truth.
-
-Profiles can also be serialized to JSON so camera-specific calibration can be carried between field sessions.
-
 ## Candidate Solution Model
 
 v2 ranks candidates using two separate evidence families:
@@ -231,6 +199,19 @@ The rotation solver then:
 
 When a photograph does not contain enough reliable orthogonal scene structure, v2 does not manufacture a confident absolute rotation.
 
+## Intrinsics Evidence
+
+v2 accepts an optional `IntrinsicsEvidence` record. When the original image path is available, the CLI reads standard EXIF fields such as:
+
+```text
+FocalLength
+FocalLengthIn35mmFilm
+Make / Model
+LensModel
+```
+
+EXIF and calibration evidence are kept separate in the data model so the report can distinguish camera-written metadata from user-selected priors.
+
 ## Projection Validation
 
 The 3D projection preview uses the same pose-driven 17-keypoint proxy that participates in camera fitting. Candidate camera position and rotation share one target-centered coordinate frame, so the camera drawn in 3D and the camera used for 2D projection are now the same geometric state.
@@ -253,7 +234,7 @@ The GUI uses staged background analysis with visible progress feedback:
 Pose ready → 2D ready → Reverse ready
 ```
 
-Analysis uses resized images for expensive processing. Results are cached in-session by an exact image key and stored in a small LRU cache, so switching between 2D / 3D / Results does not rerun inference.
+Analysis uses resized images for expensive processing. Results are cached in-session by an exact SHA-256 image key and stored in a small LRU cache, so switching between 2D / 3D / Results does not rerun inference.
 
 ## Project Structure
 
@@ -312,6 +293,7 @@ pip install -e .
 python main.py
 python main.py --image path/to/photo.jpg
 python main.py --image path/to/photo.jpg --cli
+python main.py --image path/to/photo.jpg --cli --calibration-profile "Full Frame 36x24"
 ```
 
 The application entry point installs the active reverse-engineering engine for both GUI and CLI.
@@ -342,14 +324,16 @@ The application entry point installs the active reverse-engineering engine for b
 
 ### v2.5 — Field Photography Assistance
 
-#### Completed foundation
-- Calibration profile data model with reusable built-in sensor priors
-- JSON import/export for camera calibration profiles
+#### Completed
+- Reusable camera calibration profiles with sensor size, principal point and pixel aspect ratio
+- Calibration profiles bound to the active camera-fitting and projection intrinsics path
+- EXIF + calibration evidence separation
+- GUI calibration profile selector and reconstruction refresh
+- CLI `--calibration-profile` selection
 - Photographer cue presentation modes: concise / normal / technical
-- Regression tests for calibration profiles and cue-mode behavior
+- Regression coverage for calibration-driven projection intrinsics and cue modes
 
-#### Next implementation steps
-- Bind calibration profiles to the active camera reconstruction and projection intrinsics
+#### Next
 - Explicit observed / estimated / unknown confidence presentation in the GUI
 - Scene/depth constraints for camera distance and height
 - Mature monocular depth provider behind the existing `DepthProvider` interface
