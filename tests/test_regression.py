@@ -13,6 +13,7 @@ from core.action_classifier import ActionCategory, ActionResult
 from core.camera_analyzer import CameraAngle, CameraResult, ShotType
 from core.composition import CompositionResult, CompositionType
 from core.cue_history import CueHistory
+from core.image_io import frame_orientation, load_image
 from core.landmark_quality import assess_landmarks, semantic_anchor_pixels
 from core.orientation import FacingDirection, OrientationResult, TiltDirection
 from core.photographer_cue_modes import CueMode, format_cues, primary_cue
@@ -25,6 +26,7 @@ from reverse_engineering.geometry import CameraIntrinsics, CameraModel, PoseCand
 from reverse_engineering.image_refinement import subject_anchor, refine_camera_candidate
 from reverse_engineering.intrinsics import read_exif_intrinsics
 from reverse_engineering.reference_reconstruction import build_reference_composition, choose_semantic_anchor, compare_pose_to_reference, composition_delta
+from reverse_engineering.reference_targets import build_reference_target_plan
 from reverse_engineering.scene_constraints import DepthConstraintEvidence, CameraFeasibilityEvidence, build_depth_constraint_evidence, candidate_depth_score, candidate_feasibility_score
 from reverse_engineering.scene_geometry import SceneGeometryEvidence, VanishingPoint
 from reverse_engineering.scene import SceneModel, SceneCamera
@@ -204,7 +206,6 @@ def test_support_plane_pitch_contract():
 def test_image_refinement_and_anchor():
     k=_kps(); assert np.allclose(subject_anchor(k),[500,520]); intr=CameraIntrinsics.from_focal_mm(50,1000,800); _,extr=_camera_pose_from_params(4,1.3,0,12,0); c=PoseCandidate(intr,extr,4,1.3,50,.7,{})
     refined=refine_camera_candidate(c,k,1000,800); assert np.isfinite(refined.extrinsics.position).all() and abs(refined.extrinsics.pitch-12)<=9
-    from core.landmark_quality import semantic_anchor_pixels
     class LM:
         def __init__(self,x,y,v): self.x=x; self.y=y; self.visibility=v
     lms=[LM(x,y,.9) for x,y,_ in k]; q=assess_landmarks(lms); assert q.visible_count==17 and q.anchor_confidence>.8 and semantic_anchor_pixels(lms,1000,1000)==(500,520)
@@ -250,3 +251,40 @@ def test_scene_rotation_solver_contract():
     vps=tuple(VanishingPoint(*vp(a),cluster=i,support=12-i,confidence=.9,mean_line_residual_px=1) for i,a in enumerate((np.array([1.,0,0]),np.array([0,0,1.]),np.array([0,1.,0.]))))
     evidence=SceneGeometryEvidence(width,height,tuple(),((0,1),(2,3),(4,5)),vps,2,(0,1),6,.9)
     candidates=estimate_rotation_candidates(evidence,width,height,max_candidates=8); best=max(candidates,key=lambda c:c.scene_score); assert candidates and abs(best.focal_length_mm-focal)<2 and abs(best.extrinsics.yaw-12)<1.5 and abs(best.extrinsics.pitch+5)<1.5 and abs(best.extrinsics.roll-6)<1.5
+
+
+def test_exif_orientation_is_normalized_before_analysis(tmp_path):
+    from PIL import Image
+    image_path = tmp_path / "portrait-exif.jpg"
+    # Store 40×60 pixels with EXIF Orientation=6: display result must be 60×40.
+    source = Image.new("RGB", (40, 60), "white")
+    exif = source.getexif(); exif[274] = 6
+    source.save(image_path, exif=exif)
+    image = load_image(image_path)
+    assert image is not None and image.shape[:2] == (40, 60)
+    assert frame_orientation(image) == "landscape"
+
+
+def test_field_mode_styles_scope_foreground_and_primary_surface():
+    from gui.field_mode import FieldModeWidget
+    sheet = FieldModeWidget.__dict__.get("_THEME")
+    assert sheet["bg"] == "#10151c"
+    # Instantiate only to ensure the Qt stylesheet parses without relying on the global light palette.
+    from PySide6.QtWidgets import QApplication
+    app = QApplication.instance() or QApplication([])
+    widget = FieldModeWidget()
+    css = widget.styleSheet()
+    assert "QWidget#fieldMode QLabel" in css
+    assert "QLabel#primaryCue" in css and "QComboBox QAbstractItemView" in css
+    widget.close()
+
+
+def test_v3_phase2_target_plan_distinguishes_framing_and_pose():
+    reference = build_reference_composition(_reference_pose(), 200, 180)
+    current = build_reference_composition(_reference_pose(offset_x=-18, offset_y=10, scale=.8), 200, 180)
+    deltas = compare_pose_to_reference(_reference_pose(), _reference_pose(offset_x=-18, offset_y=10, scale=.8), 200, 180)
+    plan = build_reference_target_plan(reference, current, deltas)
+    text = plan.as_text()
+    assert plan.framing_actions
+    assert plan.pose_actions
+    assert "构图：" in text and "姿态：" in text
