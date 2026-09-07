@@ -1,4 +1,5 @@
 """Portrait Image Breakdown - Photography Analysis & Reverse Engineering."""
+import re
 import sys
 import os
 import argparse
@@ -14,6 +15,35 @@ def _install_v2_engine():
     import reverse_engineering.engine as engine_module
     from reverse_engineering.engine_v2 import ReverseEngineeringEngineV2
     engine_module.ReverseEngineeringEngine = ReverseEngineeringEngineV2
+
+
+def _strip_evidence_block(text: str) -> str:
+    """Remove every legacy/previously appended Evidence State block."""
+    pattern = re.compile(
+        r"\n*={20,}\nEVIDENCE STATE\n={20,}\n"
+        r"Observed:\s*\d+.*?\n"
+        r"Observed = directly supported by image/metadata\.\n"
+        r"Estimated = inferred from available evidence and model confidence\.\n"
+        r"Unknown = insufficient evidence; do not treat as a measured value\.\s*",
+        re.DOTALL,
+    )
+    return pattern.sub("", text).rstrip()
+
+
+def _append_evidence_state(text: str, reverse_result) -> str:
+    summary = reverse_result.evidence_summary()
+    counts = summary["counts"]
+    base_text = _strip_evidence_block(text)
+    evidence_text = (
+        "\n\n" + "=" * 55 + "\n"
+        "EVIDENCE STATE\n"
+        "=" * 55 + "\n"
+        f"Observed: {counts['observed']}  |  Estimated: {counts['estimated']}  |  Unknown: {counts['unknown']}\n"
+        "Observed = directly supported by image/metadata.\n"
+        "Estimated = inferred from available evidence and model confidence.\n"
+        "Unknown = insufficient evidence; do not treat as a measured value."
+    )
+    return base_text + evidence_text
 
 
 def run_gui(image_path=None):
@@ -42,25 +72,8 @@ def run_gui(image_path=None):
 
     def update_results_with_evidence_state(self, bundle):
         original_results_update(self, bundle)
-        if not bundle.reverse_result:
-            return
-        summary = bundle.reverse_result.evidence_summary()
-        counts = summary["counts"]
-        # Remove duplicate evidence headings produced by repeated refreshes or
-        # older local builds before appending exactly one current summary.
-        text = self._rl.text()
-        lines = [line for line in text.splitlines() if line.strip() != "EVIDENCE STATE"]
-        base_text = "\n".join(lines).rstrip()
-        evidence_text = (
-            "\n\n" + "=" * 55 + "\n"
-            "EVIDENCE STATE\n"
-            "=" * 55 + "\n"
-            f"Observed: {counts['observed']}  |  Estimated: {counts['estimated']}  |  Unknown: {counts['unknown']}\n"
-            "Observed = directly supported by image/metadata.\n"
-            "Estimated = inferred from available evidence and model confidence.\n"
-            "Unknown = insufficient evidence; do not treat as a measured value."
-        )
-        self._rl.setText(base_text + evidence_text)
+        if bundle.reverse_result:
+            self._rl.setText(_append_evidence_state(self._rl.text(), bundle.reverse_result))
 
     main_window_module.ResultsWorkspace.update_results = update_results_with_evidence_state
 
@@ -76,9 +89,6 @@ def run_gui(image_path=None):
     def engine_factory(enable_simulation=True):
         return EngineV2(enable_simulation=enable_simulation, calibration_profile=selected_profile["name"])
 
-    # AnalysisWorker imports the engine from the reverse_engineering.engine
-    # module when an analysis starts. Replacing it with a factory preserves the
-    # existing worker while making the selected profile effective.
     engine_module.ReverseEngineeringEngine = engine_factory
 
     original_load = window._la
