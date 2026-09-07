@@ -91,7 +91,8 @@ class ReverseEngineeringEngineV2:
         h,w=image.shape[:2]; scene_evidence=analyze_scene_geometry(image,exclude_bbox=bbox); composition=_analyze_composition_extended(image,pose,bbox); perspective=analyze_perspective(image,scene_evidence); candidates=[]; depth_evidence=None; support_plane=None; anchor=None
         if pose is not None:
             kp=_extract_keypoints_pixels(pose); anchor=subject_anchor(kp); _,depth_evidence=build_depth_constraint_evidence(image,kp,self._depth_provider); support_plane=estimate_support_plane(kp,w,h)
-            candidates=optimize_parameters(w,h,composition.subject_scale,composition.subject_position,perspective.perspective_strength.value,kp,num_candidates=6,subject_bbox=bbox,scene_evidence=scene_evidence,intrinsics_evidence=intrinsics_evidence,calibration_profile=self._calibration_profile,depth_evidence=depth_evidence,support_plane=support_plane)
+            scene_for_fusion = scene_evidence if (scene_evidence.has_three_directions and scene_evidence.confidence >= 0.45) else None
+            candidates=optimize_parameters(w,h,composition.subject_scale,composition.subject_position,perspective.perspective_strength.value,kp,num_candidates=6,subject_bbox=bbox,scene_evidence=scene_for_fusion,intrinsics_evidence=intrinsics_evidence,calibration_profile=self._calibration_profile,depth_evidence=depth_evidence,support_plane=support_plane)
             for candidate in candidates:
                 refine_camera_candidate(candidate,kp,w,h,bbox)
         if candidates:
@@ -111,8 +112,10 @@ class ReverseEngineeringEngineV2:
             uncertainties.append(f"relative depth constraint active: {depth_evidence.valid_count} landmarks, confidence {depth_evidence.confidence:.0%}; used only as a soft ranking signal" if depth_evidence.usable else "relative depth constraint unavailable or too weak; camera height/distance remain primarily pose-derived")
         if support_plane is not None:
             uncertainties.append(f"support-plane hypothesis active: {support_plane.visible_ankles} ankle contacts, confidence {support_plane.confidence:.0%}; pitch consistency is a soft ranking signal" if support_plane.usable else "support-plane hypothesis unavailable; pitch is not constrained by contact geometry")
-        if scene_evidence.has_three_directions: uncertainties.append("rotation uses Manhattan scene geometry; non-Manhattan fallback remains available through image-driven refinement")
-        else: uncertainties.append("insufficient orthogonal scene structure for reliable absolute rotation; image-space pose fitting carries more weight")
+        if scene_evidence.has_three_directions and scene_evidence.confidence >= 0.45:
+            uncertainties.append("rotation fusion uses Manhattan scene geometry because scene confidence is sufficient")
+        else:
+            uncertainties.append("non-Manhattan / weak-scene fallback active: pose framing and bounded image-space refinement dominate rotation")
         uncertainties.append(f"calibration profile: {self._calibration_profile.name}")
         if intrinsics_evidence is not None:
             uncertainties.append(f"intrinsics source: {intrinsics_evidence.source}; observed fields: {', '.join(intrinsics_evidence.observed_fields) or 'none'}"); uncertainties.extend(intrinsics_evidence.notes)
