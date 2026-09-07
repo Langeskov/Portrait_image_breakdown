@@ -1,4 +1,4 @@
-"""Portrait camera reverse-engineering engine v2."""
+"""Portrait camera reverse-engineering engine v2.5."""
 from __future__ import annotations
 import math
 import cv2
@@ -10,6 +10,7 @@ from reverse_engineering.data_types import CameraAction, CameraPoseResult, Compo
 from reverse_engineering.depth_of_field import analyze_depth_of_field
 from reverse_engineering.depth_provider import MonocularDepthProvider
 from reverse_engineering.focal_length import estimate_focal_length
+from reverse_engineering.image_refinement import refine_camera_candidate, subject_anchor
 from reverse_engineering.intrinsics import IntrinsicsEvidence
 from reverse_engineering.motion_blur import analyze_motion_blur
 from reverse_engineering.perspective import analyze_perspective
@@ -73,9 +74,9 @@ def _camera_pose_from_candidate(candidate) -> CameraPoseResult:
     return CameraPoseResult(
         camera_height=EstimatedValue(round(candidate.height,2),unit="m",range_min=max(0.25,round(candidate.height-0.25,2)),range_max=min(2.5,round(candidate.height+0.25,2)),confidence=min(0.8,candidate.score),basis=["v2 pose + scene geometry"]),
         camera_distance=EstimatedValue(round(candidate.distance,2),unit="m",range_min=max(0.5,round(candidate.distance*0.75,2)),range_max=round(candidate.distance*1.25,2),confidence=min(0.8,candidate.score),basis=["pose framing + scene rotation","focal/distance ambiguity retained"]),
-        camera_pitch=EstimatedValue(round(candidate.extrinsics.pitch,1),unit="deg",range_min=round(candidate.extrinsics.pitch-5,1),range_max=round(candidate.extrinsics.pitch+5,1),confidence=min(0.82,candidate.score),basis=["scene geometry + pose framing"]),
-        camera_yaw=EstimatedValue(round(candidate.extrinsics.yaw,1),unit="deg",range_min=round(candidate.extrinsics.yaw-5,1),range_max=round(candidate.extrinsics.yaw+5,1),confidence=min(0.82,candidate.score),basis=["scene geometry + pose framing"]),
-        camera_roll=EstimatedValue(round(candidate.extrinsics.roll,1),unit="deg",range_min=round(candidate.extrinsics.roll-3,1),range_max=round(candidate.extrinsics.roll+3,1),confidence=min(0.8,candidate.score),basis=["scene horizon / geometry"]),
+        camera_pitch=EstimatedValue(round(candidate.extrinsics.pitch,1),unit="deg",range_min=round(candidate.extrinsics.pitch-5,1),range_max=round(candidate.extrinsics.pitch+5,1),confidence=min(0.82,candidate.score),basis=["scene geometry + pose framing + image-space refinement"]),
+        camera_yaw=EstimatedValue(round(candidate.extrinsics.yaw,1),unit="deg",range_min=round(candidate.extrinsics.yaw-5,1),range_max=round(candidate.extrinsics.yaw+5,1),confidence=min(0.82,candidate.score),basis=["scene geometry + pose framing + image-space refinement"]),
+        camera_roll=EstimatedValue(round(candidate.extrinsics.roll,1),unit="deg",range_min=round(candidate.extrinsics.roll-3,1),range_max=round(candidate.extrinsics.roll+3,1),confidence=min(0.8,candidate.score),basis=["scene horizon / geometry + image-space refinement"]),
     )
 
 
@@ -87,11 +88,14 @@ class ReverseEngineeringEngineV2:
     @property
     def calibration_profile(self): return self._calibration_profile
     def analyze(self,image,pose=None,bbox=None,intrinsics_evidence:IntrinsicsEvidence|None=None):
-        h,w=image.shape[:2]; scene_evidence=analyze_scene_geometry(image,exclude_bbox=bbox); composition=_analyze_composition_extended(image,pose,bbox); perspective=analyze_perspective(image,scene_evidence); candidates=[]; depth_evidence=None; support_plane=None
+        h,w=image.shape[:2]; scene_evidence=analyze_scene_geometry(image,exclude_bbox=bbox); composition=_analyze_composition_extended(image,pose,bbox); perspective=analyze_perspective(image,scene_evidence); candidates=[]; depth_evidence=None; support_plane=None; anchor=None
         if pose is not None:
-            kp=_extract_keypoints_pixels(pose); _,depth_evidence=build_depth_constraint_evidence(image,kp,self._depth_provider); support_plane=estimate_support_plane(kp,w,h)
+            kp=_extract_keypoints_pixels(pose); anchor=subject_anchor(kp); _,depth_evidence=build_depth_constraint_evidence(image,kp,self._depth_provider); support_plane=estimate_support_plane(kp,w,h)
             candidates=optimize_parameters(w,h,composition.subject_scale,composition.subject_position,perspective.perspective_strength.value,kp,num_candidates=6,subject_bbox=bbox,scene_evidence=scene_evidence,intrinsics_evidence=intrinsics_evidence,calibration_profile=self._calibration_profile,depth_evidence=depth_evidence,support_plane=support_plane)
+            for candidate in candidates:
+                refine_camera_candidate(candidate,kp,w,h,bbox)
         if candidates:
+            candidates.sort(key=lambda c:(-float(c.score),float(c.losses.get("image_refinement_cost_px",1e9))))
             camera_pose=_camera_pose_from_candidate(candidates[0]); focal_length=estimate_focal_length(perspective.perspective_strength.value,perspective.perspective_type.value,composition.subject_scale,candidates)
         elif pose is not None:
             camera_pose=estimate_camera_pose(pose,perspective.vanishing_points,image=image,subject_bbox=bbox); focal_length=estimate_focal_length(perspective.perspective_strength.value,perspective.perspective_type.value,composition.subject_scale)
@@ -100,12 +104,15 @@ class ReverseEngineeringEngineV2:
         depth_of_field=analyze_depth_of_field(image,pose,bbox); motion_blur=analyze_motion_blur(image,bbox); shooting_techniques=classify_techniques(perspective,camera_pose,focal_length,depth_of_field,motion_blur,composition,composition.subject_scale)
         overall_confidence=float(np.mean([focal_length.category.confidence,focal_length.equivalent_35mm.confidence,depth_of_field.dof_type.confidence,motion_blur.blur_type.confidence,camera_pose.camera_height.confidence,camera_pose.camera_distance.confidence]))
         uncertainties=["exact focal length cannot be uniquely determined from a single image","sensor format and crop status may be unknown","aperture is inferred only from blur/depth characteristics","camera height and distance remain coupled without scene scale or depth"]
+        if anchor is not None: uncertainties.append(f"image-space subject anchor: ({anchor[0]:.0f}, {anchor[1]:.0f}) px; hip/torso anchors are preferred for camera aiming")
+        if candidates and candidates[0].losses.get("image_refinement"):
+            uncertainties.append(f"bounded image-space refinement: {candidates[0].losses.get('image_refinement')} Δ={candidates[0].losses.get('image_refinement_delta_deg','0')} deg; correction is intentionally limited")
         if depth_evidence is not None:
             uncertainties.append(f"relative depth constraint active: {depth_evidence.valid_count} landmarks, confidence {depth_evidence.confidence:.0%}; used only as a soft ranking signal" if depth_evidence.usable else "relative depth constraint unavailable or too weak; camera height/distance remain primarily pose-derived")
         if support_plane is not None:
             uncertainties.append(f"support-plane hypothesis active: {support_plane.visible_ankles} ankle contacts, confidence {support_plane.confidence:.0%}; pitch consistency is a soft ranking signal" if support_plane.usable else "support-plane hypothesis unavailable; pitch is not constrained by contact geometry")
-        if scene_evidence.has_three_directions: uncertainties.append("rotation uses Manhattan scene geometry; quality depends on reliable orthogonal scene lines")
-        else: uncertainties.append("insufficient orthogonal scene structure for reliable absolute rotation")
+        if scene_evidence.has_three_directions: uncertainties.append("rotation uses Manhattan scene geometry; non-Manhattan fallback remains available through image-driven refinement")
+        else: uncertainties.append("insufficient orthogonal scene structure for reliable absolute rotation; image-space pose fitting carries more weight")
         uncertainties.append(f"calibration profile: {self._calibration_profile.name}")
         if intrinsics_evidence is not None:
             uncertainties.append(f"intrinsics source: {intrinsics_evidence.source}; observed fields: {', '.join(intrinsics_evidence.observed_fields) or 'none'}"); uncertainties.extend(intrinsics_evidence.notes)
