@@ -29,7 +29,10 @@ class FieldModeWidget(QWidget):
 
     def set_cues(self, cues, confidence: float | None = None):
         self._cues = list(cues or [])
-        self.history.push(self._cues)
+        candidate_text = tuple(c.cue for c in self._cues)
+        current = self.history.current
+        if current is None or current.cue_text != candidate_text:
+            self.history.push(self._cues)
         self._status.setText(f"Analysis confidence: {confidence:.0%}" if confidence is not None else "Analysis ready")
         self._render_current()
 
@@ -40,8 +43,10 @@ class FieldModeWidget(QWidget):
         snap = self.history.current
         if snap is None: return
         self._primary.setText(snap.summary); self._detail.clear()
-        if self._cues:
+        if snap is self.history.current and self._cues and tuple(c.cue for c in self._cues) == snap.cue_text:
             for line in format_cues(self._cues, self._mode_enum())[:6]: self._detail.addItem(QListWidgetItem(line))
+        else:
+            for line in snap.cue_text[:6]: self._detail.addItem(QListWidgetItem(line))
         self._refresh_buttons(); self.cue_changed.emit(voice_ready_text(snap.summary))
 
     def _on_undo(self):
