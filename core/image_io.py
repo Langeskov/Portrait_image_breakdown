@@ -8,7 +8,7 @@ import numpy as np
 
 
 def _jpeg_exif_orientation(path: str | Path) -> int:
-    """Read JPEG EXIF orientation (1..8) without adding a Pillow dependency."""
+    """Read JPEG EXIF orientation (1..8) without a Pillow dependency."""
     try:
         data = Path(path).read_bytes()
     except OSError:
@@ -24,7 +24,9 @@ def _jpeg_exif_orientation(path: str | Path) -> int:
         pos += 2
         if marker in (0xD8, 0xD9):
             continue
-        length = int.from_bytes(data[pos:pos + 2], "big") if pos + 2 <= len(data) else 0
+        if pos + 2 > len(data):
+            break
+        length = int.from_bytes(data[pos:pos + 2], "big")
         if length < 2 or pos + length > len(data):
             break
         segment = data[pos + 2:pos + length]
@@ -77,8 +79,11 @@ def _apply_exif_orientation(image: np.ndarray, orientation: int) -> np.ndarray:
 
 
 def load_image(path: str | Path) -> np.ndarray | None:
-    """Load BGR pixels and normalize JPEG EXIF orientation before analysis."""
-    image = cv2.imread(str(path), cv2.IMREAD_COLOR)
+    """Load raw BGR pixels and apply JPEG EXIF orientation exactly once."""
+    # OpenCV applies EXIF orientation unless IMREAD_IGNORE_ORIENTATION is set;
+    # explicitly disable that behavior because this module applies the transform.
+    flags = cv2.IMREAD_COLOR | cv2.IMREAD_IGNORE_ORIENTATION
+    image = cv2.imread(str(path), flags)
     if image is None:
         return None
     return _apply_exif_orientation(image, _jpeg_exif_orientation(path))
