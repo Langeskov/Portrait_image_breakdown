@@ -14,8 +14,37 @@ from reverse_engineering.geometry import (
     pose_driven_person_points,
 )
 from reverse_engineering.intrinsics import IntrinsicsEvidence
+from reverse_engineering.calibration import CalibrationProfile, resolve_profile
 from reverse_engineering.rotation_solver import fuse_pose_and_scene, estimate_rotation_candidates
 from reverse_engineering.scene_geometry import SceneGeometryEvidence
+
+
+def _intrinsics_from_profile(focal_mm, image_w, image_h, profile: CalibrationProfile | None = None):
+    """Build pixel intrinsics using a selected calibration profile.
+
+    The profile changes the physical sensor prior, principal point and pixel
+    aspect ratio used by the solver. Generic remains the conservative default.
+    """
+    profile = profile or resolve_profile("Generic")
+    sensor_width = float(profile.sensor_width_mm) if profile.sensor_width_mm else 36.0
+    sensor_height = float(profile.sensor_height_mm) if profile.sensor_height_mm else None
+    intr = CameraIntrinsics.from_focal_mm(
+        focal_mm,
+        image_w,
+        image_h,
+        sensor_width_mm=sensor_width,
+        sensor_height_mm=sensor_height,
+    )
+    calibrated = profile.for_image(image_w, image_h)
+    if calibrated.principal_point_x is not None:
+        intr.cx = float(calibrated.principal_point_x)
+    if calibrated.principal_point_y is not None:
+        intr.cy = float(calibrated.principal_point_y)
+    aspect = max(float(calibrated.pixel_aspect_ratio), 1e-6)
+    intr.fy /= aspect
+    intr.sensor_width_mm = sensor_width
+    intr.sensor_height_mm = sensor_height if sensor_height is not None else intr.sensor_height_mm
+    return intr
 
 
 def _subject_position_loss(observed: tuple[float, float]) -> float:
@@ -41,7 +70,7 @@ def _dedupe_candidates(candidates, max_candidates):
     return out
 
 
-def _fallback_candidate(image_w, image_h, pose_keypoints, focal_mm=50.0):
+def _fallback_candidate(image_w, image_h, pose_keypoints, focal_mm=50.0, calibration_profile=None):
     kp = np.asarray(pose_keypoints, dtype=float)
     if kp.ndim != 2 or kp.shape[0] < 17 or kp.shape[1] < 3:
         return None
@@ -49,7 +78,7 @@ def _fallback_candidate(image_w, image_h, pose_keypoints, focal_mm=50.0):
     if int(valid.sum()) < 5:
         return None
     body_h = max(float(np.ptp(kp[:17, 1][valid])), 20.0)
-    intr = CameraIntrinsics.from_focal_mm(focal_mm, image_w, image_h)
+    intr = _intrinsics_from_profile(focal_mm, image_w, image_h, calibration_profile)
     distance = max(1.0, REF_PERSON_HEIGHT * intr.fy / body_h)
     center_y = float(np.mean(kp[:17, 1][valid]) / max(image_h, 1))
     height = float(np.clip(REF_PERSON_HEIGHT * (0.8 - 0.45 * center_y), 0.5, 1.8))
@@ -62,7 +91,6 @@ def _fallback_candidate(image_w, image_h, pose_keypoints, focal_mm=50.0):
 
 
 def _camera_candidate_visibility(candidate, pose_keypoints, image_w, image_h, subject_bbox=None):
-    """Score how safely the reconstructed proxy remains inside the image."""
     kp = np.asarray(pose_keypoints, dtype=float)
     proxy = pose_driven_person_points(kp, image_w, image_h)
     projected = CameraModel(candidate.intrinsics, candidate.extrinsics).project_points(proxy)
@@ -87,7 +115,6 @@ def _camera_candidate_visibility(candidate, pose_keypoints, image_w, image_h, su
 
 
 def _scene_has_level_reference(scene_evidence: SceneGeometryEvidence | None) -> bool:
-    """Return true when vertical scene lines are effectively parallel in the image."""
     if scene_evidence is None or scene_evidence.vertical_cluster is None:
         return False
     clusters = scene_evidence.clusters
@@ -101,17 +128,13 @@ def _scene_has_level_reference(scene_evidence: SceneGeometryEvidence | None) -> 
 
 
 def _apply_level_reference(candidate, scene_evidence: SceneGeometryEvidence | None):
-    """Suppress spurious large pitch when the detected verticals are near-parallel."""
     if not _scene_has_level_reference(scene_evidence):
         return candidate
     pitch = float(candidate.extrinsics.pitch)
     if abs(pitch) <= 8.0:
         return candidate
     clamped = math.copysign(8.0, pitch)
-    position, extrinsics = _camera_pose_from_params(
-        candidate.distance, candidate.height,
-        candidate.extrinsics.yaw, clamped, candidate.extrinsics.roll,
-    )
+    position, extrinsics = _camera_pose_from_params(candidate.distance, candidate.height, candidate.extrinsics.yaw, clamped, candidate.extrinsics.roll)
     candidate.extrinsics = extrinsics
     candidate.losses["pitch_level_reference"] = True
     candidate.losses["original_pitch_deg"] = round(pitch, 3)
@@ -123,16 +146,20 @@ def optimize_parameters(
     pose_keypoints=None, num_candidates=5, subject_bbox=None,
     scene_evidence: SceneGeometryEvidence | None = None,
     intrinsics_evidence: IntrinsicsEvidence | None = None,
+    calibration_profile: CalibrationProfile | None = None,
 ):
-    """Build ranked camera solutions from pose, scene and optional EXIF evidence."""
+    """Build ranked camera solutions from pose, scene, EXIF and calibration evidence."""
     del subject_scale, perspective_strength
     if pose_keypoints is None:
         return []
     kp = np.asarray(pose_keypoints, dtype=float)
     if kp.ndim != 2 or kp.shape[0] < 17 or kp.shape[1] < 3:
         return []
-
+    profile = calibration_profile or resolve_profile("Generic")
     focal_seeds = [28, 35, 50, 70, 85, 105, 135, 200]
+    if profile.default_focal_length_mm:
+        pf = float(profile.default_focal_length_mm)
+        focal_seeds = sorted(set(focal_seeds + [max(20.0, min(220.0, pf + d)) for d in (-8.0, -4.0, 0.0, 4.0, 8.0)]))
     if intrinsics_evidence is not None and intrinsics_evidence.has_focal_prior:
         focal = intrinsics_evidence.preferred_focal_mm()
         if focal is not None:
@@ -141,13 +168,14 @@ def optimize_parameters(
     pose_candidates = []
     fit_exception = None
     try:
-        pose_candidates = PoseSolver.fit_camera_to_pose(kp, image_w, image_h, subject_bbox=subject_bbox, focal_seeds=tuple(focal_seeds), num_candidates=max(8, num_candidates))
+        factory = lambda focal: _intrinsics_from_profile(focal, image_w, image_h, profile)
+        pose_candidates = PoseSolver.fit_camera_to_pose(kp, image_w, image_h, subject_bbox=subject_bbox, focal_seeds=tuple(focal_seeds), num_candidates=max(8, num_candidates), intrinsics_factory=factory)
     except Exception as exc:
         fit_exception = f"{type(exc).__name__}: {exc}"
 
     if not pose_candidates:
         fallback_focal = intrinsics_evidence.preferred_focal_mm() if intrinsics_evidence else None
-        fallback = _fallback_candidate(image_w, image_h, kp, fallback_focal or 50.0)
+        fallback = _fallback_candidate(image_w, image_h, kp, fallback_focal or profile.default_focal_length_mm or 50.0, profile)
         if fallback is None:
             return []
         if fit_exception:
@@ -159,6 +187,7 @@ def optimize_parameters(
     for c in pose_candidates:
         c = _apply_level_reference(c, scene_evidence)
         c.losses["subject_position_prior"] = round(position_penalty, 5)
+        c.losses["calibration_profile"] = profile.name
         if intrinsics_evidence is not None and intrinsics_evidence.preferred_focal_mm() is not None:
             hint = intrinsics_evidence.preferred_focal_mm()
             focal_delta = abs(float(c.focal_equiv_35mm) - float(hint))
@@ -189,6 +218,7 @@ def optimize_parameters(
                 point_inside, bbox_iou = _camera_candidate_visibility(c, kp, image_w, image_h, subject_bbox)
                 c.losses["in_frame_fraction"] = round(point_inside, 4)
                 c.losses["visibility_bbox_iou"] = round(bbox_iou, 4)
+                c.losses["calibration_profile"] = profile.name
                 if point_inside >= 0.55:
                     c.score = float(np.clip(c.score + 0.10 * (point_inside - 0.5) + 0.06 * (bbox_iou - 0.5), 0.01, 0.99))
                     visible_fused.append(c)
