@@ -54,6 +54,10 @@ Image
                     voice-ready text / SSML
 ```
 
+### Image orientation normalization
+
+All application entry points load photographs through `core/image_io.py`. JPEG EXIF orientation is decoded explicitly before pose detection, composition analysis, caching and projection so portrait images stored with a 90° camera rotation tag cannot enter the analysis pipeline as landscape frames. The CLI also reports the normalized frame orientation.
+
 ### Intrinsics and Calibration
 
 Reusable calibration profiles carry sensor size, principal point, pixel aspect ratio and optional focal priors. EXIF metadata and user-selected calibration remain separate evidence sources, while the active profile is applied to candidate projection intrinsics.
@@ -89,7 +93,7 @@ UNKNOWN
 
 ## v2.5 Field Mode
 
-Field Mode is a fourth workspace designed for shooting rather than post-analysis. It uses a large primary cue, compact confidence/landmark status, secondary cues, undo/redo, and separate plain-text and SSML copy actions. The output layer is device-independent and does not require a network speech service. The dark theme explicitly styles nested labels, list items, buttons and combo-box popups so foreground/background colors remain readable under the application's global palette.
+Field Mode is a fourth workspace designed for shooting rather than post-analysis. It uses a large primary cue, compact confidence/landmark status, secondary cues, undo/redo, and separate plain-text and SSML copy actions. The output layer is device-independent and does not require a network speech service. The dark theme explicitly isolates the nested labels, list items, buttons and combo-box popup from the application's light global palette.
 
 ## v3 Architecture
 
@@ -116,7 +120,17 @@ The first v3 layer is intentionally 2D-first. A single photograph does not provi
 - per-landmark pose deltas with directional photographer instructions
 - deterministic serialization for later reference-session recording
 
-The GUI now provides a **Reference** workspace where a reference photograph can be loaded independently. The current analyzed image is compared automatically, making the first v3 loop usable without changing the existing v2.5 reconstruction engine.
+The GUI now provides a **Reference** workspace where a reference photograph can be loaded independently, with EXIF orientation normalized before pose analysis. The current analyzed image is compared automatically, making the first v3 loop usable without changing the existing v2.5 reconstruction engine.
+
+### v3 Phase 2 — Reference target planning
+
+The second tranche converts the raw reference deltas into a reproducible shooting target instead of only listing differences. `reverse_engineering/reference_targets.py` separates the plan into:
+
+- **framing actions** — subject scale plus whole-subject horizontal/vertical placement
+- **pose actions** — the largest visible landmark deltas from the reference
+- **priority order** — fix composition first, then use a small number of pose changes
+
+The Reference workspace now renders this target plan directly under the two-image comparison. It remains image-space and conservative: the system does not pretend that a single image uniquely determines physical room coordinates or a unique camera translation.
 
 ## Test Organization
 
@@ -135,11 +149,12 @@ photo/
     ├── support_plane.py
     ├── image_refinement.py
     ├── reference_reconstruction.py
-    ├── simulation.py
+    ├── reference_targets.py
+a    ├── simulation.py
     └── engine_v2.py
 ```
 
-The unified suite covers geometry/projection conventions, camera fitting, calibration and EXIF evidence, relative depth, feasibility/support-plane constraints, image refinement and semantic anchors, evidence states, photographer cues and goal-oriented pose guidance, cue history and voice output, scene rotation, and v3 reference reconstruction. Model-backed end-to-end tests that require YOLO weights or a real photograph are intentionally kept outside the deterministic regression suite.
+The unified suite covers geometry/projection conventions, camera fitting, calibration and EXIF evidence, normalized image orientation, relative depth, feasibility/support-plane constraints, image refinement and semantic anchors, evidence states, photographer cues and goal-oriented pose guidance, cue history and voice output, scene rotation, Field Mode styling, and v3 phase-2 target planning. Model-backed end-to-end tests that require YOLO weights or a real photograph are intentionally kept outside the deterministic regression suite.
 
 ## Roadmap
 
@@ -147,7 +162,7 @@ The unified suite covers geometry/projection conventions, camera fitting, calibr
 
 **Functionally complete.**
 
-Completed: calibration profiles, EXIF + calibration separation, multi-candidate camera fitting, depth/feasibility/support-plane ranking, optical-axis diagnostics, bounded image-space refinement, non-Manhattan fallback, landmark-quality layer, Field Mode, cue history, and voice-ready output. Regression coverage is included in the unified suite.
+Completed: calibration profiles, EXIF + calibration separation, multi-candidate camera fitting, depth/feasibility/support-plane ranking, optical-axis diagnostics, bounded image-space refinement, non-Manhattan fallback, landmark-quality layer, Field Mode, cue history, voice-ready output, and explicit EXIF image-orientation normalization. Regression coverage is included in the unified suite.
 
 ### v3 — Reference Reconstruction and Scene Understanding
 
@@ -159,13 +174,18 @@ Completed: calibration profiles, EXIF + calibration separation, multi-candidate 
 - Directional photographer instructions derived from reference deltas
 - Unified regression coverage for reference anchors, deltas and composition comparison
 
+#### Completed second tranche
+- Reference target plan separating framing and pose actions
+- Conservative target ordering: composition first, pose second
+- Orientation-normalized reference loading
+- Regression coverage for target-plan generation
+
 #### Next
 - Multi-person 3D layout when independent depth evidence exists
 - Room/object plane reconstruction and editable scene anchors
 - Camera-to-scene calibration workflow using manually selected reference points
 - Reference-photo camera hypothesis comparison
 - Pose-to-reference delta visualization directly on the 2D canvas
-- Composition-aware target pose generation rather than only corrective suggestions
 - Temporal mode for video/live camera input, smoothing pose and camera estimates over time
 
 ### v4 — Assisted Shooting
