@@ -9,16 +9,8 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
-    QFrame,
-    QHBoxLayout,
-    QLabel,
-    QListWidget,
-    QListWidgetItem,
-    QPushButton,
-    QComboBox,
-    QVBoxLayout,
-    QWidget,
-    QApplication,
+    QAbstractItemView, QFrame, QHBoxLayout, QLabel, QListWidget,
+    QListWidgetItem, QPushButton, QComboBox, QVBoxLayout, QWidget, QApplication,
 )
 
 from core.cue_history import CueHistory
@@ -29,101 +21,50 @@ from core.voice_output import voice_ready_text, ssml
 
 
 class FieldModeWidget(QWidget):
-    """High-signal field UI with explicit foreground colors for dark surfaces."""
+    """High-signal field UI with an isolated, predictable dark palette."""
+
+    _THEME = {
+        "bg": "#10151c",
+        "surface": "#18202b",
+        "surface2": "#141b24",
+        "border": "#2c3847",
+        "border2": "#3a4858",
+        "text": "#e5e7eb",
+        "text2": "#aebdcd",
+        "muted": "#8fa3b8",
+        "accent": "#60a5fa",
+        "accent_text": "#ffffff",
+        "disabled": "#657384",
+    }
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.history = CueHistory(capacity=30)
         self._cues = []
 
+        t = self._THEME
         self.setObjectName("fieldMode")
-        self.setStyleSheet(
-            """
-            QWidget#fieldMode {
-                background: #10151c;
-                color: #e5e7eb;
-            }
-            QWidget#fieldMode QLabel {
-                background: transparent;
-                color: #e5e7eb;
-            }
-            QWidget#fieldMode QLabel#eyebrow {
-                color: #8fa3b8;
-                font-size: 11px;
-                letter-spacing: 1px;
-            }
-            QWidget#fieldMode QLabel#primaryCue {
-                color: #ffffff;
-                padding: 8px;
-            }
-            QWidget#fieldMode QLabel#status {
-                color: #aebdcd;
-            }
-            QWidget#fieldMode QLabel#metric {
-                color: #cbd5e1;
-                padding: 5px 8px;
-                background: #18202b;
-                border-radius: 5px;
-            }
-            QWidget#fieldMode QFrame#statusCard {
-                background: #18202b;
-                border: 1px solid #2c3847;
-                border-radius: 8px;
-            }
-            QWidget#fieldMode QListWidget {
-                background: #141b24;
-                border: 1px solid #293542;
-                border-radius: 6px;
-                padding: 4px;
-                color: #e5e7eb;
-            }
-            QWidget#fieldMode QListWidget::item {
-                color: #e5e7eb;
-                padding: 9px 8px;
-            }
-            QWidget#fieldMode QListWidget::item:selected {
-                color: #ffffff;
-                background: #263342;
-            }
-            QWidget#fieldMode QPushButton {
-                padding: 7px 12px;
-                border: 1px solid #3a4858;
-                border-radius: 5px;
-                background: #1b2530;
-                color: #e5e7eb;
-            }
-            QWidget#fieldMode QPushButton:hover {
-                background: #24303d;
-                color: #ffffff;
-            }
-            QWidget#fieldMode QPushButton:disabled {
-                color: #657384;
-                background: #161d25;
-            }
-            QWidget#fieldMode QComboBox {
-                padding: 6px 10px;
-                border: 1px solid #3a4858;
-                border-radius: 5px;
-                background: #151e28;
-                color: #e5e7eb;
-            }
-            QWidget#fieldMode QComboBox::drop-down {
-                border: none;
-                width: 22px;
-            }
-            QWidget#fieldMode QComboBox QAbstractItemView {
-                background: #151e28;
-                color: #e5e7eb;
-                selection-background-color: #263342;
-                selection-color: #ffffff;
-                border: 1px solid #3a4858;
-            }
-            QWidget#fieldMode QComboBox QAbstractItemView::item {
-                color: #e5e7eb;
-                padding: 6px 8px;
-            }
-            """
-        )
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setStyleSheet(f"""
+            QWidget#fieldMode {{ background: {t['bg']}; color: {t['text']}; }}
+            QWidget#fieldMode QLabel {{ color: {t['text']}; background: transparent; }}
+            QWidget#fieldMode QLabel#eyebrow {{ color: {t['muted']}; font-size: 11px; letter-spacing: 1px; }}
+            QWidget#fieldMode QLabel#status {{ color: {t['text2']}; }}
+            QWidget#fieldMode QLabel#metric {{ color: {t['text']}; padding: 5px 8px; background: {t['surface']}; border-radius: 5px; }}
+            QWidget#fieldMode QLabel#primaryCue {{ color: {t['text']}; background: {t['surface']}; border: 1px solid {t['border']}; border-radius: 8px; padding: 14px; }}
+            QWidget#fieldMode QFrame#statusCard {{ background: {t['surface']}; border: 1px solid {t['border']}; border-radius: 8px; }}
+            QWidget#fieldMode QListWidget {{ color: {t['text']}; background: {t['surface2']}; border: 1px solid {t['border']}; border-radius: 6px; padding: 4px; outline: 0; }}
+            QWidget#fieldMode QListWidget::item {{ color: {t['text']}; padding: 9px 8px; border-radius: 4px; }}
+            QWidget#fieldMode QListWidget::item:selected {{ color: {t['accent_text']}; background: #264766; }}
+            QWidget#fieldMode QScrollBar {{ background: {t['surface2']}; }}
+            QWidget#fieldMode QPushButton {{ color: {t['text']}; padding: 7px 12px; border: 1px solid {t['border2']}; border-radius: 5px; background: {t['surface']}; }}
+            QWidget#fieldMode QPushButton:hover {{ background: #223042; }}
+            QWidget#fieldMode QPushButton:pressed {{ background: #273b52; }}
+            QWidget#fieldMode QPushButton:disabled {{ color: {t['disabled']}; background: #161d25; border-color: {t['border']}; }}
+            QWidget#fieldMode QComboBox {{ color: {t['text']}; padding: 6px 10px; border: 1px solid {t['border2']}; border-radius: 5px; background: {t['surface']}; }}
+            QWidget#fieldMode QComboBox:hover {{ border-color: {t['accent']}; }}
+            QWidget#fieldMode QComboBox QAbstractItemView {{ color: {t['text']}; background: {t['surface']}; border: 1px solid {t['border2']}; selection-background-color: #264766; selection-color: {t['accent_text']}; padding: 4px; }}
+        """)
 
         lo = QVBoxLayout(self)
         lo.setContentsMargins(20, 18, 20, 18)
@@ -135,12 +76,13 @@ class FieldModeWidget(QWidget):
         header.addWidget(eyebrow)
         header.addStretch(1)
         output_label = QLabel("Output")
-        output_label.setObjectName("outputLabel")
+        output_label.setObjectName("fieldHeaderLabel")
         header.addWidget(output_label)
         self._mode = QComboBox()
         self._mode.addItems([m.value for m in CueMode])
         self._mode.setCurrentText(CueMode.NORMAL.value)
         self._mode.setMinimumWidth(90)
+        self._mode.setView(QAbstractItemView())
         header.addWidget(self._mode)
         lo.addLayout(header)
 
@@ -152,7 +94,6 @@ class FieldModeWidget(QWidget):
         self._status.setObjectName("status")
         self._status.setWordWrap(True)
         card_lo.addWidget(self._status)
-
         metrics = QHBoxLayout()
         self._confidence = QLabel("Confidence —")
         self._confidence.setObjectName("metric")
@@ -191,20 +132,19 @@ class FieldModeWidget(QWidget):
         lo.addLayout(actions)
 
         secondary_header = QHBoxLayout()
-        secondary = QLabel("SECONDARY CUES")
-        secondary.setObjectName("eyebrow")
-        secondary_header.addWidget(secondary)
+        secondary_label = QLabel("SECONDARY CUES")
+        secondary_label.setObjectName("eyebrow")
+        secondary_header.addWidget(secondary_label)
         secondary_header.addStretch(1)
         self._count = QLabel("0")
         self._count.setObjectName("metric")
         secondary_header.addWidget(self._count)
         lo.addLayout(secondary_header)
-
         self._detail = QListWidget()
         self._detail.setMinimumHeight(150)
         lo.addWidget(self._detail, 1)
 
-        self._mode.currentTextChanged.connect(self._render_current)
+        self._mode.currentTextChanged.connect(lambda _: self._render_current())
         self._undo.clicked.connect(self._on_undo)
         self._redo.clicked.connect(self._on_redo)
         self._copy.clicked.connect(self._copy_voice)
@@ -212,22 +152,27 @@ class FieldModeWidget(QWidget):
         self._refresh_buttons()
 
     def set_analysis(self, action, orientation, camera, composition, pose=None, confidence=None):
-        """Generate and render cues from the complete current analysis bundle."""
         cues = generate_photographer_cues(action, orientation, camera, composition)
         quality = assess_landmarks(pose.landmarks) if pose is not None else None
         self.set_cues(cues, confidence, quality)
 
-    def set_cues(self, cues, confidence=None, quality=None):
-        cues = list(cues or [])
-        candidate_text = tuple(c.cue for c in cues)
+    def set_cues(self, cues, confidence: float | None = None, quality=None):
+        candidate_text = tuple(c.cue for c in cues or [])
         current = self.history.current
         if current is None or current.cue_text != candidate_text:
-            self.history.push(cues)
-        self._cues = cues
+            self.history.push(list(cues or []))
+        self._cues = list(cues or [])
         self._status.setText("Analysis ready · cue history records only meaningful changes")
-        self._confidence.setText(f"Confidence {confidence:.0%}" if confidence is not None else "Confidence —")
-        self._landmarks.setText(f"Landmarks {quality.visible_count}/17" if quality is not None else "Landmarks —")
-        self._pose_state.setText(f"Pose {quality.pose_state}" if quality is not None else "Pose —")
+        if confidence is not None:
+            self._confidence.setText(f"Confidence {confidence:.0%}")
+        else:
+            self._confidence.setText("Confidence —")
+        if quality is not None:
+            self._landmarks.setText(f"Landmarks {quality.visible_count}/17")
+            self._pose_state.setText(f"Pose {quality.pose_state}")
+        else:
+            self._landmarks.setText("Landmarks —")
+            self._pose_state.setText("Pose —")
         self._render_current()
 
     def _mode_enum(self):
@@ -236,37 +181,37 @@ class FieldModeWidget(QWidget):
     def _render_current(self):
         snap = self.history.current
         if snap is None:
-            self._primary.setText("保持自然，我会根据画面继续调整。")
             self._detail.clear()
             self._count.setText("0")
-            self._refresh_buttons()
             return
         self._primary.setText(snap.summary)
         self._detail.clear()
         formatted = format_cues(self._cues, self._mode_enum()) if tuple(c.cue for c in self._cues) == snap.cue_text else list(snap.cue_text)
-        for line in formatted[1:6]:
+        secondary = formatted[1:6]
+        for line in secondary:
             self._detail.addItem(QListWidgetItem(line))
-        self._count.setText(str(max(0, min(5, len(formatted) - 1))))
+        self._count.setText(str(len(secondary)))
         self._refresh_buttons()
 
     def _on_undo(self):
         snap = self.history.undo()
         if snap:
-            self._render_snapshot(snap)
+            self._primary.setText(snap.summary)
+            self._detail.clear()
+            for line in snap.cue_text[1:6]:
+                self._detail.addItem(QListWidgetItem(line))
+            self._count.setText(str(min(5, max(0, len(snap.cue_text) - 1))))
         self._refresh_buttons()
 
     def _on_redo(self):
         snap = self.history.redo()
         if snap:
-            self._render_snapshot(snap)
+            self._primary.setText(snap.summary)
+            self._detail.clear()
+            for line in snap.cue_text[1:6]:
+                self._detail.addItem(QListWidgetItem(line))
+            self._count.setText(str(min(5, max(0, len(snap.cue_text) - 1))))
         self._refresh_buttons()
-
-    def _render_snapshot(self, snap):
-        self._primary.setText(snap.summary)
-        self._detail.clear()
-        for line in snap.cue_text[1:6]:
-            self._detail.addItem(QListWidgetItem(line))
-        self._count.setText(str(min(5, max(0, len(snap.cue_text) - 1))))
 
     def _refresh_buttons(self):
         self._undo.setEnabled(self.history.can_undo)
