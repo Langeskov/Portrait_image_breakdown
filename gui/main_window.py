@@ -223,6 +223,7 @@ class MainWindow(QMainWindow):
         self._chk_bbox = QCheckBox("BBox"); self._chk_bbox.setChecked(True); self._chk_bbox.stateChanged.connect(self._update_overlays); tb.addWidget(self._chk_bbox)
         self._chk_vweight = QCheckBox("Visual Weight"); self._chk_vweight.stateChanged.connect(self._update_overlays); tb.addWidget(self._chk_vweight)
         self._chk_headroom = QCheckBox("Headroom"); self._chk_headroom.stateChanged.connect(self._update_overlays); tb.addWidget(self._chk_headroom)
+        self._chk_reference_target = QCheckBox("Reference Target"); self._chk_reference_target.setChecked(True); self._chk_reference_target.stateChanged.connect(self._update_overlays); tb.addWidget(self._chk_reference_target)
 
         self._tabs = QTabBar(); [self._tabs.addTab(t) for t in ("2D Analysis", "3D Reverse Engineering", "Results")]; self._tabs.currentChanged.connect(self._sw)
         self._ws = QStackedWidget(); self._w2 = Analysis2DWorkspace(); self._w3 = Reverse3DWorkspace(); self._wr = ResultsWorkspace(); [self._ws.addWidget(w) for w in (self._w2, self._w3, self._wr)]
@@ -300,7 +301,12 @@ class MainWindow(QMainWindow):
             self._field_mode.set_analysis(bundle.action, bundle.orientation, bundle.camera, bundle.composition, bundle.pose, confidence)
 
     def _update_overlays(self):
-        self._w2.set_overlay_options(skeleton=self._chk_skeleton.isChecked(), thirds=self._chk_thirds.isChecked(), center=self._chk_center.isChecked(), bbox=self._chk_bbox.isChecked(), visual_weight=self._chk_vweight.isChecked(), headroom=self._chk_headroom.isChecked())
+        self._w2.set_overlay_options(
+            skeleton=self._chk_skeleton.isChecked(), thirds=self._chk_thirds.isChecked(),
+            center=self._chk_center.isChecked(), bbox=self._chk_bbox.isChecked(),
+            visual_weight=self._chk_vweight.isChecked(), headroom=self._chk_headroom.isChecked(),
+            reference_target=self._chk_reference_target.isChecked(),
+        )
 
     def _sw(self, i): self._ws.setCurrentIndex(i)
 
