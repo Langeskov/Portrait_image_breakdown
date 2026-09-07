@@ -122,6 +122,23 @@ The GUI exposes the built-in profiles from the toolbar. The selected profile is 
 
 Profile values remain explicit priors. They do not turn monocular reconstruction into metrically exact photogrammetry.
 
+## Evidence State Model
+
+v2.5 now makes evidence provenance explicit instead of presenting every number as equally certain:
+
+```text
+OBSERVED
+  ↓ directly supported by pixels / EXIF / selected calibration input
+
+ESTIMATED
+  ↓ inferred from geometry, pose, priors or model confidence
+
+UNKNOWN
+  ↓ insufficient evidence; do not treat as measured
+```
+
+`EstimatedValue.evidence_state` exposes this distinction to both serialized results and the GUI Results view. The Results view also reports aggregate observed / estimated / unknown counts and keeps the uncertainty notes visible next to the reverse-engineering report.
+
 ## 2D Workspace
 
 The 2D workspace is the evidence view. It focuses on the original photograph and analysis results without mixing in 3D controls.
@@ -248,6 +265,7 @@ photo/
 ├── test_pose_guidance.py
 ├── test_photographer_cues.py
 ├── test_v25_foundation.py
+├── test_v25_evidence_state.py
 ├── README.md
 ├── core/
 │   ├── pose_detector.py
@@ -331,10 +349,10 @@ The application entry point installs the active reverse-engineering engine for b
 - GUI calibration profile selector and reconstruction refresh
 - CLI `--calibration-profile` selection
 - Photographer cue presentation modes: concise / normal / technical
-- Regression coverage for calibration-driven projection intrinsics and cue modes
+- Explicit observed / estimated / unknown evidence states in serialized results and GUI Results view
+- Regression coverage for calibration-driven projection intrinsics, cue modes and evidence-state semantics
 
 #### Next
-- Explicit observed / estimated / unknown confidence presentation in the GUI
 - Scene/depth constraints for camera distance and height
 - Mature monocular depth provider behind the existing `DepthProvider` interface
 - Stronger non-Manhattan scene handling
