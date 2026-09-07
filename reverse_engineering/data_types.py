@@ -1,6 +1,7 @@
 """Core reverse-engineering data structures."""
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Optional
@@ -33,10 +34,25 @@ class EstimatedValue:
             return ConfidenceLevel.LOW
         return ConfidenceLevel.UNKNOWN
 
+    @property
+    def evidence_state(self) -> str:
+        """Human-facing provenance state used by the v2.5 field UI.
+
+        Observed values come directly from image/metadata evidence. Values with
+        a non-zero confidence are estimates. Zero-confidence values are kept as
+        explicit unknowns instead of being presented as precise defaults.
+        """
+        if self.is_observed:
+            return "observed"
+        if self.confidence > 0:
+            return "estimated"
+        return "unknown"
+
     def to_dict(self) -> dict:
         d = {"estimated": self.value, "unit": self.unit,
              "confidence": round(float(self.confidence), 3),
              "confidence_level": self.confidence_level.value,
+             "evidence_state": self.evidence_state,
              "basis": self.basis, "is_observed": self.is_observed}
         if self.range_min is not None or self.range_max is not None:
             d["range"] = [self.range_min if self.range_min is not None else self.value,
@@ -147,6 +163,37 @@ class ReverseEngineeringResult:
     def candidate_solutions(self) -> list:
         return self._sim_candidates
 
+    def evidence_summary(self) -> dict:
+        """Return explicit observed / estimated / unknown states for the UI."""
+        estimated_values = {
+            "camera_height": self.camera_pose.camera_height,
+            "camera_distance": self.camera_pose.camera_distance,
+            "camera_pitch": self.camera_pose.camera_pitch,
+            "camera_yaw": self.camera_pose.camera_yaw,
+            "camera_roll": self.camera_pose.camera_roll,
+            "focal_length_category": self.focal_length.category,
+            "focal_length_35mm": self.focal_length.equivalent_35mm,
+            "dof_type": self.depth_of_field.dof_type,
+            "aperture": self.depth_of_field.aperture_range,
+            "motion_blur": self.motion_blur.blur_type,
+            "shutter": self.motion_blur.shutter_range,
+        }
+        counts = {"observed": 0, "estimated": 0, "unknown": 0}
+        fields = {}
+        for name, value in estimated_values.items():
+            state = value.evidence_state
+            counts[state] += 1
+            fields[name] = value.to_dict()
+        observed_metadata = bool(self.intrinsics_evidence)
+        if observed_metadata:
+            counts["observed"] += 1
+        return {
+            "counts": counts,
+            "fields": fields,
+            "observed_metadata": observed_metadata,
+            "uncertainties": list(self.uncertainties),
+        }
+
     def to_shooting_state(self) -> ShootingState:
         return ShootingState(
             camera={"height": self.camera_pose.camera_height.value,
@@ -240,6 +287,15 @@ class ReverseEngineeringResult:
             lines.extend(["", "-- Candidate Solutions --"])
             for i, c in enumerate(self._sim_candidates[:5]):
                 lines.append(f"  #{i + 1}: {c.focal_equiv_35mm}mm / {c.distance:.2f}m / h={c.height:.2f}m  (score {c.score:.2f})")
+        summary = self.evidence_summary()
+        counts = summary["counts"]
+        lines.extend([
+            "",
+            "-- Evidence State --",
+            f"  observed:  {counts['observed']}",
+            f"  estimated: {counts['estimated']}",
+            f"  unknown:   {counts['unknown']}",
+        ])
         lines.extend(["", f"-- Overall Confidence: {self.overall_confidence:.0%} --"])
         if self.uncertainties:
             lines.append("  Uncertainties:")
