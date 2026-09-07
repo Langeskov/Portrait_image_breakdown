@@ -282,3 +282,34 @@ def test_v3_phase2_target_plan_distinguishes_framing_and_pose():
     text = plan.as_text()
     assert plan.framing_actions and plan.pose_actions
     assert '构图：' in text and '姿态：' in text
+
+
+def test_v3_phase2_canvas_target_geometry_is_resolution_independent():
+    reference = _reference_pose(offset_x=10, offset_y=5, scale=1.0)
+    current = _reference_pose(offset_x=-12, offset_y=9, scale=.82)
+    reference_comp = build_reference_composition(reference, 200, 180)
+    current_comp = build_reference_composition(current, 800, 1200)
+    deltas = compare_pose_to_reference(reference, current, 800, 1200)
+    assert deltas
+    assert all(0.0 <= d.target_x <= 1.0 and 0.0 <= d.target_y <= 1.0 for d in deltas)
+    # Target positions are expressed in the reference frame, so they do not
+    # depend on the current image pixel dimensions.
+    assert np.isclose(deltas[0].target_x, reference.landmarks[0].x / reference.image_width)
+    assert np.isclose(deltas[0].target_y, reference.landmarks[0].y / reference.image_height)
+
+
+def test_v3_phase2_canvas_exposes_reference_target_api():
+    from PySide6.QtWidgets import QApplication
+    from gui.canvas import ImageCanvas
+    app = QApplication.instance() or QApplication([])
+    canvas = ImageCanvas()
+    reference = build_reference_composition(_reference_pose(), 200, 180)
+    current = build_reference_composition(_reference_pose(offset_x=12), 200, 180)
+    deltas = compare_pose_to_reference(_reference_pose(), _reference_pose(offset_x=12), 200, 180)
+    canvas.set_reference_target(reference, current, deltas, visible=True)
+    assert canvas._reference_target is reference
+    assert canvas._reference_current is current
+    assert canvas._show_reference_target is True
+    canvas.clear_reference_target()
+    assert canvas._reference_target is None and not canvas._show_reference_target
+    canvas.close()
