@@ -27,12 +27,16 @@ COLOR_VWEIGHT = QColor(244, 63, 94, 120)
 COLOR_REVERSE = QColor(217, 119, 6, 210)
 COLOR_REVERSE_SOFT = QColor(217, 119, 6, 110)
 COLOR_REVERSE_TEXT = QColor(146, 64, 14)
+COLOR_TARGET = QColor(14, 116, 144, 230)
+COLOR_TARGET_SOFT = QColor(14, 116, 144, 90)
+COLOR_TARGET_FILL = QColor(14, 116, 144, 26)
+COLOR_TARGET_TEXT = QColor(8, 82, 101)
 CANVAS_BG = QColor(250, 251, 252)
 CANVAS_TEXT = QColor(107, 114, 128)
 
 
 class ImageCanvas(QWidget):
-    """Image display canvas with explicit 2D evidence overlay layers."""
+    """Image display canvas with explicit 2D evidence and reference-target overlays."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -44,6 +48,9 @@ class ImageCanvas(QWidget):
         self._camera: Optional[CameraResult] = None
         self._composition: Optional[CompositionResult] = None
         self._reverse: Optional[ReverseEngineeringResult] = None
+        self._reference_target = None
+        self._reference_current = None
+        self._reference_deltas = []
         self._show_skeleton = True
         self._show_thirds = True
         self._show_center = True
@@ -54,6 +61,7 @@ class ImageCanvas(QWidget):
         self._show_reverse_lines = True
         self._show_reverse_vp = True
         self._show_reverse_axis = True
+        self._show_reference_target = False
         self._scale = 1.0
         self._offset = QPoint(0, 0)
 
@@ -89,10 +97,35 @@ class ImageCanvas(QWidget):
         self._reverse = result
         self.update()
 
+    def set_reference_target(self, reference, current=None, deltas=None, visible=True):
+        """Attach the v3 target plan to the current-image canvas.
+
+        Reference coordinates are normalized onto the current image. This keeps
+        the overlay resolution-independent and makes the target frame stable
+        even when the reference and current photos have different dimensions.
+        """
+        self._reference_target = reference
+        self._reference_current = current
+        self._reference_deltas = list(deltas or [])
+        self._show_reference_target = bool(visible and reference is not None)
+        self.update()
+
+    def clear_reference_target(self):
+        self._reference_target = None
+        self._reference_current = None
+        self._reference_deltas = []
+        self._show_reference_target = False
+        self.update()
+
+    def set_reference_target_visible(self, visible: bool):
+        self._show_reference_target = bool(visible and self._reference_target is not None)
+        self.update()
+
     def set_overlay_options(self, skeleton=True, thirds=True, center=True,
                             bbox=True, visual_weight=False, headroom=False,
                             reverse=False, reverse_lines=True,
-                            reverse_vp=True, reverse_axis=True):
+                            reverse_vp=True, reverse_axis=True,
+                            reference_target=None):
         self._show_skeleton = skeleton
         self._show_thirds = thirds
         self._show_center = center
@@ -103,6 +136,8 @@ class ImageCanvas(QWidget):
         self._show_reverse_lines = reverse_lines
         self._show_reverse_vp = reverse_vp
         self._show_reverse_axis = reverse_axis
+        if reference_target is not None:
+            self._show_reference_target = bool(reference_target and self._reference_target is not None)
         self.update()
 
     def _update_pixmap(self):
@@ -141,6 +176,8 @@ class ImageCanvas(QWidget):
             self._draw_subject_marker(painter, ox, oy, dw, dh)
         if self._show_headroom:
             self._draw_headroom_guide(painter, ox, oy, dw, dh)
+        if self._show_reference_target:
+            self._draw_reference_target(painter, ox, oy, dw, dh)
         if self._show_reverse and self._reverse:
             self._draw_reverse_overlay(painter, ox, oy, dw, dh)
         if self._show_skeleton:
@@ -156,6 +193,111 @@ class ImageCanvas(QWidget):
             painter.setBrush(QBrush(COLOR_VWEIGHT))
             painter.drawEllipse(QPoint(mx, my), 6, 6)
         painter.end()
+
+    def _draw_reference_target(self, painter, ox, oy, dw, dh):
+        target = self._reference_target
+        if target is None:
+            return
+        current = self._reference_current
+        reference_bbox = getattr(target, "subject_bbox", None)
+        if reference_bbox is None:
+            return
+
+        ref_w = max(float(getattr(target, "width", 1)), 1.0)
+        ref_h = max(float(getattr(target, "height", 1)), 1.0)
+        tx1, ty1, tx2, ty2 = reference_bbox
+        x1 = np.clip(tx1 / ref_w, 0.0, 1.0)
+        y1 = np.clip(ty1 / ref_h, 0.0, 1.0)
+        x2 = np.clip(tx2 / ref_w, 0.0, 1.0)
+        y2 = np.clip(ty2 / ref_h, 0.0, 1.0)
+        target_rect = QRect(
+            ox + int(x1 * dw), oy + int(y1 * dh),
+            max(1, int((x2 - x1) * dw)), max(1, int((y2 - y1) * dh)),
+        )
+
+        painter.setPen(QPen(COLOR_TARGET_SOFT, 1, Qt.DashLine))
+        painter.setBrush(QBrush(COLOR_TARGET_FILL))
+        painter.drawRect(target_rect)
+        painter.setPen(QPen(COLOR_TARGET, 2, Qt.DashLine))
+        painter.setBrush(Qt.NoBrush)
+        painter.drawRect(target_rect)
+        painter.setFont(QFont("Consolas", 8, QFont.Bold))
+        painter.setPen(COLOR_TARGET_TEXT)
+        painter.drawText(target_rect.left() + 6, max(oy + 14, target_rect.top() - 5), "TARGET FRAME")
+
+        target_c = getattr(target, "subject_center", (0.5 * ref_w, 0.5 * ref_h))
+        tx, ty = target_c[0] / ref_w, target_c[1] / ref_h
+        target_pt = QPoint(ox + int(tx * dw), oy + int(ty * dh))
+        current_center = None
+        if current is not None:
+            cw = max(float(getattr(current, "width", 1)), 1.0)
+            ch = max(float(getattr(current, "height", 1)), 1.0)
+            ccx, ccy = getattr(current, "subject_center", (0.5 * cw, 0.5 * ch))
+            current_center = QPoint(ox + int(np.clip(ccx / cw, 0.0, 1.0) * dw), oy + int(np.clip(ccy / ch, 0.0, 1.0) * dh))
+
+        if current_center is not None:
+            self._draw_arrow(painter, current_center, target_pt, COLOR_TARGET, 2)
+            painter.setBrush(QBrush(COLOR_TARGET))
+            painter.setPen(QPen(COLOR_TARGET, 1))
+            painter.drawEllipse(target_pt, 6, 6)
+            painter.setPen(COLOR_TARGET_TEXT)
+            painter.setFont(QFont("Consolas", 8, QFont.Bold))
+            painter.drawText(target_pt.x() + 10, target_pt.y() - 8, "TARGET CENTER")
+
+        # Pose arrows: reference normalized landmark locations become target
+        # positions on the current canvas. Limit to the largest actionable deltas.
+        labels = {
+            "nose": 0, "left_shoulder": 5, "right_shoulder": 6,
+            "left_elbow": 7, "right_elbow": 8, "left_wrist": 9,
+            "right_wrist": 10, "left_hip": 11, "right_hip": 12,
+            "left_knee": 13, "right_knee": 14,
+            "left_ankle": 15, "right_ankle": 16,
+        }
+        if self._pose is None:
+            return
+        current_w = max(float(self._pose.image_width), 1.0)
+        current_h = max(float(self._pose.image_height), 1.0)
+        ranked = sorted(self._reference_deltas, key=lambda d: float(getattr(d, "distance", 0.0)), reverse=True)[:5]
+        reference_pose = getattr(self, "_reference_pose", None)
+        # The ReferenceComposition itself does not carry pose landmarks. When
+        # a delta exposes dx/dy, reconstruct the target from current + delta.
+        # dx/dy are normalized reference-current deltas, so the target point is
+        # current point shifted by that amount.
+        for delta in ranked:
+            idx = labels.get(getattr(delta, "landmark", ""))
+            if idx is None or idx >= len(self._pose.landmarks):
+                continue
+            lm = self._pose.landmarks[idx]
+            if lm.visibility < 0.35:
+                continue
+            start = QPoint(ox + int(lm.world_x * dw), oy + int(lm.world_y * dh))
+            tx_norm = float(np.clip(lm.world_x + getattr(delta, "dx", 0.0), 0.0, 1.0))
+            ty_norm = float(np.clip(lm.world_y + getattr(delta, "dy", 0.0), 0.0, 1.0))
+            end = QPoint(ox + int(tx_norm * dw), oy + int(ty_norm * dh))
+            self._draw_arrow(painter, start, end, COLOR_TARGET, 1)
+            painter.setPen(QPen(COLOR_TARGET, 1))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawEllipse(end, 4, 4)
+            painter.setFont(QFont("Consolas", 7))
+            painter.setPen(COLOR_TARGET_TEXT)
+            painter.drawText(end.x() + 6, end.y() + 4, getattr(delta, "landmark", ""))
+
+    @staticmethod
+    def _draw_arrow(painter, start: QPoint, end: QPoint, color: QColor, width: int = 2):
+        if start == end:
+            return
+        painter.setPen(QPen(color, width, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        painter.drawLine(start, end)
+        dx = float(end.x() - start.x())
+        dy = float(end.y() - start.y())
+        length = max(float(np.hypot(dx, dy)), 1.0)
+        ux, uy = dx / length, dy / length
+        px, py = -uy, ux
+        size = 8.0 if width >= 2 else 6.0
+        left = QPoint(int(end.x() - ux * size + px * size * 0.55), int(end.y() - uy * size + py * size * 0.55))
+        right = QPoint(int(end.x() - ux * size - px * size * 0.55), int(end.y() - uy * size - py * size * 0.55))
+        painter.drawLine(end, left)
+        painter.drawLine(end, right)
 
     def _draw_reverse_overlay(self, painter, ox, oy, dw, dh):
         result = self._reverse
