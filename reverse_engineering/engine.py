@@ -13,6 +13,7 @@ from reverse_engineering.motion_blur import analyze_motion_blur
 from reverse_engineering.shooting_technique import classify_techniques
 from reverse_engineering.simulation import optimize_parameters
 from reverse_engineering.depth_provider import MonocularDepthProvider
+from reverse_engineering.scene_geometry import analyze_scene_geometry
 from core.pose_detector import PoseResult, LandmarkIndex as LI
 
 
@@ -82,11 +83,17 @@ class ReverseEngineeringEngine:
 
     def analyze(self,image,pose=None,bbox=None):
         uncertainties=[]; h,w=image.shape[:2]
-        composition=_analyze_composition_extended(image,pose,bbox); perspective=analyze_perspective(image)
+        composition=_analyze_composition_extended(image,pose,bbox)
+        scene_evidence=analyze_scene_geometry(image, exclude_bbox=bbox)
+        perspective=analyze_perspective(image)
         fitted=[]
         if pose:
             kp=_extract_keypoints_pixels(pose)
-            fitted=optimize_parameters(w,h,composition.subject_scale,composition.subject_position,perspective.perspective_strength.value,kp,num_candidates=5,subject_bbox=bbox)
+            fitted=optimize_parameters(
+                w,h,composition.subject_scale,composition.subject_position,
+                perspective.perspective_strength.value,kp,num_candidates=5,
+                subject_bbox=bbox,scene_evidence=scene_evidence,
+            )
         if fitted:
             camera_pose=_camera_pose_from_candidate(fitted[0])
             focal_length=estimate_focal_length(perspective.perspective_strength.value,perspective.perspective_type.value,composition.subject_scale,fitted)
@@ -99,5 +106,9 @@ class ReverseEngineeringEngine:
         conf_vals=[focal_length.category.confidence,focal_length.equivalent_35mm.confidence,depth_of_field.dof_type.confidence,motion_blur.blur_type.confidence,camera_pose.camera_height.confidence,camera_pose.camera_distance.confidence]
         overall_conf=float(np.mean(conf_vals))
         uncertainties += ["exact focal length cannot be uniquely determined from a single image","sensor format and crop status may be unknown","aperture is inferred only from blur/depth characteristics","camera height/distance remain coupled without scene scale or depth"]
+        if not scene_evidence.has_three_directions:
+            uncertainties.append("scene rotation evidence is weak; camera angles fall back to pose-only constraints")
+        else:
+            uncertainties.append("camera rotation is fused with Manhattan scene geometry and remains multi-solution")
         result=ReverseEngineeringResult(image_size=(w,h),subject_bbox=bbox,subject_keypoints=pose.landmarks[:17] if pose else None,subject_scale=composition.subject_scale,edge_lines=perspective.line_segments,blur_regions={},perspective=perspective,camera_pose=camera_pose,focal_length=focal_length,depth_of_field=depth_of_field,motion_blur=motion_blur,composition=composition,shooting_techniques=shooting_techniques,overall_confidence=overall_conf,uncertainties=uncertainties,_sim_candidates=fitted)
         result._camera_actions=_generate_camera_actions(result,fitted); return result
