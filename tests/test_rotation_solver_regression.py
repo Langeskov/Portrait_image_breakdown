@@ -3,12 +3,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from reverse_engineering.rotation_solver import (
-    RotationCandidate,
-    _camera_from_candidate,
-    _estimate_line_roll,
-)
-from reverse_engineering.geometry import CameraIntrinsics, PoseCandidate, _camera_pose_from_params
+from reverse_engineering.rotation_solver import RotationCandidate, _camera_from_candidate, _estimate_line_roll
+from reverse_engineering.geometry import CameraIntrinsics, CameraModel, PoseCandidate, _camera_pose_from_params, pose_driven_person_points
 from reverse_engineering.scene_geometry import LineSegment, SceneGeometryEvidence
 
 
@@ -37,19 +33,13 @@ def _evidence(lines, width=1200, height=800):
 
 def test_line_roll_runner_up_score_is_scalar_not_candidate_tuple():
     lines = [
-        _line(0.0, index=0),
-        _line(0.5, index=1),
-        _line(-0.5, index=2),
-        _line(89.5, index=3),
-        _line(-89.0, index=4),
-        _line(90.0, index=5),
-        _line(1.0, index=6),
-        _line(89.0, index=7),
+        _line(0.0, index=0), _line(0.5, index=1), _line(-0.5, index=2),
+        _line(89.5, index=3), _line(-89.0, index=4), _line(90.0, index=5),
+        _line(1.0, index=6), _line(89.0, index=7),
     ]
     roll, confidence, count = _estimate_line_roll(_evidence(lines))
     assert count == len(lines)
-    assert roll is not None
-    assert np.isfinite(roll)
+    assert roll is not None and np.isfinite(roll)
     assert 0.0 <= confidence <= 1.0
 
 
@@ -58,11 +48,7 @@ def test_single_strong_scene_family_recovers_modest_camera_tilt():
         _line(7.0 + delta, length=520.0, index=i, x_step=125.0)
         for i, delta in enumerate((-0.8, -0.3, 0.0, 0.2, 0.5, 0.8))
     ]
-    # A small amount of diagonal texture should not displace the scene family.
-    lines += [
-        _line(38.0, length=180.0, index=i, x_step=35.0)
-        for i in range(4)
-    ]
+    lines += [_line(38.0, length=180.0, index=i, x_step=35.0) for i in range(4)]
     roll, confidence, count = _estimate_line_roll(_evidence(lines))
     assert count == len(lines)
     assert roll is not None
@@ -71,9 +57,7 @@ def test_single_strong_scene_family_recovers_modest_camera_tilt():
 
 
 def test_diagonal_only_geometry_is_not_promoted_to_camera_roll():
-    lines = []
-    for i, angle in enumerate((32.0, 37.0, 42.0, 47.0, 52.0) * 8):
-        lines.append(_line(angle, length=220.0, index=i, x_step=7.0))
+    lines = [_line(angle, length=220.0, index=i, x_step=7.0) for i, angle in enumerate((32.0, 37.0, 42.0, 47.0, 52.0) * 8)]
     roll, confidence, count = _estimate_line_roll(_evidence(lines))
     assert count == len(lines)
     assert roll is None
@@ -95,10 +79,10 @@ def test_roll_only_rotation_preserves_pose_yaw_pitch_and_focal():
         evidence=("roll-only fixture",),
         orientation_source="roll_only",
     )
-    k = np.zeros((17, 3), dtype=float)
-    k[:, 2] = 0.9
-    for i in range(17):
-        k[i, :2] = (500.0 + (i % 3) * 8.0, 160.0 + i * 28.0)
+    proxy = pose_driven_person_points(np.zeros((17, 3), dtype=float), 1000, 800)
+    # Build a self-consistent observed pose from the pose camera so fusion is
+    # tested for contract preservation rather than for arbitrary reprojection.
+    k = np.c_[CameraModel(intr, pose_ext).project_points(proxy), np.full(17, 0.9)]
     fused = _camera_from_candidate(pose, rotation, 1000, 800, pose_keypoints=k)
     assert fused is not None
     assert abs(fused.extrinsics.yaw - pose_ext.yaw) < 1e-6
