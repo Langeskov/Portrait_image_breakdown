@@ -19,6 +19,7 @@ from reverse_engineering.scene_constraints import build_depth_constraint_evidenc
 from reverse_engineering.support_plane import estimate_support_plane
 from reverse_engineering.shooting_technique import classify_techniques
 from reverse_engineering.simulation import optimize_parameters
+from reverse_engineering.multi_person_layout import build_multi_person_layout
 
 
 def _extract_keypoints_pixels(pose: PoseResult) -> np.ndarray:
@@ -88,11 +89,13 @@ class ReverseEngineeringEngineV2:
     @property
     def calibration_profile(self): return self._calibration_profile
     def analyze(self,image,pose=None,bbox=None,intrinsics_evidence:IntrinsicsEvidence|None=None):
-        h,w=image.shape[:2]; scene_evidence=analyze_scene_geometry(image,exclude_bbox=bbox); composition=_analyze_composition_extended(image,pose,bbox); perspective=analyze_perspective(image,scene_evidence); candidates=[]; depth_evidence=None; support_plane=None; anchor=None
+        h,w=image.shape[:2]; scene_evidence=analyze_scene_geometry(image,exclude_bbox=bbox); composition=_analyze_composition_extended(image,pose,bbox); perspective=analyze_perspective(image,scene_evidence); candidates=[]; depth_evidence=None; support_plane=None; anchor=None; multi_person_layout=None
         if pose is not None:
             kp=_extract_keypoints_pixels(pose); anchor=subject_anchor(kp); _,depth_evidence=build_depth_constraint_evidence(image,kp,self._depth_provider); support_plane=estimate_support_plane(kp,w,h)
+            people=getattr(pose,"persons",None) or [pose]
+            multi_person_layout=build_multi_person_layout(people,w,h,self._depth_provider)
             scene_for_fusion = scene_evidence if (scene_evidence.has_three_directions and scene_evidence.confidence >= 0.45) else None
-            candidates=optimize_parameters(w,h,composition.subject_scale,composition.subject_position,perspective.perspective_strength.value,kp,num_candidates=6,subject_bbox=bbox,scene_evidence=scene_for_fusion,intrinsics_evidence=intrinsics_evidence,calibration_profile=self._calibration_profile,depth_evidence=depth_evidence,support_plane=support_plane)
+            candidates=optimize_parameters(w,h,composition.subject_scale,composition.subject_position,perspective.perspective_strength.value,potential=kp,num_candidates=6,subject_bbox=bbox,scene_evidence=scene_for_fusion,intrinsics_evidence=intrinsics_evidence,calibration_profile=self._calibration_profile,depth_evidence=depth_evidence,support_plane=support_plane)
             for candidate in candidates:
                 refine_camera_candidate(candidate,kp,w,h,bbox)
         if candidates:
@@ -116,8 +119,13 @@ class ReverseEngineeringEngineV2:
             uncertainties.append("rotation fusion uses Manhattan scene geometry because scene confidence is sufficient")
         else:
             uncertainties.append("non-Manhattan / weak-scene fallback active: pose framing and bounded image-space refinement dominate rotation")
+        if multi_person_layout is not None:
+            if multi_person_layout.independent_depth:
+                uncertainties.append(f"multi-person layout: {len(multi_person_layout.people)} people; relative 3D ordering enabled from {multi_person_layout.depth_backend} depth evidence")
+            else:
+                uncertainties.append(f"multi-person layout: {len(multi_person_layout.people)} people retained in image space; independent relative depth evidence is insufficient for 3D placement")
         uncertainties.append(f"calibration profile: {self._calibration_profile.name}")
         if intrinsics_evidence is not None:
             uncertainties.append(f"intrinsics source: {intrinsics_evidence.source}; observed fields: {', '.join(intrinsics_evidence.observed_fields) or 'none'}"); uncertainties.extend(intrinsics_evidence.notes)
-        result=ReverseEngineeringResult(image_size=(w,h),subject_bbox=bbox,subject_keypoints=pose.landmarks[:17] if pose else None,subject_scale=composition.subject_scale,edge_lines=perspective.line_segments,blur_regions={},perspective=perspective,camera_pose=camera_pose,focal_length=focal_length,depth_of_field=depth_of_field,motion_blur=motion_blur,composition=composition,shooting_techniques=shooting_techniques,overall_confidence=overall_confidence,uncertainties=uncertainties,_sim_candidates=candidates,intrinsics_evidence=intrinsics_evidence.to_dict() if intrinsics_evidence else {})
+        result=ReverseEngineeringResult(image_size=(w,h),subject_bbox=bbox,subject_keypoints=pose.landmarks[:17] if pose else None,subject_scale=composition.subject_scale,edge_lines=perspective.line_segments,blur_regions={},perspective=perspective,camera_pose=camera_pose,focal_length=focal_length,depth_of_field=depth_of_field,motion_blur=motion_blur,composition=composition,shooting_techniques=shooting_techniques,overall_confidence=overall_confidence,uncertainties=uncertainties,_sim_candidates=candidates,intrinsics_evidence=intrinsics_evidence.to_dict() if intrinsics_evidence else {},multi_person_layout=multi_person_layout)
         result._camera_actions=_generate_camera_actions(result,candidates); return result
