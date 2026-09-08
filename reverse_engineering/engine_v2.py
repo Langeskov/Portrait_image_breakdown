@@ -7,7 +7,7 @@ import cv2
 import numpy as np
 
 from core.pose_detector import PoseResult, LandmarkIndex as LI
-from reverse_engineering.camera_pose import estimate_camera_pose
+from reverse_engineering.camera_pose import estimate_camera_pose, estimate_camera_pose_candidates
 from reverse_engineering.calibration import CalibrationProfile, resolve_profile
 from reverse_engineering.data_types import CameraAction, CameraPoseResult, CompositionResult, EstimatedValue, ReverseEngineeringResult
 from reverse_engineering.depth_of_field import analyze_depth_of_field
@@ -142,9 +142,8 @@ class ReverseEngineeringEngineV2:
             people = getattr(pose, "persons", None) or [pose]
             multi_person_layout = build_multi_person_layout(people, w, h, self._depth_provider)
 
-            # Full Manhattan evidence is preferred, but even weak/non-Manhattan
-            # scenes can carry useful line-roll evidence. The rotation solver
-            # itself decides whether those lines are strong enough to trust.
+            # Candidate generation is always available. The optional simulation
+            # stage only adds scene/depth/support-plane ranking and refinement.
             scene_for_fusion = scene_evidence if (scene_evidence.lines and (scene_evidence.has_three_directions or len(scene_evidence.lines) >= 4)) else None
             if self._enable_simulation:
                 candidates = optimize_parameters(
@@ -164,6 +163,12 @@ class ReverseEngineeringEngineV2:
                 )
                 for candidate in candidates:
                     refine_camera_candidate(candidate, kp, w, h, bbox)
+            else:
+                candidates = estimate_camera_pose_candidates(
+                    pose,
+                    subject_bbox=bbox,
+                    num_candidates=6,
+                )
 
         if candidates:
             candidates.sort(key=lambda c: (-float(c.score), float(c.losses.get("image_refinement_cost_px", 1e9))))
