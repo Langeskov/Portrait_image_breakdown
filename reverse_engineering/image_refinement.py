@@ -38,7 +38,6 @@ def _anchor_world(pose_keypoints: np.ndarray, image_w: int, image_h: int, proxy:
     """Choose the corresponding proxy landmark for the image-space anchor."""
     kp = np.asarray(pose_keypoints, dtype=float)
     a = subject_anchor(kp)
-    d = np.linalg.norm(proxy[:, :2] - 0.0, axis=1)
     valid = np.isfinite(proxy).all(axis=1) & (kp[:len(proxy), 2] > 0.30)
     if not valid.any():
         return np.array([0.0, 0.0, 0.0], dtype=float)
@@ -56,12 +55,14 @@ def refine_camera_candidate(
     image_h: int,
     subject_bbox: Optional[tuple[int, int, int, int]] = None,
     max_delta: tuple[float, float, float] = (9.0, 9.0, 4.0),
+    allow_roll_refinement: bool = False,
 ) -> PoseCandidate:
-    """Apply a small image-space correction to yaw/pitch/roll.
+    """Apply a small image-space correction to yaw/pitch and, optionally, roll.
 
-    The correction is deterministic and bounded. It deliberately does not
-    rewrite focal length or distance, preserving the fundamental single-image
-    ambiguity between those quantities.
+    Roll is not identifiable from human pose alone: a person may lean while the
+    camera remains level. Therefore roll refinement is disabled by default and
+    is only allowed when an independent scene-roll measurement has been
+    supplied by the rotation solver.
     """
     kp = np.asarray(pose_keypoints, dtype=float)
     if kp.ndim != 2 or kp.shape[0] < 17:
@@ -77,13 +78,14 @@ def refine_camera_candidate(
     anchor_obs = subject_anchor(kp)
 
     base = np.array([candidate.extrinsics.yaw, candidate.extrinsics.pitch, candidate.extrinsics.roll], dtype=float)
+    roll_offsets = np.linspace(-max_delta[2], max_delta[2], 5) if allow_roll_refinement else np.array([0.0])
     best = base.copy(); best_cost = float("inf")
 
     for dy in np.linspace(-max_delta[0], max_delta[0], 7):
         for dp in np.linspace(-max_delta[1], max_delta[1], 7):
-            for dr in np.linspace(-max_delta[2], max_delta[2], 5):
+            for dr in roll_offsets:
                 yaw, pitch, roll = base + np.array([dy, dp, dr])
-                position, extr = _camera_pose_from_params(candidate.distance, candidate.height, yaw, pitch, roll)
+                _, extr = _camera_pose_from_params(candidate.distance, candidate.height, yaw, pitch, roll)
                 intr = candidate.intrinsics
                 projected = CameraModel(intr, extr).project_points(proxy)
                 if not np.isfinite(projected[valid]).all():
@@ -106,11 +108,13 @@ def refine_camera_candidate(
     if np.linalg.norm(best - base) < 1e-6:
         candidate.losses["image_refinement"] = "no_change"
         candidate.losses["image_refinement_cost_px"] = round(best_cost, 3)
+        candidate.losses["image_refinement_roll_refined"] = bool(allow_roll_refinement)
         return candidate
 
-    position, extr = _camera_pose_from_params(candidate.distance, candidate.height, *best)
+    _, extr = _camera_pose_from_params(candidate.distance, candidate.height, *best)
     candidate.extrinsics = extr
     candidate.losses["image_refinement"] = "bounded_pose_refinement"
     candidate.losses["image_refinement_cost_px"] = round(best_cost, 3)
     candidate.losses["image_refinement_delta_deg"] = [round(float(v), 2) for v in (best - base)]
+    candidate.losses["image_refinement_roll_refined"] = bool(allow_roll_refinement)
     return candidate
