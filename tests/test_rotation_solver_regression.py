@@ -5,7 +5,9 @@ import numpy as np
 
 from reverse_engineering.rotation_solver import RotationCandidate, _camera_from_candidate, _estimate_line_roll
 from reverse_engineering.geometry import CameraIntrinsics, CameraModel, PoseCandidate, _camera_pose_from_params, PoseSolver, pose_driven_person_points
+from reverse_engineering.camera_pose import estimate_camera_pose_candidates
 from reverse_engineering.scene_geometry import LineSegment, SceneGeometryEvidence
+from core.pose_detector import PoseLandmark, PoseResult
 
 
 def _line(angle: float, length: float = 260.0, index: int = 0, x_step: float = 9.0) -> LineSegment:
@@ -29,6 +31,18 @@ def _evidence(lines, width=1200, height=800):
         horizon_angle_deg=None,
         confidence=0.9,
     )
+
+
+def _pose_for_candidate_family(width=1600, height=1065):
+    bbox = (450, 90, 1150, 990)
+    points = [
+        (800, 150), (770, 145), (830, 145), (745, 165), (855, 165),
+        (650, 300), (950, 300), (610, 450), (990, 450), (575, 600),
+        (1025, 600), (700, 590), (900, 590), (720, 735), (880, 735),
+        (715, 930), (885, 930),
+    ]
+    landmarks = [PoseLandmark(i, float(x), float(y), 0.0, 0.95, x / width, y / height, 0.0) for i, (x, y) in enumerate(points)]
+    return PoseResult(landmarks, width, height, 0.95, bbox)
 
 
 def test_line_roll_runner_up_score_is_scalar_not_candidate_tuple():
@@ -80,8 +94,6 @@ def test_roll_only_rotation_preserves_pose_yaw_pitch_and_focal():
         orientation_source="roll_only",
     )
     proxy = pose_driven_person_points(np.zeros((17, 3), dtype=float), 1000, 800)
-    # Build a self-consistent observed pose from the pose camera so fusion is
-    # tested for contract preservation rather than for arbitrary reprojection.
     k = np.c_[CameraModel(intr, pose_ext).project_points(proxy), np.full(17, 0.9)]
     fused = _camera_from_candidate(pose, rotation, 1000, 800, pose_keypoints=k)
     assert fused is not None
@@ -110,3 +122,24 @@ def test_pose_solver_accepts_scalar_bbox_dimensions():
     )
     assert candidates
     assert np.isfinite(candidates[0].score)
+
+
+def test_candidate_family_replaces_pathological_optimizer_singleton():
+    pose = _pose_for_candidate_family()
+    candidates = estimate_camera_pose_candidates(pose, subject_bbox=pose.bbox, num_candidates=6)
+    assert len(candidates) >= 4
+    assert all(24.0 <= c.focal_equiv_35mm <= 150.0 for c in candidates)
+    assert all(0.70 <= c.height <= 2.10 for c in candidates)
+    assert all(1.20 <= c.distance <= 15.0 for c in candidates)
+    assert all(c.losses.get("candidate_source") in {"analytic_pose_family", "numerical_pose_fit"} for c in candidates)
+    assert not any(abs(c.height - 0.40) < 1e-6 for c in candidates)
+
+
+def test_candidate_family_has_explicit_focal_distance_ambiguity():
+    pose = _pose_for_candidate_family()
+    candidates = estimate_camera_pose_candidates(pose, subject_bbox=pose.bbox, num_candidates=6)
+    focal_values = [round(c.focal_equiv_35mm, 1) for c in candidates]
+    distances = [round(c.distance, 2) for c in candidates]
+    assert len(set(focal_values)) >= 4
+    assert len(set(distances)) >= 4
+    assert all(c.losses.get("focal_distance_ambiguity") is True or c.losses.get("candidate_source") == "numerical_pose_fit" for c in candidates)
