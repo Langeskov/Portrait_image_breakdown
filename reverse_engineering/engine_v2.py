@@ -29,6 +29,39 @@ def _extract_keypoints_pixels(pose: PoseResult) -> np.ndarray:
     return np.array([[lm.x, lm.y, lm.visibility] for lm in pose.landmarks[:17]], dtype=float)
 
 
+def _normalize_pose_input(pose: PoseResult, image_w: int, image_h: int, bbox=None):
+    """Normalize pose pixels and bbox to the exact image coordinate system.
+
+    The GUI intentionally works on a resized analysis image, while callers may
+    still provide a PoseResult/BBox created at the source-image resolution.
+    Mixing those coordinate systems biases reprojection and can force the
+    bounded optimizer onto pathological solutions such as very low camera
+    height + very long focal length. Keep the normalization at the RE boundary
+    so every downstream geometry module sees one canonical pixel space.
+    """
+    if pose is None:
+        return None, bbox, False
+    src_w = int(getattr(pose, "image_width", image_w) or image_w)
+    src_h = int(getattr(pose, "image_height", image_h) or image_h)
+    same = src_w == int(image_w) and src_h == int(image_h)
+    if same:
+        normalized_bbox = bbox if bbox is not None else getattr(pose, "bbox", None)
+        return pose, normalized_bbox, False
+
+    sx = float(image_w) / max(src_w, 1)
+    sy = float(image_h) / max(src_h, 1)
+    normalized_pose = pose.rescaled(image_w, image_h)
+    source_bbox = bbox if bbox is not None else getattr(pose, "bbox", None)
+    normalized_bbox = None
+    if source_bbox is not None:
+        x0, y0, x1, y1 = map(float, source_bbox)
+        normalized_bbox = (
+            round(x0 * sx), round(y0 * sy),
+            round(x1 * sx), round(y1 * sy),
+        )
+    return normalized_pose, normalized_bbox, True
+
+
 def _analyze_composition_extended(image, pose=None, bbox=None) -> CompositionResult:
     h, w = image.shape[:2]
     if pose is not None:
@@ -125,6 +158,7 @@ class ReverseEngineeringEngineV2:
 
     def analyze(self, image, pose=None, bbox=None, intrinsics_evidence: IntrinsicsEvidence | None = None):
         h, w = image.shape[:2]
+        pose, bbox, pose_was_rescaled = _normalize_pose_input(pose, w, h, bbox)
         scene_evidence = analyze_scene_geometry(image, exclude_bbox=bbox)
         composition = _analyze_composition_extended(image, pose, bbox)
         perspective = analyze_perspective(image, scene_evidence)
@@ -210,6 +244,8 @@ class ReverseEngineeringEngineV2:
             "aperture is inferred only from blur/depth characteristics",
             "camera height and distance remain coupled without scene scale or depth",
         ]
+        if pose_was_rescaled:
+            uncertainties.append(f"pose/bbox coordinate contract normalized to analysis image: {w}×{h} px")
         if anchor is not None:
             uncertainties.append(f"image-space subject anchor: ({anchor[0]:.0f}, {anchor[1]:.0f}) px; hip/torso anchors are preferred for camera aiming")
         if candidates and candidates[0].losses.get("image_refinement"):
