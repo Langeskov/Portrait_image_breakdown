@@ -8,7 +8,7 @@ import cv2
 import numpy as np
 
 from reverse_engineering.geometry import CameraIntrinsics, CameraModel, CameraExtrinsics
-from reverse_engineering.scene import SceneModel
+from reverse_engineering.scene import SceneModel, SceneSubject
 
 
 @dataclass(frozen=True)
@@ -17,6 +17,7 @@ class ProjectionPreviewResult:
     bbox: tuple[float, float, float, float] | None
     in_front_count: int
     total_count: int
+    person_index: int = 0
 
     @property
     def visible_fraction(self) -> float:
@@ -49,8 +50,6 @@ def build_camera_model(scene: SceneModel, width: int, height: int) -> CameraMode
         scene.camera.sensor_width_mm * int(height) / max(int(width), 1),
     )
     position, right, up, forward = _camera_basis(scene)
-    # Use the same proper world->camera frame as geometry.py. The camera-up
-    # basis is +Y; CameraModel flips the raster Y coordinate exactly once.
     rotation = np.vstack([right, up, forward])
     rvec, _ = cv2.Rodrigues(rotation)
     tvec = -rotation @ position
@@ -63,16 +62,21 @@ def build_camera_model(scene: SceneModel, width: int, height: int) -> CameraMode
     )
 
 
-def subject_world_points(scene: SceneModel) -> np.ndarray:
-    points = scene.subject.proxy_points().copy()
-    points[:, 0] += scene.subject.center_x
-    points[:, 1] += scene.subject.center_y
-    points[:, 2] += scene.subject.center_z
+def subject_world_points_for(scene: SceneModel, subject: SceneSubject) -> np.ndarray:
+    points = subject.proxy_points().copy()
+    points[:, 0] += subject.center_x
+    points[:, 1] += subject.center_y
+    points[:, 2] += subject.center_z
     return points
 
 
-def project_subject(scene: SceneModel, width: int, height: int) -> ProjectionPreviewResult:
-    points_3d = subject_world_points(scene)
+def subject_world_points(scene: SceneModel) -> np.ndarray:
+    """Backward-compatible world points for the primary subject."""
+    return subject_world_points_for(scene, scene.subject)
+
+
+def _project_points(scene: SceneModel, subject: SceneSubject, width: int, height: int) -> ProjectionPreviewResult:
+    points_3d = subject_world_points_for(scene, subject)
     camera = build_camera_model(scene, width, height)
     points_2d = camera.project_points(points_3d)
     assert camera.extrinsics is not None
@@ -90,4 +94,16 @@ def project_subject(scene: SceneModel, width: int, height: int) -> ProjectionPre
         bbox=bbox,
         in_front_count=int(front.sum()),
         total_count=len(points_3d),
+        person_index=int(getattr(subject, "person_index", 0)),
     )
+
+
+def project_subject(scene: SceneModel, width: int, height: int) -> ProjectionPreviewResult:
+    """Project the primary subject; kept for existing callers/tests."""
+    return _project_points(scene, scene.subject, width, height)
+
+
+def project_scene(scene: SceneModel, width: int, height: int) -> tuple[ProjectionPreviewResult, ...]:
+    """Project every scene subject using the same calibrated camera model."""
+    subjects = list(scene.subjects) if scene.subjects else [scene.subject]
+    return tuple(_project_points(scene, subject, int(width), int(height)) for subject in subjects)
