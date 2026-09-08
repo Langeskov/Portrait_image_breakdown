@@ -344,7 +344,7 @@ class PoseSolver:
                             ih = max(0.0, min(pb[3], by1) - max(pb[1], by0))
                             inter = iw * ih
                             area_p = max(0.0, pb[2] - pb[0]) * max(0.0, pb[3] - pb[1])
-                            area_o = max(0.0, bx1 - bx0) * max(by1 - by0)
+                            area_o = max(0.0, bx1 - bx0) * max(0.0, by1 - by0)
                             iou = inter / max(area_p + area_o - inter, 1e-9)
                             center_delta = math.hypot(
                                 (pb[0] + pb[2]) * .5 - (bx0 + bx1) * .5,
