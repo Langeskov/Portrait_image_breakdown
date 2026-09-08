@@ -53,6 +53,7 @@ def run_gui(image_path=None):
     from gui.cache import AnalysisCache, image_cache_key
     from gui.field_mode import install_field_mode
     from gui.reference_mode import install_reference_mode
+    from gui.anchor_calibration_dialog import AnchorCalibrationDialog
     from reverse_engineering.calibration import BUILTIN_PROFILES
     import reverse_engineering.engine as engine_module
 
@@ -98,6 +99,16 @@ def run_gui(image_path=None):
             selected_profile["name"] = name or "Generic"; window._eng = None
             if getattr(window, "_current_path", None): window._la(window._current_path)
         calibration_combo.currentTextChanged.connect(on_profile_changed); bars[0].addWidget(calibration_combo)
+        anchor_action = QAction("Anchor Calibration", window)
+        anchor_action.setToolTip("Bind manual image points to scene anchors and estimate a camera hypothesis")
+        def open_anchor_calibration():
+            if window._img is None:
+                QMessageBox.information(window, "Anchor Calibration", "请先加载一张照片并完成至少一次分析。")
+                return
+            dialog = AnchorCalibrationDialog(window._w3.scene, (window._img.shape[1], window._img.shape[0]), window)
+            dialog.exec()
+            window._w3._view.update()
+        anchor_action.triggered.connect(open_anchor_calibration); bars[0].addAction(anchor_action)
     window.show()
     if image_path and os.path.exists(image_path): window._la(image_path)
     sys.exit(app.exec())
