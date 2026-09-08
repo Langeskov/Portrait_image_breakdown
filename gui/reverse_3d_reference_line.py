@@ -7,13 +7,12 @@ from a 2D drag pad so parameter changes stay visually tied to the photograph.
 """
 from __future__ import annotations
 
-import math
-from typing import Optional, Callable
+from typing import Optional
 
 import cv2
 import numpy as np
-from PySide6.QtCore import Qt, QPointF, QRectF, Signal
-from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPen, QPolygonF
+from PySide6.QtCore import Qt, QPointF, QRectF, QSize, Signal
+from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPen
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -30,7 +29,6 @@ from reverse_engineering.scene_anchors import AnchorKind, SceneAnchor
 
 
 OBSERVED = QColor("#D97706")
-PROJECTED = QColor("#38BDF8")
 REFERENCE = QColor("#7C3AED")
 MUTED = QColor("#64748B")
 GRID = QColor("#334155")
@@ -70,30 +68,31 @@ class ReferenceLineProjectionPreview(ProjectionPreview):
                 tangent, _, _ = anchor.plane_basis()
                 center = np.asarray(anchor.position, dtype=np.float64)
                 half = max(0.75, min(float(anchor.size[0]), 8.0) * 0.5)
-                world = np.asarray([center - tangent * half, center + tangent * half], dtype=np.float64)
+                world = np.asarray(
+                    [center - tangent * half, center + tangent * half],
+                    dtype=np.float64,
+                )
 
             projected = camera.project_points(world).reshape(-1, 2)
-            rvec = camera.extrinsics.rvec if camera.extrinsics is not None else None
-            tvec = camera.extrinsics.tvec if camera.extrinsics is not None else None
-            if rvec is None or tvec is None:
+            if camera.extrinsics is None:
                 return None
-            rmat = cv2.Rodrigues(rvec)[0]
-            camera_points = (rmat @ world.T + tvec.reshape(3, 1)).T
+            rmat = cv2.Rodrigues(camera.extrinsics.rvec)[0]
+            camera_points = (
+                rmat @ world.T + camera.extrinsics.tvec.reshape(3, 1)
+            ).T
             valid = (
                 (camera_points[:, 2] > 1e-6)
                 & np.isfinite(projected).all(axis=1)
             )
             if not valid.all():
                 return None
-            if anchor.kind == AnchorKind.POINT:
-                return (projected[0],)
-            return (projected[0], projected[1])
+            return (projected[0],) if anchor.kind == AnchorKind.POINT else (projected[0], projected[1])
         except (AttributeError, TypeError, ValueError, np.linalg.LinAlgError, cv2.error):
             return None
 
     @staticmethod
     def _clip_segment(a: np.ndarray, b: np.ndarray, width: float, height: float):
-        """Clip a 2D infinite-ish segment against the image rectangle."""
+        """Clip a 2D segment against the image rectangle."""
         x0, y0 = float(a[0]), float(a[1])
         x1, y1 = float(b[0]), float(b[1])
         dx, dy = x1 - x0, y1 - y0
@@ -101,20 +100,25 @@ class ReferenceLineProjectionPreview(ProjectionPreview):
             return None
 
         candidates = []
+
         def add(t):
             if -1e-9 <= t <= 1.000000001:
                 x, y = x0 + t * dx, y0 + t * dy
                 if -1e-6 <= x <= width + 1e-6 and -1e-6 <= y <= height + 1e-6:
                     candidates.append((x, y))
 
-        for x in (0.0, width):
-            add((x - x0) / dx) if abs(dx) > 1e-9 else None
-        for y in (0.0, height):
-            add((y - y0) / dy) if abs(dy) > 1e-9 else None
+        if abs(dx) > 1e-9:
+            add((0.0 - x0) / dx)
+            add((width - x0) / dx)
+        if abs(dy) > 1e-9:
+            add((0.0 - y0) / dy)
+            add((height - y0) / dy)
+
         if len(candidates) < 2:
             if 0 <= x0 <= width and 0 <= y0 <= height and 0 <= x1 <= width and 0 <= y1 <= height:
                 return np.asarray([a, b], dtype=float)
             return None
+
         unique = []
         for point in candidates:
             if not any(np.linalg.norm(np.asarray(point) - np.asarray(q)) < 1e-5 for q in unique):
@@ -127,13 +131,13 @@ class ReferenceLineProjectionPreview(ProjectionPreview):
         if self._pixmap is None:
             return None
         area = QRectF(6, 6, self.width() - 12, self.height() - 38)
-        scaled = self._pixmap.scaled(area.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        size = QSize(max(1, int(area.width())), max(1, int(area.height())))
+        scaled = self._pixmap.scaled(size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
         ox = area.x() + (area.width() - scaled.width()) * 0.5
         oy = area.y() + (area.height() - scaled.height()) * 0.5
         return area, scaled, ox, oy, scaled.width() / max(self._pixmap.width(), 1), scaled.height() / max(self._pixmap.height(), 1)
 
     def paintEvent(self, event):
-        # Re-use the stable base renderer for observed skeleton / bbox and person projections.
         super().paintEvent(event)
         if not self._show_reference_line or self._scene is None or self._selected_anchor is None or self._pixmap is None:
             return
@@ -271,7 +275,6 @@ class CameraVisualMatchSection(QWidget):
         self.slider.valueChanged.connect(self._distance_changed)
         distance_row.addWidget(self.slider, 1)
         root.addLayout(distance_row)
-
         self.sync_from_camera()
 
     def sync_from_camera(self):
@@ -303,10 +306,13 @@ class CameraVisualMatchSection(QWidget):
 
 
 def install_visual_camera_match(workspace):
-    """Install the visual camera control and reference-line preview on a workspace."""
+    """Install the visual camera control and replace plane projection with a line."""
     section = CameraVisualMatchSection(workspace)
     anchor_section = next(
-        (s for s in workspace.findChildren(QWidget) if getattr(getattr(s, "button", None), "text", lambda: "")() == "Scene anchors"),
+        (
+            s for s in workspace.findChildren(QWidget)
+            if getattr(getattr(s, "button", None), "text", lambda: "")() == "Scene anchors"
+        ),
         None,
     )
     if anchor_section is not None and anchor_section.parentWidget() is not None:
