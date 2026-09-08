@@ -7,7 +7,7 @@ import math
 import cv2
 import numpy as np
 
-from reverse_engineering.geometry import CameraIntrinsics, CameraModel, CameraExtrinsics, PoseCandidate, pose_driven_person_points
+from reverse_engineering.geometry import CameraIntrinsics, CameraModel, CameraExtrinsics, PoseCandidate, pose_driven_person_points, _camera_pose_from_params
 from reverse_engineering.scene_geometry import SceneGeometryEvidence, VanishingPoint
 
 
@@ -28,6 +28,108 @@ def _normalize_angle(angle: float) -> float:
     while angle > 90.0:
         angle -= 180.0
     return angle
+
+
+def _axis_angle_distance(angle: float, axis: float) -> float:
+    return abs(_normalize_angle(angle - axis))
+
+
+def _estimate_line_roll(evidence: SceneGeometryEvidence) -> tuple[float | None, float, int]:
+    """Estimate image roll from raw scene-line orientations conservatively.
+
+    A vanishing-point solver can return a mathematically valid but visually
+    nonsensical Euler roll when the detected Manhattan clusters are actually
+    architectural/textural diagonals. Roll is therefore estimated first from
+    near-horizontal/near-vertical line families. The two families should agree
+    on one common image rotation before the value is trusted.
+    """
+    raw_lines = getattr(evidence, "lines", ())
+    usable = []
+    min_length = max(60.0, 0.08 * min(float(evidence.width), float(evidence.height)))
+    for line in raw_lines:
+        if not hasattr(line, "angle_deg") or not hasattr(line, "length"):
+            continue
+        length = float(getattr(line, "length", 0.0))
+        if length < min_length:
+            continue
+        angle = _normalize_angle(float(getattr(line, "angle_deg", 0.0)))
+        usable.append((angle, length))
+    if len(usable) < 4:
+        return None, 0.0, len(usable)
+
+    # Search for one orientation r that simultaneously explains a horizontal
+    # family at r and a vertical family at r+90. A broad tolerance is used to
+    # accommodate perspective convergence, but diagonal clutter is not allowed
+    # to become a roll reference.
+    tolerance = 9.0
+    grid = np.arange(-45.0, 45.0001, 0.5)
+    weights = np.sqrt(np.asarray([length for _, length in usable], dtype=float))
+    total_weight = float(np.sum(weights))
+    best = None
+    scores = []
+    for roll in grid:
+        h_mask = np.array([_axis_angle_distance(angle, roll) <= tolerance for angle, _ in usable])
+        v_mask = np.array([_axis_angle_distance(angle, _normalize_angle(roll + 90.0)) <= tolerance for angle, _ in usable])
+        h_support = float(np.sum(weights[h_mask]))
+        v_support = float(np.sum(weights[v_mask]))
+        # Balance matters: a single dominant family can still estimate roll,
+        # but two agreeing families are substantially more trustworthy.
+        support = h_support + v_support
+        balance = min(h_support, v_support) / max(max(h_support, v_support), 1e-9)
+        score = support * (0.72 + 0.28 * balance)
+        scores.append((score, float(roll), h_support, v_support))
+        if best is None or score > best[0]:
+            best = (score, float(roll), h_support, v_support)
+
+    if best is None or total_weight <= 1e-9:
+        return None, 0.0, len(usable)
+
+    best_score, best_roll, h_support, v_support = best
+    ordered = sorted(scores, key=lambda x: x[0], reverse=True)
+    second_score = next((s for s in ordered[1:] if abs(s[1] - best_roll) >= 6.0), 0.0)
+    separation = max(0.0, best_score - second_score)
+
+    inlier_angles = []
+    inlier_weights = []
+    for angle, length in usable:
+        dh = _axis_angle_distance(angle, best_roll)
+        dv = _axis_angle_distance(angle, _normalize_angle(best_roll + 90.0))
+        d = min(dh, dv)
+        if d <= tolerance:
+            # Convert a vertical line back into the equivalent roll residual.
+            residual = _normalize_angle(angle - best_roll)
+            if abs(residual) > 45.0:
+                residual = _normalize_angle(residual - 90.0 if residual > 0 else residual + 90.0)
+            inlier_angles.append(residual)
+            inlier_weights.append(math.sqrt(max(length, 1.0)))
+
+    spread = float(np.sqrt(np.average(
+        (np.asarray(inlier_angles) - best_roll * 0.0) ** 2,
+        weights=np.asarray(inlier_weights),
+    ))) if inlier_angles else 99.0
+    family_support = min(1.0, (h_support + v_support) / max(total_weight * 0.35, 1e-9))
+    balance = min(h_support, v_support) / max(max(h_support, v_support), 1e-9)
+    count_conf = min(1.0, len(usable) / 12.0)
+    separation_conf = min(1.0, separation / max(best_score * 0.35, 1e-9))
+    coherence_conf = math.exp(-max(0.0, spread - 5.0) / 8.0)
+    confidence = float(np.clip(
+        0.30 * count_conf
+        + 0.30 * family_support
+        + 0.20 * balance
+        + 0.10 * separation_conf
+        + 0.10 * coherence_conf,
+        0.0,
+        1.0,
+    ))
+
+    # A roll estimate based on only diagonal clutter is not evidence. Requiring
+    # either a strong two-family agreement or a clearly dominant single family
+    # keeps ordinary upright portraits at 0° instead of inventing large angles.
+    strong_two_family = h_support > total_weight * 0.08 and v_support > total_weight * 0.08 and confidence >= 0.50
+    strong_single_family = max(h_support, v_support) > total_weight * 0.30 and confidence >= 0.58
+    if not (strong_two_family or strong_single_family):
+        return None, confidence, len(usable)
+    return float(best_roll), confidence, len(usable)
 
 
 def _vp_ray(vp: VanishingPoint, intrinsics: CameraIntrinsics) -> np.ndarray:
@@ -105,6 +207,12 @@ def _rotation_from_vps(vps: tuple[VanishingPoint, VanishingPoint, VanishingPoint
     return best[1], best[2], best[3]
 
 
+def _force_roll(R: np.ndarray, pitch: float, yaw: float, roll: float) -> np.ndarray:
+    """Build the proper world->camera rotation with trusted roll evidence."""
+    _, extrinsics = _camera_pose_from_params(1.0, 0.0, yaw, pitch, roll)
+    return cv2.Rodrigues(extrinsics.rvec)[0]
+
+
 def estimate_rotation_candidates(evidence: SceneGeometryEvidence, image_w: int, image_h: int, max_candidates: int = 8) -> list[RotationCandidate]:
     if not evidence.has_three_directions:
         return []
@@ -112,6 +220,13 @@ def estimate_rotation_candidates(evidence: SceneGeometryEvidence, image_w: int, 
     horizontal = [vp for vp in evidence.vanishing_points if vp.cluster in evidence.horizontal_clusters]
     if vertical is None or len(horizontal) < 2:
         return []
+
+    line_roll, line_roll_confidence, usable_line_count = _estimate_line_roll(evidence)
+    # Without independent roll evidence, a pose/VP solution is allowed to
+    # describe yaw/pitch, but roll is explicitly neutral. This prevents a
+    # diagonal-heavy scene from manufacturing a large Dutch angle.
+    preferred_roll = line_roll if line_roll is not None and line_roll_confidence >= 0.50 else 0.0
+
     pair_focals = []
     for pair in ((horizontal[0], horizontal[1]), (horizontal[0], vertical), (horizontal[1], vertical)):
         f = _focal_from_orthogonal_vps(pair[0], pair[1], image_w, image_h)
@@ -127,12 +242,16 @@ def estimate_rotation_candidates(evidence: SceneGeometryEvidence, image_w: int, 
     results: list[RotationCandidate] = []
     for focal in sorted(focal_values):
         intr = CameraIntrinsics.from_focal_mm(focal, image_w, image_h, 36.0, 36.0 * image_h / max(image_w, 1))
-        rotation = _rotation_from_vps((horizontal[0], horizontal[1], vertical), intr, evidence.horizon_angle_deg)
+        rotation = _rotation_from_vps((horizontal[0], horizontal[1], vertical), intr, preferred_roll)
         if rotation is None:
             continue
-        R, (pitch, yaw, roll), orth_err = rotation
+        R, (pitch, yaw, raw_roll), orth_err = rotation
+        trusted_roll = preferred_roll if line_roll is not None and line_roll_confidence >= 0.50 else 0.0
+        if abs(raw_roll - trusted_roll) > 1e-6:
+            R = _force_roll(R, pitch, yaw, trusted_roll)
+            pitch, yaw, _ = _angles_from_rotation(R)
         horizon = evidence.horizon_angle_deg
-        horizon_error = abs(_normalize_angle(roll - horizon)) if horizon is not None else 0.0
+        horizon_error = abs(_normalize_angle(trusted_roll - horizon)) if horizon is not None else 0.0
         support = float(np.mean([horizontal[0].confidence, horizontal[1].confidence, vertical.confidence]))
         orth_score = math.exp(-orth_err / 0.18)
         horizon_score = math.exp(-horizon_error / 6.0) if horizon is not None else 0.45
@@ -141,16 +260,27 @@ def estimate_rotation_candidates(evidence: SceneGeometryEvidence, image_w: int, 
             focal_consistency = math.exp(-focal_spread / max(5.0, 0.15 * float(np.median(pair_focals))))
         else:
             focal_consistency = 0.2
-        scene_score = float(np.clip(0.48 * orth_score + 0.18 * support + 0.19 * horizon_score + 0.15 * focal_consistency, 0.01, 0.99))
+        roll_score = line_roll_confidence if line_roll is not None else 0.35
+        scene_score = float(np.clip(
+            .42 * orth_score + .16 * support + .17 * horizon_score + .10 * focal_consistency + .15 * roll_score,
+            0.01,
+            0.99,
+        ))
         rvec, _ = cv2.Rodrigues(R)
         results.append(RotationCandidate(
             focal_length_mm=float(focal),
-            extrinsics=CameraExtrinsics(rvec.reshape(3), np.zeros(3), np.zeros(3), pitch, yaw, roll),
+            extrinsics=CameraExtrinsics(rvec.reshape(3), np.zeros(3), np.zeros(3), pitch, yaw, trusted_roll),
             scene_score=scene_score,
             orthogonality_error=float(orth_err),
             horizon_error_deg=float(horizon_error),
             vanishing_point_support=support,
-            evidence=(f"{len(evidence.lines)} scene lines", f"VP support {vertical.support}/{horizontal[0].support}/{horizontal[1].support}", f"orthogonality error {orth_err:.3f}", f"focal consistency {focal_consistency:.2f}" if pair_focals else "focal from generic candidate family", f"horizon roll {horizon:.1f}°" if horizon is not None else "horizon unavailable"),
+            evidence=(
+                f"{len(evidence.lines)} scene lines",
+                f"VP support {vertical.support}/{horizontal[0].support}/{horizontal[1].support}",
+                f"orthogonality error {orth_err:.3f}",
+                f"focal consistency {focal_consistency:.2f}" if pair_focals else "focal from generic candidate family",
+                f"scene roll {trusted_roll:.1f}° ({line_roll_confidence:.0%}, {usable_line_count} lines)" if line_roll is not None else f"scene roll forced to neutral 0° ({usable_line_count} lines)",
+            ),
         ))
     results.sort(key=lambda c: (-c.scene_score, c.orthogonality_error, c.focal_length_mm))
     unique: list[RotationCandidate] = []
@@ -168,7 +298,6 @@ def _camera_from_candidate(candidate: PoseCandidate, rotation: RotationCandidate
     distance = float(candidate.distance) * focal / max(float(candidate.focal_equiv_35mm), 1e-6)
     height = float(candidate.height)
     yaw = float(rotation.extrinsics.yaw)
-    # Keep camera position and orientation in the same target-centered frame.
     position = np.array([
         math.sin(math.radians(yaw)) * distance,
         height,
