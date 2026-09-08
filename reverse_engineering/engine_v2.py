@@ -95,7 +95,7 @@ class ReverseEngineeringEngineV2:
             people=getattr(pose,"persons",None) or [pose]
             multi_person_layout=build_multi_person_layout(people,w,h,self._depth_provider)
             scene_for_fusion = scene_evidence if (scene_evidence.has_three_directions and scene_evidence.confidence >= 0.45) else None
-            candidates=optimize_parameters(w,h,composition.subject_scale,composition.subject_position,perspective.perspective_strength.value,potential=kp,num_candidates=6,subject_bbox=bbox,scene_evidence=scene_for_fusion,intrinsics_evidence=intrinsics_evidence,calibration_profile=self._calibration_profile,depth_evidence=depth_evidence,support_plane=support_plane)
+            candidates=optimize_parameters(w,h,composition.subject_scale,composition.subject_position,perspective.perspective_strength.value,kp,num_candidates=6,subject_bbox=bbox,scene_evidence=scene_for_fusion,intrinsics_evidence=intrinsics_evidence,calibration_profile=self._calibration_profile,depth_evidence=depth_evidence,support_plane=support_plane)
             for candidate in candidates:
                 refine_camera_candidate(candidate,kp,w,h,bbox)
         if candidates:
