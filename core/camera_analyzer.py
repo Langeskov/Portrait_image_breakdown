@@ -4,7 +4,7 @@
 根据人体在画面中的比例和位置, 估算:
 - 镜头类型: 特写/半身/全身/远景
 - 拍摄角度: 平视/俯拍/仰拍
-- 焦距估算(基于透视变形)
+- 画面旋转(荷兰角): 仅由图像/场景证据估计
 """
 
 from __future__ import annotations
@@ -19,13 +19,13 @@ from core.pose_detector import PoseResult, LandmarkIndex as LI
 
 
 class ShotType(Enum):
-    EXTREME_CLOSEUP = "大特写"    # 脸部/局部
-    CLOSEUP = "特写"              # 肩部以上
-    MEDIUM_CLOSEUP = "中近景"     # 胸部以上
-    MEDIUM = "中景"               # 膝盖以上
-    MEDIUM_LONG = "中全景"        # 全身带空间
-    LONG = "全景"                 # 全身+环境
-    EXTREME_LONG = "远景"         # 人物很小
+    EXTREME_CLOSEUP = "大特写"
+    CLOSEUP = "特写"
+    MEDIUM_CLOSEUP = "中近景"
+    MEDIUM = "中景"
+    MEDIUM_LONG = "中全景"
+    LONG = "全景"
+    EXTREME_LONG = "远景"
     UNKNOWN = "未知"
 
 
@@ -39,11 +39,11 @@ class CameraAngle(Enum):
 
 @dataclasses.dataclass
 class CameraResult:
-    shot_type: ShotType           # 镜头类型
-    camera_angle: CameraAngle     # 拍摄角度
-    subject_ratio: float          # 人物占画面比例 [0, 1]
-    subject_center_offset: tuple[float, float]  # 人物中心偏移 (x, y), 0=中心
-    dutch_angle_deg: float        # 画面倾斜角度
+    shot_type: ShotType
+    camera_angle: CameraAngle
+    subject_ratio: float
+    subject_center_offset: tuple[float, float]
+    dutch_angle_deg: float
     detail: str
 
     @property
@@ -51,21 +51,31 @@ class CameraResult:
         return f"{self.shot_type.value}, {self.camera_angle.value}"
 
 
-def analyze_camera(pose: PoseResult) -> CameraResult:
-    """
-    分析镜头位置和类型
+def _estimate_image_roll(image: np.ndarray | None) -> tuple[float, float, int]:
+    """Return (roll, confidence, line_count) from scene geometry only."""
+    if image is None:
+        return 0.0, 0.0, 0
+    try:
+        from reverse_engineering.camera_pose import estimate_image_roll
+        roll, confidence, line_count = estimate_image_roll(image)
+        if not np.isfinite(roll) or not np.isfinite(confidence):
+            return 0.0, 0.0, int(line_count)
+        return float(roll), float(confidence), int(line_count)
+    except Exception:
+        return 0.0, 0.0, 0
 
-    所有计算使用归一化坐标 [0, 1] (通过 get_normalized()).
-    """
-    h = pose.image_height
-    w = pose.image_width
 
-    # ── 获取关键点归一化坐标 ──
-    # 收集所有可见关键点的归一化坐标
+def analyze_camera(pose: PoseResult, image: np.ndarray | None = None) -> CameraResult:
+    """Analyze framing, camera elevation and genuine image roll.
+
+    The image roll is deliberately not inferred from the shoulder line: a human
+    can lean while the camera remains level. Scene-line roll evidence is only
+    accepted when its confidence is sufficient.
+    """
     visible_pts = []
-    for lm in pose.landmarks[:17]:  # 只用COCO 17点
+    for lm in pose.landmarks[:17]:
         if lm.visibility > 0.4:
-            visible_pts.append([lm.world_x, lm.world_y])  # normalized
+            visible_pts.append([lm.world_x, lm.world_y])
 
     if len(visible_pts) < 6:
         return CameraResult(
@@ -80,26 +90,15 @@ def analyze_camera(pose: PoseResult) -> CameraResult:
     pts = np.array(visible_pts)
     x_min, y_min = pts.min(axis=0)
     x_max, y_max = pts.max(axis=0)
-
-    # 人体包围框(归一化)
     box_w = x_max - x_min
     box_h = y_max - y_min
-    box_area = box_w * box_h
-
-    # 人物占画面比例
-    subject_ratio = box_area
-
-    # 人物中心(归一化)
+    subject_ratio = box_w * box_h
     cx = (x_min + x_max) / 2
     cy = (y_min + y_max) / 2
-
-    # 中心偏移(归一化到 [-1, 1])
     offset_x = (cx - 0.5) * 2
     offset_y = (cy - 0.5) * 2
 
-    # ── 镜头类型判断 ──
     vertical_ratio = box_h
-
     if vertical_ratio > 0.85:
         shot_type = ShotType.LONG
     elif vertical_ratio > 0.7:
@@ -115,16 +114,13 @@ def analyze_camera(pose: PoseResult) -> CameraResult:
     else:
         shot_type = ShotType.EXTREME_LONG
 
-    # ── 拍摄角度判断 ──
-    nose_y = pose.landmarks[LI.NOSE].world_y  # normalized
+    nose_y = pose.landmarks[LI.NOSE].world_y
     ls_y = pose.landmarks[LI.LEFT_SHOULDER].world_y
     rs_y = pose.landmarks[LI.RIGHT_SHOULDER].world_y
-    shoulder_y = (ls_y + rs_y) / 2
-
     lh_y = pose.landmarks[LI.LEFT_HIP].world_y
     rh_y = pose.landmarks[LI.RIGHT_HIP].world_y
+    shoulder_y = (ls_y + rs_y) / 2
     hip_y = (lh_y + rh_y) / 2
-
     la_y = pose.landmarks[LI.LEFT_ANKLE].world_y if pose.is_visible(LI.LEFT_ANKLE) else y_max
     ra_y = pose.landmarks[LI.RIGHT_ANKLE].world_y if pose.is_visible(LI.RIGHT_ANKLE) else y_max
     ankle_y = (la_y + ra_y) / 2
@@ -142,35 +138,22 @@ def analyze_camera(pose: PoseResult) -> CameraResult:
     else:
         camera_angle = CameraAngle.EYE_LEVEL
 
-    # ── 荷兰角检测 ──
-    ls_x = pose.landmarks[LI.LEFT_SHOULDER].world_x
-    rs_x = pose.landmarks[LI.RIGHT_SHOULDER].world_x
-    ls_y_norm = pose.landmarks[LI.LEFT_SHOULDER].world_y
-    rs_y_norm = pose.landmarks[LI.RIGHT_SHOULDER].world_y
-    shoulder_dx = rs_x - ls_x
-    shoulder_dy = rs_y_norm - ls_y_norm
-
-    if abs(shoulder_dx) > 0.01 or abs(shoulder_dy) > 0.01:
-        raw_angle = math.degrees(math.atan2(shoulder_dy, shoulder_dx))
-        dutch_angle = raw_angle
-        while dutch_angle > 90:
-            dutch_angle -= 180
-        while dutch_angle < -90:
-            dutch_angle += 180
-    else:
+    # Do not treat the person's shoulder slope as camera roll.
+    dutch_angle, roll_confidence, line_count = _estimate_image_roll(image)
+    if abs(dutch_angle) < 5.0 or roll_confidence < 0.25:
         dutch_angle = 0.0
 
-    if abs(dutch_angle) > 5:
+    if abs(dutch_angle) >= 5.0:
         camera_angle = CameraAngle.DUTCH_ANGLE
 
-    # ── 生成描述 ──
     detail_parts = [
         f"镜头: {shot_type.value}",
         f"人物占比: {subject_ratio:.0%}",
         f"角度: {camera_angle.value}",
     ]
-    if abs(dutch_angle) > 3:
+    if abs(dutch_angle) >= 3.0:
         detail_parts.append(f"画面倾斜: {dutch_angle:.1f}°")
+        detail_parts.append(f"旋转证据置信度: {roll_confidence:.0%} ({line_count} lines)")
 
     return CameraResult(
         shot_type=shot_type,
