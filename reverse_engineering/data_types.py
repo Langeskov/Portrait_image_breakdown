@@ -158,10 +158,15 @@ class ReverseEngineeringResult:
     _sim_candidates: list = field(default_factory=list)
     _camera_actions: list = field(default_factory=list)
     intrinsics_evidence: dict = field(default_factory=dict)
+    multi_person_layout: Optional[object] = None
 
     @property
     def candidate_solutions(self) -> list:
         return self._sim_candidates
+
+    @property
+    def has_multi_person_layout(self) -> bool:
+        return bool(self.multi_person_layout and getattr(self.multi_person_layout, "people", ()))
 
     def evidence_summary(self) -> dict:
         """Return explicit observed / estimated / unknown states for the UI."""
@@ -248,6 +253,7 @@ class ReverseEngineeringResult:
                                 "headroom": round(self.composition.headroom, 3)},
                 "shooting_techniques": self.shooting_techniques.techniques,
                 "candidates": self.to_shooting_state().candidate_solutions,
+                "multi_person_layout": self.multi_person_layout.to_dict() if self.multi_person_layout is not None and hasattr(self.multi_person_layout, "to_dict") else None,
             },
             "meta": {"overall_confidence": round(self.overall_confidence, 3),
                      "uncertainties": self.uncertainties},
@@ -272,6 +278,11 @@ class ReverseEngineeringResult:
         if self.intrinsics_evidence:
             ex = self.intrinsics_evidence
             lines.extend(["", "-- Intrinsics Evidence --", f"  source:    {ex.get('source', 'unknown')}", f"  focal:     {ex.get('focal_length_mm')}", f"  35mm eq:   {ex.get('focal_length_35mm')}", f"  camera:    {ex.get('make') or ''} {ex.get('model') or ''}".strip()])
+        if self.multi_person_layout is not None:
+            mpl = self.multi_person_layout
+            people_count = len(getattr(mpl, "people", ()))
+            usable_count = len(getattr(mpl, "usable_people", ()))
+            lines.extend(["", "-- Multi-person Layout --", f"  people:    {people_count}", f"  relative 3D placements: {usable_count}", f"  depth:     {getattr(mpl, 'depth_backend', 'unknown')} ({getattr(mpl, 'depth_confidence', 0.0):.0%})"])
         lines.extend(["", "-- Exposure (estimated) --"])
         lines.append(f"  DOF type:  {self.depth_of_field.dof_type.value}  (conf {self.depth_of_field.dof_type.confidence:.0%})")
         lines.append(f"  aperture:  {self.depth_of_field.aperture_range.value}")
