@@ -144,43 +144,32 @@ The current-photo 2D canvas now consumes the same reference target data and draw
 
 Target landmark coordinates are stored in the reference image's normalized coordinate system, so arrows remain stable when reference and current photographs have different resolutions or aspect ratios.
 
-### v3 Phase 2.3 — Multi-person scene understanding
+### v3 Phase 2.3 — Multi-person layout and relative 3D
 
-The multi-person detector output is now promoted into a persistent scene-layout model. Each detected person receives normalized framing geometry, a torso/hip depth sample and a normalized relative depth coordinate. The system explicitly separates image-space layout from 3D evidence:
+The `reverse_engineering/multi_person_layout.py` model turns detector multi-person output into an explicit scene-layout record. Each detected person receives normalized framing geometry, a torso/hip depth sample, and a normalized relative depth coordinate. The system distinguishes:
 
 - **image-space only** when depth evidence is missing or weak
-- **relative 3D ordering** when the depth backend is confident and separates the people
-- **metric camera/person distance** remains unknown unless a later calibration stage provides scale
+- **relative 3D ordering** when the local depth backend provides enough separation
+- **metric camera/person distance** remains unknown without an independent scale source
 
-The reconstruction engine carries this layout through `ReverseEngineeringResult` into `SceneModel.subjects`. The 3D workspace now renders **all detected people** with independent proxy skeletons, stable person labels and relative-depth/confidence annotations. The 2D projection preview also renders every person against the observed multi-person pose set instead of silently projecting only the primary subject.
+The reconstruction workspace now projects every retained person through the same camera model. Primary and additional people are visually separated, and the 2D validation preview shows their independent projected bounds.
 
-The rendering contract is intentionally conservative: additional people share the recovered camera, their horizontal/vertical placement is derived from normalized image coordinates, and relative `z` is applied only when the layout marks that person as independently depth-supported. No value shown as `z` is presented as meters.
+### v3 Phase 2.4 — Editable scene anchors
+
+`reverse_engineering/scene_anchors.py` introduces an explicit, conservative scene scaffold for room/object reconstruction:
+
+- point and plane anchors with editable world position, normal and size
+- deterministic validation and serialization
+- a protected default **Ground plane** coordinate scaffold
+- helper construction of a plane from three manually supplied world points
+
+`SceneModel` carries these anchors independently from observed image evidence. A fresh anchor starts with zero confidence and `manual` / `scene scaffold` provenance; later calibration stages can bind anchors to selected image points and promote only the supported geometry.
+
+The v3 reconstruction inspector has also been compacted into a scrollable panel with collapsible sections. **Scene people is collapsed by default**, since multi-person diagnostics are secondary to the camera/scene workflow and can otherwise consume most of the available vertical space. Camera and Scene anchors remain immediately available, while Projection and Candidate details can be expanded on demand.
 
 ## Test Organization
 
-All regression and contract coverage is consolidated into one deterministic suite:
-
-```text
-photo/
-├── tests/
-│   └── test_regression.py
-└── reverse_engineering/
-    ├── geometry.py
-    ├── intrinsics.py
-    ├── calibration.py
-    ├── depth_provider.py
-    ├── scene_constraints.py
-    ├── support_plane.py
-    ├── image_refinement.py
-    ├── multi_person_layout.py
-    ├── reference_reconstruction.py
-    ├── reference_targets.py
-    ├── simulation.py
-    ├── projection.py
-    └── engine_v2.py
-```
-
-The unified suite covers geometry/projection conventions, camera fitting, calibration and EXIF evidence, normalized image orientation, relative depth, feasibility/support-plane constraints, image refinement and semantic anchors, evidence states, photographer cues and goal-oriented pose guidance, cue history and voice output, scene rotation, conservative roll evidence, Field Mode styling, reference target planning, 2D target overlay contracts, and the multi-person layout data contract. Model-backed end-to-end tests that require YOLO weights or a real photograph are intentionally kept outside the deterministic regression suite.
+Regression coverage is kept deterministic and avoids requiring YOLO weights or network services. The suite covers geometry/projection conventions, camera fitting, calibration/EXIF evidence, normalized orientation, relative depth, scene constraints, image refinement, semantic anchors, evidence states, photographer cues, voice output, scene rotation, Field Mode, reference target planning, multi-person layout and scene-anchor contracts. Model-backed end-to-end tests that require real model weights or photographs remain outside the deterministic contract suite.
 
 ## Roadmap
 
@@ -188,48 +177,34 @@ The unified suite covers geometry/projection conventions, camera fitting, calibr
 
 **Functionally complete.**
 
-Completed: calibration profiles, EXIF + calibration separation, multi-candidate camera fitting, depth/feasibility/support-plane ranking, optical-axis diagnostics, bounded image-space refinement, conservative camera-roll handling, non-Manhattan fallback, landmark-quality layer, Field Mode, cue history, voice-ready output, and explicit EXIF image-orientation normalization. Regression coverage is included in the unified suite.
+Completed: calibration profiles, EXIF + calibration separation, multi-candidate camera fitting, depth/feasibility/support-plane ranking, optical-axis diagnostics, bounded image-space refinement, conservative camera-roll handling, non-Manhattan fallback, landmark-quality layer, Field Mode, cue history, voice-ready output, and explicit EXIF image-orientation normalization.
 
 ### v3 — Reference Reconstruction and Scene Understanding
 
-#### Completed first tranche
+#### Completed
 - Reference-photo comparison workspace
 - Explicit reference composition and semantic body anchors
 - Pose-to-reference landmark deltas
 - Composition center and subject-scale deltas
 - Directional photographer instructions derived from reference deltas
-- Unified regression coverage for reference anchors, deltas and composition comparison
-
-#### Completed second tranche
-- Reference target plan separating framing and pose actions
-- Conservative target ordering: composition first, pose second
+- Reference target plan and conservative action ordering
 - Orientation-normalized reference loading
-- Regression coverage for target-plan generation
+- 2D target-frame / target-center / landmark guidance overlays
+- Multi-person layout foundation with conservative relative depth
+- Multi-person 3D scene rendering and shared-camera projection
+- Editable point/plane scene-anchor scaffold
+- Compact scrollable reconstruction inspector with collapsible Scene people / Candidate sections
 
-#### Completed Phase 2.2
-- 2D current-image target frame overlay
-- Target-center movement arrow
-- Landmark-level movement arrows using reference-normalized coordinates
-- Reference Target visibility toggle
-- Resolution-independent target geometry regression coverage
+#### Phase 2.5 — next
+- Manual image-point binding for scene anchors
+- Estimate camera pose from selected point correspondences where geometrically supported
+- Plane-aware room/object constraints without silently converting hypotheses into observations
+- Reference-photo camera hypothesis comparison against the anchored scene
+- Save/load editable reconstruction sessions
 
-#### Completed Phase 2.3
-- Multi-person layout data model
-- Conservative relative-depth gating for 3D ordering
-- Engine/report integration
-- Multi-person 3D proxy rendering in the reconstruction workspace
-- Multi-person 2D projection validation
-- Per-person relative-depth/confidence labels
-
-#### Next — Phase 2.4
-- Room/object plane reconstruction and editable scene anchors
-- Camera-to-scene calibration workflow using manually selected reference points
-- Reference-photo camera hypothesis comparison
+#### Later v3
 - Composition-aware target pose generation rather than only corrective suggestions
-
-#### Later — Phase 3
 - Temporal mode for video/live camera input, smoothing pose and camera estimates over time
-- Multi-frame scene stabilization and persistent room anchors
 
 ### v4 — Assisted Shooting
 - Optional live camera/tether integration
