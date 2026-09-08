@@ -8,8 +8,8 @@ from PySide6.QtCore import Qt, QPointF, Signal, QRectF
 from PySide6.QtGui import QBrush, QColor, QImage, QPainter, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import (
     QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout,
-    QGroupBox, QHBoxLayout, QLabel, QListWidget, QMessageBox, QPushButton,
-    QScrollArea, QSpinBox, QVBoxLayout, QWidget,
+    QGroupBox, QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
+    QMessageBox, QPushButton, QScrollArea, QSpinBox, QVBoxLayout, QWidget,
 )
 
 from reverse_engineering.anchor_calibration import estimate_camera_from_anchors
@@ -24,7 +24,6 @@ class AnchorImageCanvas(QWidget):
     def __init__(self, scene, image=None, parent=None):
         super().__init__(parent)
         self.scene = scene
-        self._image = None
         self._pixmap = QPixmap()
         self.selected_anchor_id: Optional[str] = None
         self.setMinimumSize(520, 420)
@@ -33,7 +32,6 @@ class AnchorImageCanvas(QWidget):
             self.set_image(image)
 
     def set_image(self, image):
-        self._image = image
         if image is None:
             self._pixmap = QPixmap()
             self.update()
@@ -71,9 +69,9 @@ class AnchorImageCanvas(QWidget):
 
     def _image_to_widget(self, point):
         rect = self._image_rect()
-        if rect.isEmpty():
-            return QPointF()
         iw, ih = self._pixmap.width(), self._pixmap.height()
+        if rect.isEmpty() or iw <= 0 or ih <= 0:
+            return QPointF()
         x, y = float(point[0]), float(point[1])
         return QPointF(rect.left() + x / iw * rect.width(), rect.top() + y / ih * rect.height())
 
@@ -87,12 +85,11 @@ class AnchorImageCanvas(QWidget):
         return float(max(0.0, min(iw - 1.0, x))), float(max(0.0, min(ih - 1.0, y)))
 
     def mousePressEvent(self, event):
-        if event.button() != Qt.LeftButton:
-            return super().mousePressEvent(event)
-        point = self._widget_to_image(event.position())
-        if point is not None:
-            self.point_clicked.emit(*point)
-        return super().mousePressEvent(event)
+        if event.button() == Qt.LeftButton:
+            point = self._widget_to_image(event.position())
+            if point is not None:
+                self.point_clicked.emit(*point)
+        super().mousePressEvent(event)
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -109,13 +106,13 @@ class AnchorImageCanvas(QWidget):
             if not getattr(anchor, "visible", True) or not anchor.image_points:
                 continue
             selected = anchor.anchor_id == self.selected_anchor_id
-            pen = QPen(QColor("#F59E0B") if selected else QColor("#38BDF8"), 2 if selected else 1.2)
-            painter.setPen(pen)
             points = [self._image_to_widget(p) for p in anchor.image_points]
             if anchor.kind == AnchorKind.PLANE and len(points) == 4:
+                painter.setPen(QPen(QColor("#F59E0B") if selected else QColor("#38BDF8"), 2 if selected else 1.2))
                 painter.setBrush(QBrush(QColor(37, 99, 235, 45) if selected else QColor(56, 189, 248, 28)))
                 painter.drawPolygon(QPolygonF(points))
             painter.setBrush(QBrush(QColor("#FFFFFF")))
+            painter.setPen(QPen(QColor("#F59E0B") if selected else QColor("#38BDF8"), 2 if selected else 1.2))
             for index, point in enumerate(points):
                 radius = 5 if selected else 4
                 painter.drawEllipse(point, radius, radius)
@@ -154,12 +151,13 @@ class AnchorCalibrationDialog(QDialog):
         content = QHBoxLayout()
         content.setSpacing(10)
         self.canvas = AnchorImageCanvas(scene, image=image)
+        self.canvas.point_clicked.connect(self._canvas_point_clicked)
         content.addWidget(self.canvas, 3)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setMinimumWidth(350)
-        scroll.setFrameShape(QScrollArea.NoFrame)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
         panel = QWidget()
         panel_layout = QVBoxLayout(panel)
         panel_layout.setContentsMargins(4, 0, 4, 0)
@@ -315,21 +313,23 @@ class AnchorCalibrationDialog(QDialog):
         if anchor is None:
             return 0
         count = 4 if anchor.kind == AnchorKind.PLANE else int(self.point_count.value())
-        current = [
-            (float(self.x_fields[i].value()), float(self.y_fields[i].value()))
-            for i in range(count)
-        ]
         stored = list(anchor.image_points)
         for i in range(count):
-            if i >= len(stored) or current[i] == (0.0, 0.0):
+            if i >= len(stored) or (
+                float(self.x_fields[i].value()) == 0.0 and float(self.y_fields[i].value()) == 0.0
+            ):
                 return i
         return count - 1
 
     def _canvas_point_clicked(self, x, y):
+        anchor = self._current_anchor()
+        if anchor is None:
+            return
         index = self._next_point_index()
         self.x_fields[index].setValue(x)
         self.y_fields[index].setValue(y)
-        if index + 1 < (4 if self._current_anchor().kind == AnchorKind.PLANE else int(self.point_count.value())):
+        limit = 4 if anchor.kind == AnchorKind.PLANE else int(self.point_count.value())
+        if index + 1 < limit:
             self.x_fields[index + 1].setFocus()
         self.canvas.update()
 
