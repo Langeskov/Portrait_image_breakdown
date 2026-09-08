@@ -1,4 +1,11 @@
-"""Camera rotation recovery and scene/pose candidate fusion."""
+"""Camera rotation recovery and scene/pose candidate fusion.
+
+Rotation contracts:
+- ``RotationCandidate.focal_length_mm`` is a 35mm-equivalent focal prior.
+- ``orientation_source='manhattan'`` contains scene yaw/pitch/roll evidence.
+- ``orientation_source='roll_only'`` contains only scene roll; pose yaw/pitch,
+  focal length and distance remain authoritative during fusion.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -7,7 +14,14 @@ import math
 import cv2
 import numpy as np
 
-from reverse_engineering.geometry import CameraIntrinsics, CameraModel, CameraExtrinsics, PoseCandidate, pose_driven_person_points, _camera_pose_from_params
+from reverse_engineering.geometry import (
+    CameraIntrinsics,
+    CameraModel,
+    CameraExtrinsics,
+    PoseCandidate,
+    pose_driven_person_points,
+    _camera_pose_from_params,
+)
 from reverse_engineering.scene_geometry import SceneGeometryEvidence, VanishingPoint
 
 
@@ -20,6 +34,12 @@ class RotationCandidate:
     horizon_error_deg: float
     vanishing_point_support: float
     evidence: tuple[str, ...]
+    orientation_source: str = "manhattan"
+
+    @property
+    def focal_equiv_35mm(self) -> float:
+        """Compatibility alias making focal semantics explicit to callers."""
+        return float(self.focal_length_mm)
 
 
 def _normalize_angle(angle: float) -> float:
@@ -35,91 +55,144 @@ def _axis_angle_distance(angle: float, axis: float) -> float:
 
 
 def _estimate_line_roll(evidence: SceneGeometryEvidence) -> tuple[float | None, float, int]:
-    """Estimate image roll from raw scene-line orientations conservatively.
+    """Estimate image roll from tiered line evidence.
 
-    A vanishing-point solver can return a mathematically valid but visually
-    nonsensical Euler roll when the detected Manhattan clusters are actually
-    architectural/textural diagonals. Roll is therefore estimated first from
-    near-horizontal/near-vertical line families. The two families should agree
-    on one common image rotation before the value is trusted.
+    Two orthogonal families are the strongest case. A single family is also
+    accepted for modest, obvious camera tilt when it is long, coherent and
+    spatially distributed. This prevents diagonal texture from becoming a
+    rotation reference while fixing the previous all-or-nothing 0 degree case.
     """
     raw_lines = getattr(evidence, "lines", ())
-    usable = []
-    min_length = max(60.0, 0.08 * min(float(evidence.width), float(evidence.height)))
+    width = max(float(evidence.width), 1.0)
+    height = max(float(evidence.height), 1.0)
+    min_length = max(60.0, 0.08 * min(width, height))
+    usable: list[tuple[float, float, float, float]] = []
     for line in raw_lines:
         if not hasattr(line, "angle_deg") or not hasattr(line, "length"):
             continue
         length = float(getattr(line, "length", 0.0))
-        if length < min_length:
+        if not np.isfinite(length) or length < min_length:
             continue
         angle = _normalize_angle(float(getattr(line, "angle_deg", 0.0)))
-        usable.append((angle, length))
-    if len(usable) < 4:
-        return None, 0.0, len(usable)
+        if not np.isfinite(angle):
+            continue
+        mx = (float(getattr(line, "x1", 0.0)) + float(getattr(line, "x2", 0.0))) * 0.5
+        my = (float(getattr(line, "y1", 0.0)) + float(getattr(line, "y2", 0.0))) * 0.5
+        usable.append((angle, length, mx, my))
+
+    count = len(usable)
+    if count < 4:
+        return None, 0.0, count
 
     tolerance = 9.0
     grid = np.arange(-45.0, 45.0001, 0.5)
-    weights = np.sqrt(np.asarray([length for _, length in usable], dtype=float))
+    weights = np.sqrt(np.asarray([item[1] for item in usable], dtype=float))
     total_weight = float(np.sum(weights))
-    best = None
-    scores = []
+    if total_weight <= 1e-9:
+        return None, 0.0, count
+
+    scored: list[tuple[float, float, float, float]] = []
     for roll in grid:
-        h_mask = np.array([_axis_angle_distance(angle, roll) <= tolerance for angle, _ in usable])
-        v_mask = np.array([_axis_angle_distance(angle, _normalize_angle(roll + 90.0)) <= tolerance for angle, _ in usable])
+        h_mask = np.array([
+            _axis_angle_distance(angle, roll) <= tolerance
+            for angle, _, _, _ in usable
+        ])
+        v_mask = np.array([
+            _axis_angle_distance(angle, _normalize_angle(roll + 90.0)) <= tolerance
+            for angle, _, _, _ in usable
+        ])
         h_support = float(np.sum(weights[h_mask]))
         v_support = float(np.sum(weights[v_mask]))
         support = h_support + v_support
         balance = min(h_support, v_support) / max(max(h_support, v_support), 1e-9)
         score = support * (0.72 + 0.28 * balance)
-        scores.append((score, float(roll), h_support, v_support))
-        if best is None or score > best[0]:
-            best = (score, float(roll), h_support, v_support)
+        scored.append((score, float(roll), h_support, v_support))
 
-    if best is None or total_weight <= 1e-9:
-        return None, 0.0, len(usable)
-
-    best_score, best_roll, h_support, v_support = best
-    ordered = sorted(scores, key=lambda x: x[0], reverse=True)
-    second_score = next((s[0] for s in ordered[1:] if abs(s[1] - best_roll) >= 6.0), 0.0)
+    best_score, best_roll, h_support, v_support = max(scored, key=lambda x: x[0])
+    ordered = sorted(scored, key=lambda x: x[0], reverse=True)
+    second_score = next(
+        (item[0] for item in ordered[1:] if abs(item[1] - best_roll) >= 6.0),
+        0.0,
+    )
     separation = max(0.0, best_score - second_score)
 
-    inlier_angles = []
-    inlier_weights = []
-    for angle, length in usable:
-        dh = _axis_angle_distance(angle, best_roll)
-        dv = _axis_angle_distance(angle, _normalize_angle(best_roll + 90.0))
-        if min(dh, dv) <= tolerance:
-            residual = _normalize_angle(angle - best_roll)
-            if abs(residual) > 45.0:
-                residual = _normalize_angle(residual - 90.0 if residual > 0 else residual + 90.0)
-            inlier_angles.append(residual)
-            inlier_weights.append(math.sqrt(max(length, 1.0)))
+    dominant_is_horizontal = h_support >= v_support
+    dominant_axis = best_roll if dominant_is_horizontal else _normalize_angle(best_roll + 90.0)
+    dominant_mask = np.array([
+        _axis_angle_distance(angle, dominant_axis) <= tolerance
+        for angle, _, _, _ in usable
+    ])
+    dominant_angles = np.asarray(
+        [item[0] for item, keep in zip(usable, dominant_mask) if keep],
+        dtype=float,
+    )
+    dominant_weights = np.asarray(
+        [weights[i] for i, keep in enumerate(dominant_mask) if keep],
+        dtype=float,
+    )
 
-    spread = float(np.sqrt(np.average(
-        (np.asarray(inlier_angles) - best_roll * 0.0) ** 2,
-        weights=np.asarray(inlier_weights),
-    ))) if inlier_angles else 99.0
-    family_support = min(1.0, (h_support + v_support) / max(total_weight * 0.35, 1e-9))
-    balance = min(h_support, v_support) / max(max(h_support, v_support), 1e-9)
-    count_conf = min(1.0, len(usable) / 12.0)
-    separation_conf = min(1.0, separation / max(best_score * 0.35, 1e-9))
-    coherence_conf = math.exp(-max(0.0, spread - 5.0) / 8.0)
-    magnitude_prior = math.exp(-((abs(best_roll) / 18.0) ** 2))
-    confidence = float(np.clip(
-        (0.30 * count_conf
-         + 0.30 * family_support
-         + 0.20 * balance
-         + 0.10 * separation_conf
-         + 0.10 * coherence_conf)
-        * (0.35 + 0.65 * magnitude_prior),
+    if len(dominant_angles):
+        residuals = np.asarray(
+            [_axis_angle_distance(float(a), dominant_axis) for a in dominant_angles],
+            dtype=float,
+        )
+        spread = float(np.sqrt(np.average(residuals ** 2, weights=dominant_weights)))
+        mids_x = np.asarray([item[2] for item, keep in zip(usable, dominant_mask) if keep], dtype=float)
+        mids_y = np.asarray([item[3] for item, keep in zip(usable, dominant_mask) if keep], dtype=float)
+        x_coverage = float(np.ptp(mids_x) / width) if len(mids_x) > 1 else 0.0
+        y_coverage = float(np.ptp(mids_y) / height) if len(mids_y) > 1 else 0.0
+        max_length = max(item[1] for item, keep in zip(usable, dominant_mask) if keep)
+    else:
+        spread, x_coverage, y_coverage, max_length = 99.0, 0.0, 0.0, 0.0
+
+    dominant_support = h_support if dominant_is_horizontal else v_support
+    family_fraction = dominant_support / max(total_weight, 1e-9)
+    coverage = x_coverage if dominant_is_horizontal else y_coverage
+    count_conf = min(1.0, count / 10.0)
+    coverage_conf = float(np.clip(coverage / 0.45, 0.0, 1.0))
+    length_conf = float(np.clip(max_length / max(0.30 * math.hypot(width, height), 1.0), 0.0, 1.0))
+    coherence_conf = math.exp(-max(0.0, spread - 3.0) / 5.0)
+    separation_conf = min(1.0, separation / max(best_score * 0.30, 1e-9))
+
+    two_family_conf = float(np.clip(
+        0.25 * count_conf
+        + 0.30 * min(1.0, (h_support + v_support) / max(total_weight * 0.35, 1e-9))
+        + 0.20 * (min(h_support, v_support) / max(max(h_support, v_support), 1e-9))
+        + 0.10 * separation_conf
+        + 0.15 * coherence_conf,
+        0.0,
+        1.0,
+    ))
+    single_family_conf = float(np.clip(
+        0.22 * count_conf
+        + 0.28 * family_fraction
+        + 0.20 * coverage_conf
+        + 0.15 * length_conf
+        + 0.15 * coherence_conf,
         0.0,
         1.0,
     ))
 
-    strong_two_family = h_support > total_weight * 0.08 and v_support > total_weight * 0.08 and confidence >= 0.50
-    if not strong_two_family:
-        return None, confidence, len(usable)
-    return float(best_roll), confidence, len(usable)
+    strong_two_family = (
+        h_support > total_weight * 0.08
+        and v_support > total_weight * 0.08
+        and two_family_conf >= 0.50
+    )
+    strong_single_family = (
+        dominant_support > total_weight * 0.22
+        and family_fraction >= 0.55
+        and spread <= 6.0
+        and coverage >= 0.30
+        and max_length >= 0.25 * math.hypot(width, height)
+        and abs(best_roll) <= 25.0
+        and single_family_conf >= 0.55
+    )
+
+    if not (strong_two_family or strong_single_family):
+        return None, float(np.clip(max(two_family_conf, single_family_conf) * 0.90, 0.0, 1.0)), count
+
+    confidence = two_family_conf if strong_two_family else single_family_conf
+    return float(best_roll), float(np.clip(confidence, 0.0, 1.0)), count
 
 
 def _vp_ray(vp: VanishingPoint, intrinsics: CameraIntrinsics) -> np.ndarray:
@@ -131,7 +204,13 @@ def _vp_ray(vp: VanishingPoint, intrinsics: CameraIntrinsics) -> np.ndarray:
     return ray / max(np.linalg.norm(ray), 1e-12)
 
 
-def _focal_from_orthogonal_vps(a: VanishingPoint, b: VanishingPoint, width: int, height: int, sensor_w: float = 36.0) -> float | None:
+def _focal_from_orthogonal_vps(
+    a: VanishingPoint,
+    b: VanishingPoint,
+    width: int,
+    height: int,
+    sensor_w: float = 36.0,
+) -> float | None:
     sensor_h = sensor_w * height / max(width, 1)
     ax, ay = a.x - width * 0.5, a.y - height * 0.5
     bx, by = b.x - width * 0.5, b.y - height * 0.5
@@ -167,7 +246,11 @@ def _angles_from_rotation(R: np.ndarray) -> tuple[float, float, float]:
     return pitch, yaw, roll
 
 
-def _rotation_from_vps(vps: tuple[VanishingPoint, VanishingPoint, VanishingPoint], intrinsics: CameraIntrinsics, preferred_horizon_roll: float | None = None):
+def _rotation_from_vps(
+    vps: tuple[VanishingPoint, VanishingPoint, VanishingPoint],
+    intrinsics: CameraIntrinsics,
+    preferred_horizon_roll: float | None = None,
+):
     best = None
     for hx, hz in ((vps[0], vps[1]), (vps[1], vps[0])):
         rx0, rz0, ry0 = _vp_ray(hx, intrinsics), _vp_ray(hz, intrinsics), _vp_ray(vps[2], intrinsics)
@@ -184,17 +267,31 @@ def _rotation_from_vps(vps: tuple[VanishingPoint, VanishingPoint, VanishingPoint
                 U[:, -1] *= -1.0
                 R = U @ Vt
             pitch, yaw, roll = _angles_from_rotation(R)
-            raw_err = abs(float(np.dot(rx, ry0))) + abs(float(np.dot(rx, rz0))) + abs(float(np.dot(ry0, rz0)))
-            horizon_err = abs(_normalize_angle(roll - preferred_horizon_roll)) if preferred_horizon_roll is not None else 0.0
-            depth_vp_radius = math.hypot(hz.x - intrinsics.cx, hz.y - intrinsics.cy) / max(math.hypot(intrinsics.width, intrinsics.height), 1.0)
-            preference = 0.0025 * abs(yaw) + 0.01 * max(0.0, abs(pitch) - 60.0) + 0.006 * max(0.0, abs(roll) - 30.0) + 0.15 * depth_vp_radius + 0.25 * horizon_err / 90.0
+            raw_err = (
+                abs(float(np.dot(rx, ry0)))
+                + abs(float(np.dot(rx, rz0)))
+                + abs(float(np.dot(ry0, rz0)))
+            )
+            horizon_err = (
+                abs(_normalize_angle(roll - preferred_horizon_roll))
+                if preferred_horizon_roll is not None else 0.0
+            )
+            depth_vp_radius = math.hypot(
+                hz.x - intrinsics.cx,
+                hz.y - intrinsics.cy,
+            ) / max(math.hypot(intrinsics.width, intrinsics.height), 1.0)
+            preference = (
+                0.0025 * abs(yaw)
+                + 0.01 * max(0.0, abs(pitch) - 60.0)
+                + 0.006 * max(0.0, abs(roll) - 30.0)
+                + 0.15 * depth_vp_radius
+                + 0.25 * horizon_err / 90.0
+            )
             quality = raw_err + preference
             candidate = (quality, R, (pitch, yaw, roll), raw_err, horizon_err)
             if best is None or quality < best[0]:
                 best = candidate
-    if best is None:
-        return None
-    return best[1], best[2], best[3]
+    return None if best is None else (best[1], best[2], best[3])
 
 
 def _force_roll(R: np.ndarray, pitch: float, yaw: float, roll: float) -> np.ndarray:
@@ -203,22 +300,49 @@ def _force_roll(R: np.ndarray, pitch: float, yaw: float, roll: float) -> np.ndar
     return cv2.Rodrigues(extrinsics.rvec)[0]
 
 
-def estimate_rotation_candidates(evidence: SceneGeometryEvidence, image_w: int, image_h: int, max_candidates: int = 8) -> list[RotationCandidate]:
-    if not evidence.has_three_directions:
-        return []
+def _roll_only_candidate(roll: float, confidence: float, image_w: int, image_h: int, focal: float = 50.0) -> RotationCandidate:
+    intr = CameraIntrinsics.from_focal_mm(focal, image_w, image_h, 36.0, 36.0 * image_h / max(image_w, 1))
+    _, extrinsics = _camera_pose_from_params(1.0, 0.0, 0.0, 0.0, roll)
+    return RotationCandidate(
+        focal_length_mm=float(focal),
+        extrinsics=extrinsics,
+        scene_score=float(np.clip(confidence, 0.01, 0.99)),
+        orthogonality_error=0.0,
+        horizon_error_deg=0.0,
+        vanishing_point_support=0.0,
+        evidence=("line-roll scene evidence", f"scene roll {roll:.1f}° ({confidence:.0%})"),
+        orientation_source="roll_only",
+    )
+
+
+def estimate_rotation_candidates(
+    evidence: SceneGeometryEvidence,
+    image_w: int,
+    image_h: int,
+    max_candidates: int = 8,
+) -> list[RotationCandidate]:
+    """Return scene rotation candidates, including roll-only candidates."""
+    line_roll, line_roll_confidence, usable_line_count = _estimate_line_roll(evidence)
+    has_three = evidence.has_three_directions
+    if not has_three:
+        if line_roll is None:
+            return []
+        return [_roll_only_candidate(line_roll, line_roll_confidence, image_w, image_h)]
+
     vertical = next((vp for vp in evidence.vanishing_points if vp.cluster == evidence.vertical_cluster), None)
     horizontal = [vp for vp in evidence.vanishing_points if vp.cluster in evidence.horizontal_clusters]
     if vertical is None or len(horizontal) < 2:
-        return []
+        if line_roll is None:
+            return []
+        return [_roll_only_candidate(line_roll, line_roll_confidence, image_w, image_h)]
 
-    line_roll, line_roll_confidence, usable_line_count = _estimate_line_roll(evidence)
     preferred_roll = line_roll if line_roll is not None and line_roll_confidence >= 0.50 else 0.0
-
-    pair_focals = []
+    pair_focals: list[float] = []
     for pair in ((horizontal[0], horizontal[1]), (horizontal[0], vertical), (horizontal[1], vertical)):
         f = _focal_from_orthogonal_vps(pair[0], pair[1], image_w, image_h)
         if f is not None:
             pair_focals.append(f)
+
     focal_values: set[float] = set()
     if pair_focals:
         median_f = float(np.median(pair_focals))
@@ -226,19 +350,25 @@ def estimate_rotation_candidates(evidence: SceneGeometryEvidence, image_w: int, 
             for delta in (-8.0, -4.0, 0.0, 4.0, 8.0):
                 focal_values.add(round(float(np.clip(base + delta, 20.0, 200.0)), 2))
     focal_values.update((28.0, 35.0, 50.0, 70.0, 85.0, 105.0, 135.0))
+
     results: list[RotationCandidate] = []
     for focal in sorted(focal_values):
-        intr = CameraIntrinsics.from_focal_mm(focal, image_w, image_h, 36.0, 36.0 * image_h / max(image_w, 1))
+        intr = CameraIntrinsics.from_focal_mm(
+            focal,
+            image_w,
+            image_h,
+            36.0,
+            36.0 * image_h / max(image_w, 1),
+        )
         rotation = _rotation_from_vps((horizontal[0], horizontal[1], vertical), intr, preferred_roll)
         if rotation is None:
             continue
         R, (pitch, yaw, raw_roll), orth_err = rotation
-        if line_roll is not None and line_roll_confidence >= 0.50:
-            trusted_roll = line_roll
-        elif usable_line_count == 0 and evidence.horizon_angle_deg is not None:
-            trusted_roll = float(evidence.horizon_angle_deg)
-        else:
-            trusted_roll = 0.0
+        trusted_roll = (
+            line_roll
+            if line_roll is not None and line_roll_confidence >= 0.50
+            else (float(evidence.horizon_angle_deg) if usable_line_count == 0 and evidence.horizon_angle_deg is not None else 0.0)
+        )
         if abs(raw_roll - trusted_roll) > 1e-6:
             R = _force_roll(R, pitch, yaw, trusted_roll)
             pitch, yaw, _ = _angles_from_rotation(R)
@@ -273,11 +403,19 @@ def estimate_rotation_candidates(evidence: SceneGeometryEvidence, image_w: int, 
                 f"focal consistency {focal_consistency:.2f}" if pair_focals else "focal from generic candidate family",
                 f"scene roll {trusted_roll:.1f}° ({line_roll_confidence:.0%}, {usable_line_count} lines)" if line_roll is not None else f"scene roll forced to neutral 0° ({usable_line_count} lines)",
             ),
+            orientation_source="manhattan",
         ))
+
     results.sort(key=lambda c: (-c.scene_score, c.orthogonality_error, c.focal_length_mm))
     unique: list[RotationCandidate] = []
     for candidate in results:
-        if any(abs(candidate.focal_length_mm - u.focal_length_mm) < 5.0 and abs(candidate.extrinsics.yaw - u.extrinsics.yaw) < 4.0 and abs(candidate.extrinsics.pitch - u.extrinsics.pitch) < 4.0 and abs(candidate.extrinsics.roll - u.extrinsics.roll) < 2.0 for u in unique):
+        if any(
+            abs(candidate.focal_length_mm - u.focal_length_mm) < 5.0
+            and abs(candidate.extrinsics.yaw - u.extrinsics.yaw) < 4.0
+            and abs(candidate.extrinsics.pitch - u.extrinsics.pitch) < 4.0
+            and abs(candidate.extrinsics.roll - u.extrinsics.roll) < 2.0
+            for u in unique
+        ):
             continue
         unique.append(candidate)
         if len(unique) >= max(1, max_candidates):
@@ -285,23 +423,45 @@ def estimate_rotation_candidates(evidence: SceneGeometryEvidence, image_w: int, 
     return unique
 
 
-def _camera_from_candidate(candidate: PoseCandidate, rotation: RotationCandidate, image_w: int, image_h: int, subject_bbox=None, pose_keypoints=None):
-    focal = float(rotation.focal_length_mm)
+def _camera_from_candidate(
+    candidate: PoseCandidate,
+    rotation: RotationCandidate,
+    image_w: int,
+    image_h: int,
+    subject_bbox=None,
+    pose_keypoints=None,
+):
+    roll_only = rotation.orientation_source == "roll_only"
+    focal = float(candidate.focal_equiv_35mm) if roll_only else float(rotation.focal_length_mm)
     distance = float(candidate.distance) * focal / max(float(candidate.focal_equiv_35mm), 1e-6)
     height = float(candidate.height)
-    yaw = float(rotation.extrinsics.yaw)
+    yaw = float(candidate.extrinsics.yaw) if roll_only else float(rotation.extrinsics.yaw)
+    pitch = float(candidate.extrinsics.pitch) if roll_only else float(rotation.extrinsics.pitch)
+    roll = float(rotation.extrinsics.roll) if roll_only else float(rotation.extrinsics.roll)
+    if roll_only:
+        _, ext_seed = _camera_pose_from_params(distance, height, yaw, pitch, roll)
+        R = cv2.Rodrigues(ext_seed.rvec)[0]
+    else:
+        R = cv2.Rodrigues(rotation.extrinsics.rvec)[0]
     position = np.array([
         math.sin(math.radians(yaw)) * distance,
         height,
         -math.cos(math.radians(yaw)) * distance,
     ], dtype=float)
-    R = cv2.Rodrigues(rotation.extrinsics.rvec)[0]
     tvec = -R @ position
-    intr = CameraIntrinsics.from_focal_mm(focal, image_w, image_h, 36.0, 36.0 * image_h / max(image_w, 1))
-    ext = CameraExtrinsics(rotation.extrinsics.rvec.copy(), tvec, position, rotation.extrinsics.pitch, yaw, rotation.extrinsics.roll)
+    intr = CameraIntrinsics.from_focal_mm(
+        focal,
+        image_w,
+        image_h,
+        36.0,
+        36.0 * image_h / max(image_w, 1),
+    )
+    rvec, _ = cv2.Rodrigues(R)
+    ext = CameraExtrinsics(rvec.reshape(3), tvec, position, pitch, yaw, roll)
     camera = CameraModel(intr, ext)
     if pose_keypoints is None:
         return PoseCandidate(intr, ext, distance, height, focal, candidate.score, dict(candidate.losses))
+
     obj = pose_driven_person_points(pose_keypoints, image_w, image_h)
     valid = np.isfinite(obj).all(axis=1)
     points = np.asarray(pose_keypoints, dtype=float)
@@ -310,36 +470,83 @@ def _camera_from_candidate(candidate: PoseCandidate, rotation: RotationCandidate
     valid &= np.isfinite(projected).all(axis=1)
     if int(valid.sum()) < 5:
         return None
+
     errors = np.linalg.norm(projected[valid] - points[valid, :2], axis=1)
     mean_error, median_error = float(np.mean(errors)), float(np.median(errors))
     iou = 0.0
     if subject_bbox is not None:
-        pb = np.array([np.min(projected[valid, 0]), np.min(projected[valid, 1]), np.max(projected[valid, 0]), np.max(projected[valid, 1])])
+        pb = np.array([
+            np.min(projected[valid, 0]), np.min(projected[valid, 1]),
+            np.max(projected[valid, 0]), np.max(projected[valid, 1]),
+        ])
         bx0, by0, bx1, by1 = map(float, subject_bbox)
-        iw = max(0.0, min(pb[2], bx1) - max(pb[0], bx0)); ih = max(0.0, min(pb[3], by1) - max(pb[1], by0))
-        inter = iw * ih; ap = max(0.0, pb[2] - pb[0]) * max(0.0, pb[3] - pb[1]); ao = max(0.0, bx1 - bx0) * max(0.0, by1 - by0)
+        iw = max(0.0, min(pb[2], bx1) - max(pb[0], bx0))
+        ih = max(0.0, min(pb[3], by1) - max(pb[1], by0))
+        inter = iw * ih
+        ap = max(0.0, pb[2] - pb[0]) * max(0.0, pb[3] - pb[1])
+        ao = max(0.0, bx1 - bx0) * max(0.0, by1 - by0)
         iou = inter / max(ap + ao - inter, 1e-9)
+
     pose_score = math.exp(-mean_error / max(12.0, 0.012 * math.hypot(image_w, image_h)))
-    combined = float(np.clip(0.48 * pose_score + 0.26 * iou + 0.26 * rotation.scene_score, 0.01, 0.99))
+    combined = float(np.clip(
+        0.48 * pose_score + 0.26 * iou + 0.26 * rotation.scene_score,
+        0.01,
+        0.99,
+    ))
     losses = dict(candidate.losses)
-    losses.update({"mean_reprojection_px": round(mean_error, 3), "median_reprojection_px": round(median_error, 3), "bbox_iou": round(iou, 4), "scene_score": round(rotation.scene_score, 4), "scene_focal_mm": round(focal, 3), "scene_yaw": round(yaw, 3), "scene_pitch": round(rotation.extrinsics.pitch, 3), "scene_roll": round(rotation.extrinsics.roll, 3)})
+    losses.update({
+        "mean_reprojection_px": round(mean_error, 3),
+        "median_reprojection_px": round(median_error, 3),
+        "bbox_iou": round(iou, 4),
+        "scene_score": round(rotation.scene_score, 4),
+        "scene_focal_mm": round(focal, 3),
+        "scene_yaw": round(yaw, 3),
+        "scene_pitch": round(pitch, 3),
+        "scene_roll": round(roll, 3),
+        "scene_orientation_source": rotation.orientation_source,
+    })
     return PoseCandidate(intr, ext, distance, height, focal, combined, losses)
 
 
-def fuse_pose_and_scene(pose_candidates: list[PoseCandidate], rotation_candidates: list[RotationCandidate], image_w: int, image_h: int, pose_keypoints: np.ndarray, subject_bbox=None, max_candidates: int = 5) -> list[PoseCandidate]:
+def fuse_pose_and_scene(
+    pose_candidates: list[PoseCandidate],
+    rotation_candidates: list[RotationCandidate],
+    image_w: int,
+    image_h: int,
+    pose_keypoints: np.ndarray,
+    subject_bbox=None,
+    max_candidates: int = 5,
+) -> list[PoseCandidate]:
+    """Fuse scene evidence while preserving pose-authoritative fields for roll-only evidence."""
     if not pose_candidates or not rotation_candidates:
         return []
     fused: list[PoseCandidate] = []
     for rotation in rotation_candidates:
-        nearest = sorted(pose_candidates, key=lambda p: abs(p.focal_equiv_35mm - rotation.focal_length_mm))[:3]
+        nearest = sorted(
+            pose_candidates,
+            key=lambda p: abs(p.focal_equiv_35mm - rotation.focal_length_mm),
+        )[:3]
         for pose_candidate in nearest:
-            candidate = _camera_from_candidate(pose_candidate, rotation, image_w, image_h, subject_bbox=subject_bbox, pose_keypoints=pose_keypoints)
+            candidate = _camera_from_candidate(
+                pose_candidate,
+                rotation,
+                image_w,
+                image_h,
+                subject_bbox=subject_bbox,
+                pose_keypoints=pose_keypoints,
+            )
             if candidate is not None:
                 fused.append(candidate)
     fused.sort(key=lambda c: (-c.score, c.losses.get("mean_reprojection_px", 1e9)))
     unique: list[PoseCandidate] = []
     for candidate in fused:
-        if any(abs(candidate.focal_equiv_35mm - u.focal_equiv_35mm) < 5 and abs(candidate.extrinsics.yaw - u.extrinsics.yaw) < 4 and abs(candidate.extrinsics.pitch - u.extrinsics.pitch) < 4 and abs(candidate.extrinsics.roll - u.extrinsics.roll) < 2 for u in unique):
+        if any(
+            abs(candidate.focal_equiv_35mm - u.focal_equiv_35mm) < 5
+            and abs(candidate.extrinsics.yaw - u.extrinsics.yaw) < 4
+            and abs(candidate.extrinsics.pitch - u.extrinsics.pitch) < 4
+            and abs(candidate.extrinsics.roll - u.extrinsics.roll) < 2
+            for u in unique
+        ):
             continue
         unique.append(candidate)
         if len(unique) >= max(1, max_candidates):
