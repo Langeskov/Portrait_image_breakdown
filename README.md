@@ -29,6 +29,7 @@ The important design rule is:
 - **Scene geometry constrains rotation** when the image contains a reliable Manhattan structure.
 - **Focal length remains a candidate family** — a single image cannot generally determine exact focal length and distance independently.
 - **Weak/non-Manhattan scenes fall back to image-driven pose fitting and bounded refinement** instead of forcing a Manhattan solution.
+- **Roll is treated as an independent camera property** — human shoulder/body tilt is never used as a direct Dutch-angle measurement.
 - **Action labels provide context, not commands** — pose guidance is driven by body geometry, silhouette, balance, framing and visual intent.
 
 ## v2.5 Architecture
@@ -64,7 +65,11 @@ Reusable calibration profiles carry sensor size, principal point, pixel aspect r
 
 ### Image-space refinement
 
-After candidate recovery, v2.5 makes only bounded corrections to yaw/pitch/roll. The refinement prefers a stable body anchor (hips → torso → head) and minimizes observed-vs-projected keypoint residuals while preserving the focal-length/distance ambiguity. The correction is reported rather than silently hidden.
+After candidate recovery, v2.5 makes only bounded corrections to yaw/pitch. Roll is intentionally frozen unless an independent scene-roll measurement is available, because human pose alone cannot distinguish camera roll from subject lean. Any independent roll evidence is reported with the candidate rather than silently hidden.
+
+### Camera roll hardening
+
+Vanishing-point fitting can produce mathematically valid Euler rotations from the wrong line families. The rotation solver now estimates roll separately from raw line orientations and requires agreement between orthogonal scene families before accepting a non-zero Dutch angle. Otherwise roll is explicitly neutralized to `0°`. This prevents diagonal architecture, hair, clothing, railings and other scene texture from becoming a false camera-roll reference.
 
 ### Non-Manhattan scenes
 
@@ -89,7 +94,7 @@ UNKNOWN
 
 ## v2.5 Field Mode
 
-Field Mode is a fourth workspace designed for shooting rather than post-analysis. It uses a large primary cue, compact confidence/landmark status, secondary cues, undo/redo, and separate plain-text and SSML copy actions. The output layer is device-independent and does not require a network speech service. The dark theme explicitly styles nested labels, list items, buttons and combo-box popups so foreground/background colors remain readable under the application's global palette.
+Field Mode is a fourth workspace designed for shooting rather than post-analysis. It uses a large primary cue, compact confidence/landmark status, secondary cues, undo/redo, and separate plain-text and SSML copy actions. The output layer is device-independent and does not require a network speech service. The UI uses the same light theme as the rest of the desktop application, including explicit popup and disabled-state styling.
 
 ## v3 Architecture
 
@@ -139,6 +144,16 @@ The current-photo 2D canvas now consumes the same reference target data and draw
 
 Target landmark coordinates are stored in the reference image's normalized coordinate system, so arrows remain stable when reference and current photographs have different resolutions or aspect ratios.
 
+### v3 Phase 2.3 — Multi-person layout foundation
+
+The new `reverse_engineering/multi_person_layout.py` turns the detector's existing multi-person output into an explicit scene-layout record. Each detected person receives normalized framing geometry, a stable torso/hip depth sample, and a normalized relative depth coordinate. The system distinguishes three cases instead of silently inventing metric distances:
+
+- **image-space only** when depth evidence is missing or weak
+- **relative 3D ordering** when a local depth backend is confident and separates the people
+- **metric camera/person distance** remains unknown unless a later calibration stage provides scale
+
+`ReverseEngineeringResult` now carries this optional layout, and the text report records how many people were detected and whether relative 3D placement was actually enabled.
+
 ## Test Organization
 
 All regression and contract coverage is consolidated into one deterministic suite:
@@ -155,13 +170,14 @@ photo/
     ├── scene_constraints.py
     ├── support_plane.py
     ├── image_refinement.py
+    ├── multi_person_layout.py
     ├── reference_reconstruction.py
     ├── reference_targets.py
     ├── simulation.py
     └── engine_v2.py
 ```
 
-The unified suite covers geometry/projection conventions, camera fitting, calibration and EXIF evidence, normalized image orientation, relative depth, feasibility/support-plane constraints, image refinement and semantic anchors, evidence states, photographer cues and goal-oriented pose guidance, cue history and voice output, scene rotation, Field Mode styling, reference target planning, and 2D target overlay contracts. Model-backed end-to-end tests that require YOLO weights or a real photograph are intentionally kept outside the deterministic regression suite.
+The unified suite covers geometry/projection conventions, camera fitting, calibration and EXIF evidence, normalized image orientation, relative depth, feasibility/support-plane constraints, image refinement and semantic anchors, evidence states, photographer cues and goal-oriented pose guidance, cue history and voice output, scene rotation, conservative roll evidence, Field Mode styling, reference target planning, and 2D target overlay contracts. Model-backed end-to-end tests that require YOLO weights or a real photograph are intentionally kept outside the deterministic regression suite.
 
 ## Roadmap
 
@@ -169,7 +185,7 @@ The unified suite covers geometry/projection conventions, camera fitting, calibr
 
 **Functionally complete.**
 
-Completed: calibration profiles, EXIF + calibration separation, multi-candidate camera fitting, depth/feasibility/support-plane ranking, optical-axis diagnostics, bounded image-space refinement, non-Manhattan fallback, landmark-quality layer, Field Mode, cue history, voice-ready output, and explicit EXIF image-orientation normalization. Regression coverage is included in the unified suite.
+Completed: calibration profiles, EXIF + calibration separation, multi-candidate camera fitting, depth/feasibility/support-plane ranking, optical-axis diagnostics, bounded image-space refinement, conservative camera-roll handling, non-Manhattan fallback, landmark-quality layer, Field Mode, cue history, voice-ready output, and explicit EXIF image-orientation normalization. Regression coverage is included in the unified suite.
 
 ### v3 — Reference Reconstruction and Scene Understanding
 
@@ -194,8 +210,13 @@ Completed: calibration profiles, EXIF + calibration separation, multi-candidate 
 - Reference Target visibility toggle
 - Resolution-independent target geometry regression coverage
 
+#### Phase 2.3 — in progress
+- Multi-person layout data model
+- Conservative relative-depth gating for 3D ordering
+- Engine/report integration
+
 #### Next
-- Multi-person 3D layout when independent depth evidence exists
+- 3D multi-person scene rendering from relative layout evidence
 - Room/object plane reconstruction and editable scene anchors
 - Camera-to-scene calibration workflow using manually selected reference points
 - Reference-photo camera hypothesis comparison
