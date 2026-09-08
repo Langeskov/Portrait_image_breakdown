@@ -9,9 +9,12 @@ from __future__ import annotations
 
 import os
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QFont, QImage, QPixmap
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFileDialog, QSplitter, QListWidget, QListWidgetItem, QFrame
+from PySide6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFileDialog,
+    QSplitter, QListWidget, QListWidgetItem, QFrame,
+)
 
 from core.image_io import load_image, frame_orientation
 from reverse_engineering.reference_reconstruction import (
@@ -31,7 +34,10 @@ class ReferenceModeWidget(QWidget):
         self._reference_image = None
         self._reference = None
         self._current_pose = None
+        self._current_image = None
         self._current_image_size = (1, 1)
+        self._reference_pixmap = QPixmap()
+        self._current_pixmap = QPixmap()
 
         lo = QVBoxLayout(self)
         lo.setContentsMargins(14, 12, 14, 12)
@@ -89,28 +95,42 @@ class ReferenceModeWidget(QWidget):
         self._delta_list.setAlternatingRowColors(True)
         lo.addWidget(self._delta_list, 1)
 
-    def _set_pixmap(self, label, image):
-        if image is None:
-            label.setText("No image")
-            label.setPixmap(QPixmap())
-            return
-        rgb = __import__("cv2").cvtColor(image, __import__("cv2").COLOR_BGR2RGB)
+    def _image_to_pixmap(self, image):
+        import cv2
+        rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         h, w = rgb.shape[:2]
-        pix = QPixmap.fromImage(QImage(rgb.data, w, h, rgb.strides[0], QImage.Format_RGB888).copy())
-        label.setPixmap(pix.scaled(label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        return QPixmap.fromImage(
+            QImage(rgb.data, w, h, rgb.strides[0], QImage.Format_RGB888).copy()
+        )
+
+    def _set_pixmap(self, label, image, attr_name):
+        if image is None:
+            setattr(self, attr_name, QPixmap())
+            label.setPixmap(QPixmap())
+            label.setText("No image")
+            return
+        pixmap = self._image_to_pixmap(image)
+        setattr(self, attr_name, pixmap)
+        label.setText("")
+        self._refresh_previews()
+        QTimer.singleShot(0, self._refresh_previews)
+
+    def _refresh_previews(self):
+        for label, pixmap in (
+            (self._reference_preview, self._reference_pixmap),
+            (self._current_preview, self._current_pixmap),
+        ):
+            if pixmap.isNull():
+                continue
+            size = label.contentsRect().size()
+            if size.width() > 2 and size.height() > 2:
+                label.setPixmap(pixmap.scaled(size, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            else:
+                label.setPixmap(pixmap)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        self._set_pixmap(self._reference_preview, self._reference_image)
-        self._set_pixmap(self._current_preview, self._current_image)
-
-    @property
-    def _current_image(self):
-        return getattr(self, "__current_image", None)
-
-    @_current_image.setter
-    def _current_image(self, value):
-        self.__current_image = value
+        self._refresh_previews()
 
     def _sync_canvas_target(self):
         window = self.parentWidget()
@@ -126,7 +146,10 @@ class ReferenceModeWidget(QWidget):
         canvas.set_reference_target(self._reference, current, deltas, visible=True)
 
     def _load_reference(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Select Reference Image", "", "Images (*.jpg *.jpeg *.png *.bmp *.webp)")
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select Reference Image", "",
+            "Images (*.jpg *.jpeg *.png *.bmp *.webp)"
+        )
         if not path:
             return
         image = load_image(path)
@@ -140,8 +163,10 @@ class ReferenceModeWidget(QWidget):
         self._reference_image = image
         self._reference_pose = pose
         self._reference = build_reference_composition(pose, image.shape[1], image.shape[0])
-        self._set_pixmap(self._reference_preview, image)
-        self._summary.setText(os.path.basename(path) + f" · {frame_orientation(image)} · " + reference_summary(self._reference))
+        self._set_pixmap(self._reference_preview, image, "_reference_pixmap")
+        self._summary.setText(
+            os.path.basename(path) + f" · {frame_orientation(image)} · " + reference_summary(self._reference)
+        )
         self._render_compare()
         self._sync_canvas_target()
 
@@ -149,19 +174,20 @@ class ReferenceModeWidget(QWidget):
         self._reference_image = None
         self._reference_pose = None
         self._reference = None
+        self._reference_pixmap = QPixmap()
         self._delta_list.clear()
         self._composition.setText("Composition delta: —")
         self._anchor.setText("Semantic anchor: —")
         self._target.setText("Analyze a reference and current frame to generate a target shooting plan.")
         self._summary.setText("Load a reference photograph to compare composition and pose.")
-        self._set_pixmap(self._reference_preview, None)
+        self._set_pixmap(self._reference_preview, None, "_reference_pixmap")
         self._sync_canvas_target()
 
     def set_current(self, pose, image):
         self._current_pose = pose
         self._current_image = image
         self._current_image_size = image.shape[:2][::-1] if image is not None else (1, 1)
-        self._set_pixmap(self._current_preview, image)
+        self._set_pixmap(self._current_preview, image, "_current_pixmap")
         self._render_compare()
         self._sync_canvas_target()
 
@@ -171,10 +197,9 @@ class ReferenceModeWidget(QWidget):
         width, height = self._current_image_size
         current = build_reference_composition(self._current_pose, width, height)
         delta = composition_delta(self._reference, current)
-        scale_ratio = delta["scale_ratio"]
         self._composition.setText(
             f"Composition delta: center Δ {abs(delta['center_dx']):.1%}×{abs(delta['center_dy']):.1%} · "
-            f"current/reference scale {scale_ratio:.0%}"
+            f"current/reference scale {delta['scale_ratio']:.0%}"
         )
         anchor = next((a for a in self._reference.anchors if a.name == "hip_center"), None)
         self._anchor.setText(f"Semantic anchor: {anchor.name if anchor else 'bbox_center'}")
