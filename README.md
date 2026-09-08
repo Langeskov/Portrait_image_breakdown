@@ -159,13 +159,27 @@ The reconstruction workspace now projects every retained person through the same
 `reverse_engineering/scene_anchors.py` introduces an explicit, conservative scene scaffold for room/object reconstruction:
 
 - point and plane anchors with editable world position, normal and size
+- independent **enabled** and **visible** states, so presentation can be simplified without changing reconstruction participation
 - deterministic validation and serialization
 - a protected default **Ground plane** coordinate scaffold
 - helper construction of a plane from three manually supplied world points
 
 `SceneModel` carries these anchors independently from observed image evidence. A fresh anchor starts with zero confidence and `manual` / `scene scaffold` provenance; later calibration stages can bind anchors to selected image points and promote only the supported geometry.
 
-The v3 reconstruction inspector has also been compacted into a scrollable panel with collapsible sections. **Scene people is collapsed by default**, since multi-person diagnostics are secondary to the camera/scene workflow and can otherwise consume most of the available vertical space. Camera and Scene anchors remain immediately available, while Projection and Candidate details can be expanded on demand.
+The reconstruction inspector is scrollable and deliberately sparse. **Scene people is collapsed by default**, Candidate solutions remains collapsed, and Scene anchor rows have per-anchor visibility switches. The visibility state is presentation-only and does not disable calibration participation.
+
+### v3 Phase 2.5 — Image-first manual anchor calibration
+
+The first part of Phase 2.5 is now implemented through **Anchor Calibration**:
+
+- the source photograph is displayed directly beside the calibration controls
+- clicking the image writes the next `P1…P4` image coordinate; numeric coordinates remain available for precision work
+- bound point anchors and four-point plane anchors are drawn back onto the original image
+- visible anchors are controlled independently from reconstruction participation
+- all bound anchors can generate a non-destructive `CameraAnchorHypothesis` through PnP when sufficient correspondences exist
+- the active `SceneCamera` is never silently replaced by the hypothesis
+
+The remaining Phase 2.5 work is intentionally kept separate: reference-camera comparison, plane-aware object constraints, and save/load editable reconstruction sessions.
 
 ## Test Organization
 
@@ -193,13 +207,14 @@ Completed: calibration profiles, EXIF + calibration separation, multi-candidate 
 - Multi-person layout foundation with conservative relative depth
 - Multi-person 3D scene rendering and shared-camera projection
 - Editable point/plane scene-anchor scaffold
+- Independent scene-anchor visibility controls
+- Image-first manual anchor binding with original-image overlay
+- Non-destructive camera hypothesis estimation from bound anchors
 - Compact scrollable reconstruction inspector with collapsible Scene people / Candidate sections
 
-#### Phase 2.5 — next
-- Manual image-point binding for scene anchors
-- Estimate camera pose from selected point correspondences where geometrically supported
-- Plane-aware room/object constraints without silently converting hypotheses into observations
+#### Phase 2.5 — remaining
 - Reference-photo camera hypothesis comparison against the anchored scene
+- Plane-aware room/object constraints without silently converting hypotheses into observations
 - Save/load editable reconstruction sessions
 
 #### Later v3
