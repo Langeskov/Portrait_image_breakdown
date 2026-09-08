@@ -117,7 +117,7 @@ class AnalysisWorker(QThread):
 
             orientation = analyze_orientation(pose)
             action = classify_action(pose)
-            camera = analyze_camera(pose)
+            camera = analyze_camera(pose, self._analysis_image)
             composition = analyze_composition(self._analysis_image, pose)
             suggestions = generate_suggestions(action, orientation, camera, composition)
 
@@ -276,7 +276,11 @@ class MainWindow(QMainWindow):
         self._wk.progress.connect(self._set_progress); self._wk.pose_ready.connect(self._on_pose_ready); self._wk.core_ready.connect(self._on_core_ready); self._wk.reverse_ready.connect(self._on_reverse_ready); self._wk.error.connect(self._err); self._wk.start()
 
     def _on_pose_ready(self, pose):
-        self._bundle.pose = pose; self._w2._cv.set_pose(pose); self._st.showMessage("Pose detected")
+        self._bundle.pose = pose
+        self._w2._cv.set_pose(pose)
+        if hasattr(self, "_reference_mode") and self._img is not None:
+            self._reference_mode.set_current(pose, self._img)
+        self._st.showMessage("Pose detected")
 
     def _on_core_ready(self, bundle: AnalysisBundle):
         self._bundle = bundle; self._w2.update_results(bundle)
