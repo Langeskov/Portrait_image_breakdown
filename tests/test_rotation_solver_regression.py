@@ -1,10 +1,10 @@
-"""Regression tests for scene-rotation score contracts."""
+"""Regression tests for scene-rotation and pose-scoring contracts."""
 from __future__ import annotations
 
 import numpy as np
 
 from reverse_engineering.rotation_solver import RotationCandidate, _camera_from_candidate, _estimate_line_roll
-from reverse_engineering.geometry import CameraIntrinsics, CameraModel, PoseCandidate, _camera_pose_from_params, pose_driven_person_points
+from reverse_engineering.geometry import CameraIntrinsics, CameraModel, PoseCandidate, _camera_pose_from_params, PoseSolver, pose_driven_person_points
 from reverse_engineering.scene_geometry import LineSegment, SceneGeometryEvidence
 
 
@@ -89,3 +89,24 @@ def test_roll_only_rotation_preserves_pose_yaw_pitch_and_focal():
     assert abs(fused.extrinsics.pitch - pose_ext.pitch) < 1e-6
     assert abs(fused.extrinsics.roll - 7.0) < 1e-6
     assert abs(fused.focal_equiv_35mm - pose.focal_equiv_35mm) < 1e-6
+
+
+def test_pose_solver_accepts_scalar_bbox_dimensions():
+    """A normal XYXY bbox must produce scalar width/height terms without TypeError."""
+    _, ext = _camera_pose_from_params(4.0, 1.3, 0.0, 0.0, 0.0)
+    intr = CameraIntrinsics.from_focal_mm(70.0, 1000, 800)
+    proxy = pose_driven_person_points(np.zeros((17, 3), dtype=float), 1000, 800)
+    observed = CameraModel(intr, ext).project_points(proxy)
+    keypoints = np.c_[observed, np.full(17, 0.9)]
+    x0, y0 = np.nanmin(observed, axis=0)
+    x1, y1 = np.nanmax(observed, axis=0)
+    candidates = PoseSolver.fit_camera_to_pose(
+        keypoints,
+        1000,
+        800,
+        subject_bbox=(int(x0), int(y0), int(x1), int(y1)),
+        focal_seeds=(70.0,),
+        num_candidates=1,
+    )
+    assert candidates
+    assert np.isfinite(candidates[0].score)
