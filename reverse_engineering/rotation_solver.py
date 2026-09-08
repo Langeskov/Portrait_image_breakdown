@@ -72,8 +72,6 @@ def _estimate_line_roll(evidence: SceneGeometryEvidence) -> tuple[float | None, 
         v_mask = np.array([_axis_angle_distance(angle, _normalize_angle(roll + 90.0)) <= tolerance for angle, _ in usable])
         h_support = float(np.sum(weights[h_mask]))
         v_support = float(np.sum(weights[v_mask]))
-        # Balance matters: a single dominant family can still estimate roll,
-        # but two agreeing families are substantially more trustworthy.
         support = h_support + v_support
         balance = min(h_support, v_support) / max(max(h_support, v_support), 1e-9)
         score = support * (0.72 + 0.28 * balance)
@@ -96,7 +94,6 @@ def _estimate_line_roll(evidence: SceneGeometryEvidence) -> tuple[float | None, 
         dv = _axis_angle_distance(angle, _normalize_angle(best_roll + 90.0))
         d = min(dh, dv)
         if d <= tolerance:
-            # Convert a vertical line back into the equivalent roll residual.
             residual = _normalize_angle(angle - best_roll)
             if abs(residual) > 45.0:
                 residual = _normalize_angle(residual - 90.0 if residual > 0 else residual + 90.0)
@@ -122,12 +119,11 @@ def _estimate_line_roll(evidence: SceneGeometryEvidence) -> tuple[float | None, 
         1.0,
     ))
 
-    # A roll estimate based on only diagonal clutter is not evidence. Requiring
-    # either a strong two-family agreement or a clearly dominant single family
-    # keeps ordinary upright portraits at 0° instead of inventing large angles.
+    # Two orthogonal scene families are the minimum independent evidence for
+    # roll. A single dominant family can be an arbitrary architectural/textural
+    # direction, so it must never be promoted to a Dutch-angle estimate.
     strong_two_family = h_support > total_weight * 0.08 and v_support > total_weight * 0.08 and confidence >= 0.50
-    strong_single_family = max(h_support, v_support) > total_weight * 0.30 and confidence >= 0.58
-    if not (strong_two_family or strong_single_family):
+    if not strong_two_family:
         return None, confidence, len(usable)
     return float(best_roll), confidence, len(usable)
 
