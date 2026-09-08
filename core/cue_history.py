@@ -13,6 +13,7 @@ class CueSnapshot:
     cue_text: tuple[str, ...]
     summary: str
     category: tuple[str, ...]
+    cues: tuple[PhotographerCue, ...] = ()
 
 
 class CueHistory:
@@ -29,7 +30,13 @@ class CueHistory:
         if self._cursor < len(self._items) - 1:
             self._items = self._items[:self._cursor + 1]
         self._seq += 1
-        snap = CueSnapshot(self._seq, tuple(c.cue for c in cues), speakable_summary(cues), tuple(c.category for c in cues))
+        snap = CueSnapshot(
+            self._seq,
+            tuple(c.cue for c in cues),
+            speakable_summary(cues),
+            tuple(c.category for c in cues),
+            tuple(cues),
+        )
         self._items.append(snap)
         if len(self._items) > self.capacity:
             self._items.pop(0)
