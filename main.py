@@ -49,7 +49,7 @@ def run_gui(image_path=None):
     _install_v2_engine()
     import gui.main_window as main_window_module
     from gui.main_window import MainWindow, apply_light_theme
-    from gui.reverse_3d import Reverse3DWorkspace as RealReverse3DWorkspace
+    from gui.reverse_3d_v3 import Reverse3DWorkspace as RealReverse3DWorkspace
     from gui.cache import AnalysisCache, image_cache_key
     from gui.field_mode import install_field_mode
     from gui.reference_mode import install_reference_mode
