@@ -2,7 +2,7 @@
 
 Keeps the existing renderer/projection implementation while moving the
 control surface into a scrollable, collapsible inspector. Editable scene
-anchors form the first v3 Phase 2.4 room/object reconstruction layer.
+anchors form the v3 Phase 2.4 room/object reconstruction layer.
 """
 from __future__ import annotations
 
@@ -70,7 +70,10 @@ class AnchorSceneView(SceneView):
 
     def paintEvent(self, event):
         super().paintEvent(event)
-        anchors = [a for a in getattr(self.scene, "anchors", ()) if a.enabled]
+        anchors = [
+            a for a in getattr(self.scene, "anchors", ())
+            if a.enabled and getattr(a, "visible", True)
+        ]
         if not anchors:
             return
         painter = QPainter(self)
@@ -161,8 +164,8 @@ class Reverse3DWorkspace(QWidget):
         lo.addWidget(self._build_candidates_section())
 
         self._note = QLabel(
-            "v3 Phase 2.4: scene anchors are an editable coordinate scaffold. "
-            "They remain separate from observed image evidence until explicitly bound."
+            "v3 Phase 2.5: anchors are an editable coordinate scaffold. "
+            "Visibility changes are presentation-only; image bindings remain manual evidence."
         )
         self._note.setWordWrap(True)
         self._note.setStyleSheet("color:#64748B; font-size:9pt;")
@@ -197,15 +200,16 @@ class Reverse3DWorkspace(QWidget):
     def _build_anchor_section(self):
         section = CollapsibleSection("Scene anchors", expanded=True)
         hint = QLabel(
-            "用于建立墙、地面、桌面等可编辑场景基准。默认 Ground plane 只是坐标框架，不是检测结论。"
+            "场景基准与照片证据分开管理。勾选行首复选框即可显示/隐藏该锚点。"
         )
         hint.setWordWrap(True)
         hint.setStyleSheet("color:#64748B; font-size:9pt;")
         section.body_layout.addWidget(hint)
 
         self._anchors = QListWidget()
-        self._anchors.setMaximumHeight(110)
+        self._anchors.setMaximumHeight(118)
         self._anchors.currentRowChanged.connect(self._anchor_selected)
+        self._anchors.itemChanged.connect(self._anchor_visibility_changed)
         section.body_layout.addWidget(self._anchors)
 
         buttons = QHBoxLayout()
@@ -263,7 +267,7 @@ class Reverse3DWorkspace(QWidget):
     def _build_projection_section(self):
         section = CollapsibleSection("2D projection preview", expanded=True)
         self._preview = ProjectionPreview()
-        self._preview.setMinimumHeight(230)
+        self._preview.setMinimumHeight(210)
         section.body_layout.addWidget(self._preview)
         self._preview_metrics = QLabel("No projection yet")
         self._preview_metrics.setWordWrap(True)
@@ -351,15 +355,30 @@ class Reverse3DWorkspace(QWidget):
         self._anchor_ids = []
         for anchor in self.scene.anchors:
             kind = "plane" if anchor.kind == AnchorKind.PLANE else "point"
-            state = "enabled" if anchor.enabled else "hidden"
+            state = "shown" if getattr(anchor, "visible", True) else "hidden"
             self._anchor_ids.append(anchor.anchor_id)
-            self._anchors.addItem(QListWidgetItem(f"{anchor.name} · {kind} · {state}"))
+            item = QListWidgetItem(f"{anchor.name} · {kind} · {state}")
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+            item.setCheckState(Qt.Checked if getattr(anchor, "visible", True) else Qt.Unchecked)
+            self._anchors.addItem(item)
         self._anchors.blockSignals(False)
         if self._anchor_ids:
             row = self._anchor_ids.index(selected_id) if selected_id in self._anchor_ids else 0
             self._anchors.setCurrentRow(row)
         else:
             self._anchor_selected(-1)
+
+    def _anchor_visibility_changed(self, item):
+        row = self._anchors.row(item)
+        if not 0 <= row < len(self._anchor_ids):
+            return
+        anchor = self.scene.anchor_by_id(self._anchor_ids[row])
+        if anchor is None:
+            return
+        anchor.visible = item.checkState() == Qt.Checked
+        kind = "plane" if anchor.kind == AnchorKind.PLANE else "point"
+        item.setText(f"{anchor.name} · {kind} · {'shown' if anchor.visible else 'hidden'}")
+        self._view.update()
 
     def _anchor_selected(self, row):
         if not 0 <= row < len(self._anchor_ids):
