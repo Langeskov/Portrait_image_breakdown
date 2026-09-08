@@ -35,6 +35,11 @@ class Reverse3DWorkspace(_BaseReverse3DWorkspace):
             return
 
         from reverse_engineering.reference_reconstruction import build_reference_composition
+        if (
+            int(getattr(pose, "image_width", 0) or 0) != int(image.shape[1])
+            or int(getattr(pose, "image_height", 0) or 0) != int(image.shape[0])
+        ):
+            pose = pose.rescaled(int(image.shape[1]), int(image.shape[0]))
         current = build_reference_composition(pose, image.shape[1], image.shape[0])
         self.set_reference_context(ref, current)
 
