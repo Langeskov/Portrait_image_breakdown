@@ -144,15 +144,17 @@ The current-photo 2D canvas now consumes the same reference target data and draw
 
 Target landmark coordinates are stored in the reference image's normalized coordinate system, so arrows remain stable when reference and current photographs have different resolutions or aspect ratios.
 
-### v3 Phase 2.3 — Multi-person layout foundation
+### v3 Phase 2.3 — Multi-person scene understanding
 
-The new `reverse_engineering/multi_person_layout.py` turns the detector's existing multi-person output into an explicit scene-layout record. Each detected person receives normalized framing geometry, a stable torso/hip depth sample, and a normalized relative depth coordinate. The system distinguishes three cases instead of silently inventing metric distances:
+The multi-person detector output is now promoted into a persistent scene-layout model. Each detected person receives normalized framing geometry, a torso/hip depth sample and a normalized relative depth coordinate. The system explicitly separates image-space layout from 3D evidence:
 
 - **image-space only** when depth evidence is missing or weak
-- **relative 3D ordering** when a local depth backend is confident and separates the people
+- **relative 3D ordering** when the depth backend is confident and separates the people
 - **metric camera/person distance** remains unknown unless a later calibration stage provides scale
 
-`ReverseEngineeringResult` now carries this optional layout, and the text report records how many people were detected and whether relative 3D placement was actually enabled.
+The reconstruction engine carries this layout through `ReverseEngineeringResult` into `SceneModel.subjects`. The 3D workspace now renders **all detected people** with independent proxy skeletons, stable person labels and relative-depth/confidence annotations. The 2D projection preview also renders every person against the observed multi-person pose set instead of silently projecting only the primary subject.
+
+The rendering contract is intentionally conservative: additional people share the recovered camera, their horizontal/vertical placement is derived from normalized image coordinates, and relative `z` is applied only when the layout marks that person as independently depth-supported. No value shown as `z` is presented as meters.
 
 ## Test Organization
 
@@ -174,10 +176,11 @@ photo/
     ├── reference_reconstruction.py
     ├── reference_targets.py
     ├── simulation.py
+    ├── projection.py
     └── engine_v2.py
 ```
 
-The unified suite covers geometry/projection conventions, camera fitting, calibration and EXIF evidence, normalized image orientation, relative depth, feasibility/support-plane constraints, image refinement and semantic anchors, evidence states, photographer cues and goal-oriented pose guidance, cue history and voice output, scene rotation, conservative roll evidence, Field Mode styling, reference target planning, and 2D target overlay contracts. Model-backed end-to-end tests that require YOLO weights or a real photograph are intentionally kept outside the deterministic regression suite.
+The unified suite covers geometry/projection conventions, camera fitting, calibration and EXIF evidence, normalized image orientation, relative depth, feasibility/support-plane constraints, image refinement and semantic anchors, evidence states, photographer cues and goal-oriented pose guidance, cue history and voice output, scene rotation, conservative roll evidence, Field Mode styling, reference target planning, 2D target overlay contracts, and the multi-person layout data contract. Model-backed end-to-end tests that require YOLO weights or a real photograph are intentionally kept outside the deterministic regression suite.
 
 ## Roadmap
 
@@ -210,18 +213,23 @@ Completed: calibration profiles, EXIF + calibration separation, multi-candidate 
 - Reference Target visibility toggle
 - Resolution-independent target geometry regression coverage
 
-#### Phase 2.3 — in progress
+#### Completed Phase 2.3
 - Multi-person layout data model
 - Conservative relative-depth gating for 3D ordering
 - Engine/report integration
+- Multi-person 3D proxy rendering in the reconstruction workspace
+- Multi-person 2D projection validation
+- Per-person relative-depth/confidence labels
 
-#### Next
-- 3D multi-person scene rendering from relative layout evidence
+#### Next — Phase 2.4
 - Room/object plane reconstruction and editable scene anchors
 - Camera-to-scene calibration workflow using manually selected reference points
 - Reference-photo camera hypothesis comparison
 - Composition-aware target pose generation rather than only corrective suggestions
+
+#### Later — Phase 3
 - Temporal mode for video/live camera input, smoothing pose and camera estimates over time
+- Multi-frame scene stabilization and persistent room anchors
 
 ### v4 — Assisted Shooting
 - Optional live camera/tether integration
