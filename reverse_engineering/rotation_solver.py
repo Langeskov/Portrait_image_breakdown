@@ -57,10 +57,6 @@ def _estimate_line_roll(evidence: SceneGeometryEvidence) -> tuple[float | None, 
     if len(usable) < 4:
         return None, 0.0, len(usable)
 
-    # Search for one orientation r that simultaneously explains a horizontal
-    # family at r and a vertical family at r+90. A broad tolerance is used to
-    # accommodate perspective convergence, but diagonal clutter is not allowed
-    # to become a roll reference on its own.
     tolerance = 9.0
     grid = np.arange(-45.0, 45.0001, 0.5)
     weights = np.sqrt(np.asarray([length for _, length in usable], dtype=float))
@@ -84,7 +80,7 @@ def _estimate_line_roll(evidence: SceneGeometryEvidence) -> tuple[float | None, 
 
     best_score, best_roll, h_support, v_support = best
     ordered = sorted(scores, key=lambda x: x[0], reverse=True)
-    second_score = next((s for s in ordered[1:] if abs(s[1] - best_roll) >= 6.0), 0.0)
+    second_score = next((s[0] for s in ordered[1:] if abs(s[1] - best_roll) >= 6.0), 0.0)
     separation = max(0.0, best_score - second_score)
 
     inlier_angles = []
@@ -120,10 +116,6 @@ def _estimate_line_roll(evidence: SceneGeometryEvidence) -> tuple[float | None, 
         1.0,
     ))
 
-    # Two orthogonal scene families are the minimum independent evidence for
-    # roll. Large automatic Dutch-angle estimates need correspondingly stronger
-    # evidence; absent that, roll remains neutral rather than being guessed from
-    # diagonals or decorative geometry.
     strong_two_family = h_support > total_weight * 0.08 and v_support > total_weight * 0.08 and confidence >= 0.50
     if not strong_two_family:
         return None, confidence, len(usable)
@@ -220,9 +212,6 @@ def estimate_rotation_candidates(evidence: SceneGeometryEvidence, image_w: int, 
         return []
 
     line_roll, line_roll_confidence, usable_line_count = _estimate_line_roll(evidence)
-    # Without independent roll evidence, a pose/VP solution is allowed to
-    # describe yaw/pitch, but roll is explicitly neutral. This prevents a
-    # diagonal-heavy scene from manufacturing a large Dutch angle.
     preferred_roll = line_roll if line_roll is not None and line_roll_confidence >= 0.50 else 0.0
 
     pair_focals = []
@@ -247,8 +236,6 @@ def estimate_rotation_candidates(evidence: SceneGeometryEvidence, image_w: int, 
         if line_roll is not None and line_roll_confidence >= 0.50:
             trusted_roll = line_roll
         elif usable_line_count == 0 and evidence.horizon_angle_deg is not None:
-            # Synthetic/minimal contract inputs may have no raw LineSegment
-            # records; retain the legacy horizon value only in that case.
             trusted_roll = float(evidence.horizon_angle_deg)
         else:
             trusted_roll = 0.0
