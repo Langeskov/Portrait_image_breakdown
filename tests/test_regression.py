@@ -134,6 +134,15 @@ def test_camera_fit_returns_ranked_family():
     assert candidates[0].losses["mean_reprojection_px"] < 20
 
 
+def test_pose_candidate_api_is_independent_of_simulation():
+    from reverse_engineering.camera_pose import estimate_camera_pose_candidates
+    pose = _reference_pose()
+    candidates = estimate_camera_pose_candidates(pose, subject_bbox=pose.bbox, num_candidates=4)
+    assert len(candidates) >= 1
+    assert all(c.score >= 0.0 for c in candidates)
+    assert all(np.isfinite(c.distance) and np.isfinite(c.focal_equiv_35mm) for c in candidates)
+
+
 def test_scene_model_projection_uses_pose_proxy():
     kp, bbox = _synthetic_reference_pose()
     from reverse_engineering.data_types import CameraPoseResult, CompositionResult as DC, DepthOfFieldResult, EstimatedValue, FocalLengthResult, MotionBlurResult, PerspectiveResult, ReverseEngineeringResult, ShootingTechniqueResult
