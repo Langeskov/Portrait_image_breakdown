@@ -1,8 +1,6 @@
 """Reference-aware reconstruction workspace adapter and PySide6-safe preview."""
 from __future__ import annotations
 
-import cv2
-import numpy as np
 from PySide6.QtCore import Qt, QPointF
 from PySide6.QtGui import QBrush, QColor, QPainter, QPen, QPolygonF
 
@@ -65,7 +63,6 @@ class AnchorProjectionPreview(_BaseAnchorProjectionPreview):
             painter.drawLine(p.x(), p.y() - 10, p.x(), p.y() + 10)
 
         painter.setPen(QPen(QColor("#D97706"), 2))
-        painter.setFont(painter.font())
         painter.drawText(qpoints[0] + QPointF(8, -9), f"SELECTED · {self._selected_anchor.name}")
         painter.end()
 
