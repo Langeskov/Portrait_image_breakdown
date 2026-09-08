@@ -96,7 +96,12 @@ def run_gui(image_path=None):
             if window._img is None:
                 QMessageBox.information(window, "Anchor Calibration", "请先加载一张照片并完成至少一次分析。")
                 return
-            dialog = AnchorCalibrationDialog(window._w3.scene, (window._img.shape[1], window._img.shape[0]), window)
+            dialog = AnchorCalibrationDialog(
+                window._w3.scene,
+                (window._img.shape[1], window._img.shape[0]),
+                image=window._img,
+                parent=window,
+            )
             dialog.exec()
             window._w3._view.update()
         anchor_action.triggered.connect(open_anchor_calibration); bars[0].addAction(anchor_action)
