@@ -17,6 +17,7 @@ from reverse_engineering.image_refinement import refine_camera_candidate, subjec
 from reverse_engineering.intrinsics import IntrinsicsEvidence
 from reverse_engineering.motion_blur import analyze_motion_blur
 from reverse_engineering.perspective import analyze_perspective
+from reverse_engineering.rotation_solver import estimate_rotation_candidates, fuse_pose_and_scene
 from reverse_engineering.scene_geometry import analyze_scene_geometry
 from reverse_engineering.scene_constraints import build_depth_constraint_evidence
 from reverse_engineering.support_plane import estimate_support_plane
@@ -30,15 +31,7 @@ def _extract_keypoints_pixels(pose: PoseResult) -> np.ndarray:
 
 
 def _normalize_pose_input(pose: PoseResult, image_w: int, image_h: int, bbox=None):
-    """Normalize pose pixels and bbox to the exact image coordinate system.
-
-    The GUI intentionally works on a resized analysis image, while callers may
-    still provide a PoseResult/BBox created at the source-image resolution.
-    Mixing those coordinate systems biases reprojection and can force the
-    bounded optimizer onto pathological solutions such as very low camera
-    height + very long focal length. Keep the normalization at the RE boundary
-    so every downstream geometry module sees one canonical pixel space.
-    """
+    """Normalize pose pixels and bbox to the exact image coordinate system."""
     if pose is None:
         return None, bbox, False
     src_w = int(getattr(pose, "image_width", image_w) or image_w)
@@ -47,7 +40,6 @@ def _normalize_pose_input(pose: PoseResult, image_w: int, image_h: int, bbox=Non
     if same:
         normalized_bbox = bbox if bbox is not None else getattr(pose, "bbox", None)
         return pose, normalized_bbox, False
-
     sx = float(image_w) / max(src_w, 1)
     sy = float(image_h) / max(src_h, 1)
     normalized_pose = pose.rescaled(image_w, image_h)
@@ -55,10 +47,7 @@ def _normalize_pose_input(pose: PoseResult, image_w: int, image_h: int, bbox=Non
     normalized_bbox = None
     if source_bbox is not None:
         x0, y0, x1, y1 = map(float, source_bbox)
-        normalized_bbox = (
-            round(x0 * sx), round(y0 * sy),
-            round(x1 * sx), round(y1 * sy),
-        )
+        normalized_bbox = (round(x0 * sx), round(y0 * sy), round(x1 * sx), round(y1 * sy))
     return normalized_pose, normalized_bbox, True
 
 
@@ -99,14 +88,7 @@ def _analyze_composition_extended(image, pose=None, bbox=None) -> CompositionRes
     if subject_scale < 0.4:
         styles.append({"name": "depth_layering", "confidence": 0.5})
     styles.sort(key=lambda s: s["confidence"], reverse=True)
-    return CompositionResult(
-        styles=styles[:5],
-        subject_position=(round(sx, 3), round(sy, 3)),
-        subject_scale=round(subject_scale, 4),
-        headroom=round(headroom, 3),
-        look_room=look_room,
-        negative_space_ratio=round(neg_space, 3),
-    )
+    return CompositionResult(styles=styles[:5], subject_position=(round(sx, 3), round(sy, 3)), subject_scale=round(subject_scale, 4), headroom=round(headroom, 3), look_room=look_room, negative_space_ratio=round(neg_space, 3))
 
 
 def _generate_camera_actions(result, candidates=None):
@@ -122,10 +104,7 @@ def _generate_camera_actions(result, candidates=None):
     if candidates and len(candidates) > 1:
         alt = candidates[1]
         actions.append(CameraAction("CHANGE_FOCAL_LENGTH", [f"alternative {alt.focal_equiv_35mm:.1f}mm at {alt.distance:.2f}m"], "explore another ranked camera solution", priority=1))
-    actions.extend([
-        CameraAction("WAIT", ["observe subject movement"], "wait for decisive moment", priority=0),
-        CameraAction("CAPTURE", ["current solution is acceptable"], "take the shot", priority=0),
-    ])
+    actions.extend([CameraAction("WAIT", ["observe subject movement"], "wait for decisive moment", priority=0), CameraAction("CAPTURE", ["current solution is acceptable"], "take the shot", priority=0)])
     actions.sort(key=lambda a: a.priority, reverse=True)
     return actions[:8]
 
@@ -176,43 +155,33 @@ class ReverseEngineeringEngineV2:
             people = getattr(pose, "persons", None) or [pose]
             multi_person_layout = build_multi_person_layout(people, w, h, self._depth_provider)
 
-            # Candidate generation is always available. The optional simulation
-            # stage only adds scene/depth/support-plane ranking and refinement.
+            # Candidate generation is always available. Simulation adds optional
+            # optimization/ranking, while scene rotation remains authoritative for
+            # candidate orientation even when simulation is disabled.
             scene_for_fusion = scene_evidence if (scene_evidence.lines and (scene_evidence.has_three_directions or len(scene_evidence.lines) >= 4)) else None
             if self._enable_simulation:
                 candidates = optimize_parameters(
-                    w,
-                    h,
-                    composition.subject_scale,
-                    composition.subject_position,
-                    perspective.perspective_strength.value,
-                    kp,
-                    num_candidates=6,
-                    subject_bbox=bbox,
-                    scene_evidence=scene_for_fusion,
+                    w, h, composition.subject_scale, composition.subject_position,
+                    perspective.perspective_strength.value, kp, num_candidates=6,
+                    subject_bbox=bbox, scene_evidence=scene_for_fusion,
                     intrinsics_evidence=intrinsics_evidence,
                     calibration_profile=self._calibration_profile,
-                    depth_evidence=depth_evidence,
-                    support_plane=support_plane,
+                    depth_evidence=depth_evidence, support_plane=support_plane,
                 )
                 for candidate in candidates:
                     refine_camera_candidate(candidate, kp, w, h, bbox)
             else:
-                candidates = estimate_camera_pose_candidates(
-                    pose,
-                    subject_bbox=bbox,
-                    num_candidates=6,
-                )
+                candidates = estimate_camera_pose_candidates(pose, subject_bbox=bbox, num_candidates=6)
+                if scene_for_fusion and candidates:
+                    rotation_candidates = estimate_rotation_candidates(scene_for_fusion, w, h, max_candidates=8)
+                    fused = fuse_pose_and_scene(candidates, rotation_candidates, w, h, kp, subject_bbox=bbox, max_candidates=6) if rotation_candidates else []
+                    if fused:
+                        candidates = fused
 
         if candidates:
             candidates.sort(key=lambda c: (-float(c.score), float(c.losses.get("image_refinement_cost_px", 1e9))))
             camera_pose = _camera_pose_from_candidate(candidates[0])
-            focal_length = estimate_focal_length(
-                perspective.perspective_strength.value,
-                perspective.perspective_type.value,
-                composition.subject_scale,
-                candidates,
-            )
+            focal_length = estimate_focal_length(perspective.perspective_strength.value, perspective.perspective_type.value, composition.subject_scale, candidates)
         elif pose is not None:
             camera_pose = estimate_camera_pose(pose, perspective.vanishing_points, image=image, subject_bbox=bbox)
             focal_length = estimate_focal_length(perspective.perspective_strength.value, perspective.perspective_type.value, composition.subject_scale)
@@ -230,12 +199,9 @@ class ReverseEngineeringEngineV2:
         motion_blur = analyze_motion_blur(image, bbox)
         shooting_techniques = classify_techniques(perspective, camera_pose, focal_length, depth_of_field, motion_blur, composition, composition.subject_scale)
         overall_confidence = float(np.mean([
-            focal_length.category.confidence,
-            focal_length.equivalent_35mm.confidence,
-            depth_of_field.dof_type.confidence,
-            motion_blur.blur_type.confidence,
-            camera_pose.camera_height.confidence,
-            camera_pose.camera_distance.confidence,
+            focal_length.category.confidence, focal_length.equivalent_35mm.confidence,
+            depth_of_field.dof_type.confidence, motion_blur.blur_type.confidence,
+            camera_pose.camera_height.confidence, camera_pose.camera_distance.confidence,
         ]))
 
         uncertainties = [
@@ -253,14 +219,12 @@ class ReverseEngineeringEngineV2:
         if depth_evidence is not None:
             uncertainties.append(
                 f"relative depth constraint active: {depth_evidence.valid_count} landmarks, confidence {depth_evidence.confidence:.0%}; used only as a soft ranking signal"
-                if depth_evidence.usable
-                else "relative depth constraint unavailable or too weak; camera height/distance remain primarily pose-derived"
+                if depth_evidence.usable else "relative depth constraint unavailable or too weak; camera height/distance remain primarily pose-derived"
             )
         if support_plane is not None:
             uncertainties.append(
                 f"support-plane hypothesis active: {support_plane.visible_ankles} ankle contacts, confidence {support_plane.confidence:.0%}; pitch consistency is a soft ranking signal"
-                if support_plane.usable
-                else "support-plane hypothesis unavailable; pitch is not constrained by contact geometry"
+                if support_plane.usable else "support-plane hypothesis unavailable; pitch is not constrained by contact geometry"
             )
         if scene_evidence.has_three_directions and scene_evidence.confidence >= 0.45:
             uncertainties.append("rotation fusion uses Manhattan scene geometry because scene confidence is sufficient")
@@ -279,22 +243,14 @@ class ReverseEngineeringEngineV2:
             uncertainties.extend(intrinsics_evidence.notes)
 
         result = ReverseEngineeringResult(
-            image_size=(w, h),
-            subject_bbox=bbox,
+            image_size=(w, h), subject_bbox=bbox,
             subject_keypoints=pose.landmarks[:17] if pose else None,
-            subject_scale=composition.subject_scale,
-            edge_lines=perspective.line_segments,
-            blur_regions={},
-            perspective=perspective,
-            camera_pose=camera_pose,
-            focal_length=focal_length,
-            depth_of_field=depth_of_field,
-            motion_blur=motion_blur,
-            composition=composition,
-            shooting_techniques=shooting_techniques,
-            overall_confidence=overall_confidence,
-            uncertainties=uncertainties,
-            _sim_candidates=candidates,
+            subject_scale=composition.subject_scale, edge_lines=perspective.line_segments,
+            blur_regions={}, perspective=perspective, camera_pose=camera_pose,
+            focal_length=focal_length, depth_of_field=depth_of_field,
+            motion_blur=motion_blur, composition=composition,
+            shooting_techniques=shooting_techniques, overall_confidence=overall_confidence,
+            uncertainties=uncertainties, _sim_candidates=candidates,
             intrinsics_evidence=intrinsics_evidence.to_dict() if intrinsics_evidence else {},
             multi_person_layout=multi_person_layout,
         )
