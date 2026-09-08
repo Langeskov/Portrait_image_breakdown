@@ -1,16 +1,16 @@
 """Compact v3 reconstruction workspace.
 
-This layer keeps the existing 3D renderer/projection implementation while
-moving the control surface into a scrollable, collapsible inspector. It also
-introduces editable scene anchors for the v3.2.4 room/object reconstruction
-foundation.
+Keeps the existing renderer/projection implementation while moving the
+control surface into a scrollable, collapsible inspector. Editable scene
+anchors form the first v3 Phase 2.4 room/object reconstruction layer.
 """
 from __future__ import annotations
 
 from typing import Optional
 
-from PySide6.QtCore import Qt, QPointF
-from PySide6.QtGui import QPainter, QPen, QBrush, QColor, QFont
+import numpy as np
+from PySide6.QtCore import Qt, QPointF, Signal
+from PySide6.QtGui import QPainter, QPen, QBrush, QColor, QFont, QPolygonF
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QToolButton, QScrollArea,
     QGroupBox, QFormLayout, QDoubleSpinBox, QListWidget, QListWidgetItem,
@@ -24,14 +24,12 @@ from reverse_engineering.scene_anchors import AnchorKind, SceneAnchor
 
 ACCENT = QColor("#2563EB")
 TEXT = QColor("#334155")
-MUTED = QColor("#64748B")
-BORDER = QColor("#D9DDE3")
 PLANE = QColor(37, 99, 235, 55)
 ANCHOR = QColor("#D97706")
 
 
 class CollapsibleSection(QWidget):
-    """A compact inspector section that releases vertical space when closed."""
+    """Compact inspector section that releases vertical space when closed."""
 
     def __init__(self, title: str, expanded: bool = True, parent=None):
         super().__init__(parent)
@@ -68,7 +66,7 @@ class CollapsibleSection(QWidget):
 
 
 class AnchorSceneView(SceneView):
-    """Existing 3D scene renderer plus lightweight editable-anchor overlays."""
+    """Existing 3D renderer plus lightweight editable-anchor overlays."""
 
     def paintEvent(self, event):
         super().paintEvent(event)
@@ -78,44 +76,34 @@ class AnchorSceneView(SceneView):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         for anchor in anchors:
+            center = self._project(anchor.position)
             if anchor.kind == AnchorKind.PLANE:
                 corners = anchor.corners()
                 if len(corners) == 4:
                     painter.setPen(QPen(ACCENT, 1.4, Qt.DashLine))
                     painter.setBrush(QBrush(PLANE))
-                    painter.drawPolygon(*[self._project(p) for p in corners])
-                    center = self._project(anchor.position)
-                    painter.setPen(QPen(ACCENT, 2))
-                    painter.drawLine(center, self._project(corners[0]))
-                    normal_end = (
-                        float(anchor.position[0]) + float(anchor.normalized_normal()[0]) * 0.8,
-                        float(anchor.position[1]) + float(anchor.normalized_normal()[1]) * 0.8,
-                        float(anchor.position[2]) + float(anchor.normalized_normal()[2]) * 0.8,
-                    )
+                    painter.drawPolygon(QPolygonF([self._project(p) for p in corners]))
+                    normal = anchor.normalized_normal()
+                    end = np.asarray(anchor.position, dtype=float) + normal * 0.8
                     painter.setPen(QPen(ANCHOR, 2))
-                    painter.drawLine(center, self._project(normal_end))
-                label_pos = self._project(anchor.position) + QPointF(8, -8)
+                    painter.drawLine(center, self._project(end))
             else:
-                center = self._project(anchor.position)
                 painter.setPen(QPen(ANCHOR, 2))
                 painter.setBrush(QBrush(QColor("#FFFFFF")))
                 painter.drawEllipse(center, 5, 5)
-                label_pos = center + QPointF(8, -8)
             painter.setPen(QPen(TEXT, 1))
             painter.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
-            painter.drawText(label_pos, anchor.name)
+            painter.drawText(center + QPointF(8, -8), anchor.name)
         painter.end()
 
 
 class Reverse3DWorkspace(QWidget):
     """Scrollable compact reconstruction inspector for v3."""
 
-    camera_edited = QWidget.Signal if False else None
+    camera_edited = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        from PySide6.QtCore import Signal
-        self.camera_edited = Signal()
         self.scene = SceneModel()
         self._result = None
         self._source_image = None
@@ -139,8 +127,7 @@ class Reverse3DWorkspace(QWidget):
         left_layout.addWidget(reset, 0, Qt.AlignRight)
         splitter.addWidget(left)
 
-        right = self._build_inspector()
-        splitter.addWidget(right)
+        splitter.addWidget(self._build_inspector())
         splitter.setSizes([980, 390])
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 0)
@@ -174,8 +161,8 @@ class Reverse3DWorkspace(QWidget):
         lo.addWidget(self._build_candidates_section())
 
         self._note = QLabel(
-            "v3.2.4: scene anchors are an editable coordinate scaffold. "
-            "They are not treated as measured image evidence until explicitly bound."
+            "v3 Phase 2.4: scene anchors are an editable coordinate scaffold. "
+            "They remain separate from observed image evidence until explicitly bound."
         )
         self._note.setWordWrap(True)
         self._note.setStyleSheet("color:#64748B; font-size:9pt;")
@@ -323,10 +310,6 @@ class Reverse3DWorkspace(QWidget):
             self._confidence.setText(
                 f"Overall confidence: {result.overall_confidence:.0%} · People: {count} · Relative 3D: {rel3d}/{count}"
             )
-            self._note.setText(
-                "Scene anchors are editable only by the operator. They remain separate from observed image evidence; "
-                "relative person depth is still normalized when no metric scale exists."
-            )
         else:
             self._confidence.setText("No reverse-engineering result yet")
         self._refresh_projection()
@@ -379,8 +362,7 @@ class Reverse3DWorkspace(QWidget):
             self._anchor_selected(-1)
 
     def _anchor_selected(self, row):
-        valid = 0 <= row < len(self._anchor_ids)
-        if not valid:
+        if not 0 <= row < len(self._anchor_ids):
             self._anchor_name.setText("—")
             return
         anchor = self.scene.anchor_by_id(self._anchor_ids[row])
@@ -405,7 +387,7 @@ class Reverse3DWorkspace(QWidget):
 
     def _current_anchor(self) -> Optional[SceneAnchor]:
         row = self._anchors.currentRow()
-        if not (0 <= row < len(self._anchor_ids)):
+        if not 0 <= row < len(self._anchor_ids):
             return None
         return self.scene.anchor_by_id(self._anchor_ids[row])
 
@@ -427,7 +409,7 @@ class Reverse3DWorkspace(QWidget):
 
     def _anchor_kind_changed(self, value):
         anchor = self._current_anchor()
-        if anchor is None:
+        if anchor is None or anchor.locked:
             return
         anchor.kind = AnchorKind(value)
         self._anchor_selected(self._anchors.currentRow())
