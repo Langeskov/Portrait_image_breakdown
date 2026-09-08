@@ -23,7 +23,7 @@ from reverse_engineering.intrinsics import read_exif_intrinsics
 from reverse_engineering.reference_reconstruction import build_reference_composition, choose_semantic_anchor, compare_pose_to_reference, composition_delta
 from reverse_engineering.reference_targets import build_reference_target_plan
 from reverse_engineering.scene_constraints import DepthConstraintEvidence, CameraFeasibilityEvidence, build_depth_constraint_evidence, candidate_depth_score, candidate_feasibility_score
-from reverse_engineering.scene_geometry import SceneGeometryEvidence, VanishingPoint
+from reverse_engineering.scene_geometry import LineSegment, SceneGeometryEvidence, VanishingPoint
 from reverse_engineering.scene import SceneModel, SceneCamera
 from reverse_engineering.simulation import _dedupe_candidates, _intrinsics_from_profile
 from reverse_engineering.support_plane import SupportPlaneEvidence, estimate_support_plane, expected_support_pitch_deg, candidate_support_plane_score
@@ -247,6 +247,22 @@ def test_scene_rotation_solver_contract():
     candidates=estimate_rotation_candidates(evidence,width,height,max_candidates=8); best=max(candidates,key=lambda c:c.scene_score); assert candidates and abs(best.focal_length_mm-focal)<2 and abs(best.extrinsics.yaw-12)<1.5 and abs(best.extrinsics.pitch+5)<1.5 and abs(best.extrinsics.roll-6)<1.5
 
 
+def test_roll_evidence_ignores_diagonal_clutter():
+    from reverse_engineering.rotation_solver import _estimate_line_roll
+    lines=[]
+    for i, angle in enumerate((0.0, 0.5, -0.5, 89.5, -89.0, 90.0)):
+        x1=20.0+i*100.0; y1=100.0+i*20.0; length=260.0
+        rad=np.radians(angle); x2=x1+length*np.cos(rad); y2=y1+length*np.sin(rad)
+        lines.append(LineSegment(x1,y1,float(x2),float(y2),length,angle))
+    for i, angle in enumerate((42.0, 48.0, 55.0, -42.0, -48.0)*6):
+        x1=40.0+i*7.0; y1=300.0+i*3.0; length=220.0
+        rad=np.radians(angle); x2=x1+length*np.cos(rad); y2=y1+length*np.sin(rad)
+        lines.append(LineSegment(x1,y1,float(x2),float(y2),length,angle))
+    evidence=SceneGeometryEvidence(1200,800,tuple(lines),tuple(),tuple(),None,tuple(),None,0.4)
+    roll, confidence, count=_estimate_line_roll(evidence)
+    assert roll is not None and abs(roll) < 3.0 and confidence >= 0.5 and count == len(lines)
+
+
 def test_exif_orientation_normalizes_landscape_storage_to_portrait_display(tmp_path):
     raw = cv2.imencode('.jpg', np.full((60, 40, 3), 220, dtype=np.uint8))[1].tobytes()
     tiff = bytearray(b'II*\x00\x08\x00\x00\x00\x01\x00')
@@ -262,9 +278,10 @@ def test_exif_orientation_normalizes_landscape_storage_to_portrait_display(tmp_p
 
 
 def test_field_mode_styles_scope_foreground_and_primary_surface():
+    from reverse_engineering.scene_geometry import LineSegment as _LS
     from gui.field_mode import FieldModeWidget
     theme = FieldModeWidget._THEME
-    assert theme['bg'] == '#10151c'
+    assert theme['bg'] == '#F5F6F8'
     from PySide6.QtWidgets import QApplication
     app = QApplication.instance() or QApplication([])
     widget = FieldModeWidget(); css = widget.styleSheet()
