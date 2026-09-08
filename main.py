@@ -19,18 +19,8 @@ def _install_v2_engine():
 
 def _strip_evidence_block(text: str) -> str:
     """Remove both legacy Evidence State renderings from a report."""
-    text = re.sub(
-        r"\n*={20,}\nEVIDENCE STATE\n={20,}\n"
-        r"Observed:\s*\d+.*?\n"
-        r"Observed = directly supported by image/metadata\.\n"
-        r"Estimated = inferred from available evidence and model confidence\.\n"
-        r"Unknown = insufficient evidence; do not treat as a measured value\.\s*",
-        "", text, flags=re.DOTALL,
-    )
-    text = re.sub(
-        r"\n*-- Evidence State --\n\s*observed:\s*\d+\n\s*estimated:\s*\d+\n\s*unknown:\s*\d+\s*",
-        "", text, flags=re.IGNORECASE,
-    )
+    text = re.sub(r"\n*={20,}\nEVIDENCE STATE\n={20,}\nObserved:\s*\d+.*?\nObserved = directly supported by image/metadata\.\nEstimated = inferred from available evidence and model confidence\.\nUnknown = insufficient evidence; do not treat as a measured value\.\s*", "", text, flags=re.DOTALL)
+    text = re.sub(r"\n*-- Evidence State --\n\s*observed:\s*\d+\n\s*estimated:\s*\d+\n\s*unknown:\s*\d+\s*", "", text, flags=re.IGNORECASE)
     return text.rstrip()
 
 
@@ -45,7 +35,7 @@ def _append_evidence_state(text: str, reverse_result) -> str:
 
 
 def run_gui(image_path=None):
-    from PySide6.QtWidgets import QApplication, QCheckBox, QToolBar, QComboBox, QLabel
+    from PySide6.QtWidgets import QApplication, QCheckBox, QToolBar, QComboBox, QLabel, QMessageBox
     _install_v2_engine()
     import gui.main_window as main_window_module
     from gui.main_window import MainWindow, apply_light_theme
@@ -124,7 +114,6 @@ def run_cli(image_path, verbose=False, calibration_profile="Generic"):
     from core.suggestion import generate_suggestions
     from reverse_engineering.engine import ReverseEngineeringEngine
     from reverse_engineering.intrinsics import read_exif_intrinsics
-
     image = load_image(image_path)
     if image is None:
         print(f"Error: cannot read {image_path}"); sys.exit(1)
@@ -135,9 +124,7 @@ def run_cli(image_path, verbose=False, calibration_profile="Generic"):
     print(f"Calibration profile: {calibration_profile}")
     if intrinsics.has_focal_prior: print(f"EXIF intrinsics: focal={intrinsics.focal_length_mm} mm, 35mm eq={intrinsics.focal_length_35mm} mm")
     print("=" * 60)
-
-    det = __import__("core.pose_detector", fromlist=["PoseDetector"]).PoseDetector()
-    engine = ReverseEngineeringEngine(calibration_profile=calibration_profile)
+    det = __import__("core.pose_detector", fromlist=["PoseDetector"]).PoseDetector(); engine = ReverseEngineeringEngine(calibration_profile=calibration_profile)
     try:
         pose = det.detect(image)
         if pose is None: print("No person detected"); sys.exit(1)
@@ -150,11 +137,8 @@ def run_cli(image_path, verbose=False, calibration_profile="Generic"):
         suggestions = generate_suggestions(action, orient, camera, composition)
         print(f"\nSuggestions ({len(suggestions.suggestions)}):")
         for s in suggestions.suggestions[:5]: print(f"  [{s.priority.value}] {s.title}: {s.description}")
-        print(f"\nNext actions: {', '.join(suggestions.next_actions)}")
-        print(f"Creative: {suggestions.creative_direction}")
-        print("\n--- Reverse Engineering v2.5 ---")
-        result = engine.analyze(image, pose, pose.bbox, intrinsics_evidence=intrinsics)
-        print(result.report())
+        print(f"\nNext actions: {', '.join(suggestions.next_actions)}"); print(f"Creative: {suggestions.creative_direction}")
+        print("\n--- Reverse Engineering v2.5 ---"); result = engine.analyze(image, pose, pose.bbox, intrinsics_evidence=intrinsics); print(result.report())
         print("\nCamera Actions:")
         for a in result._camera_actions:
             print(f"  {a.action}: {a.expected_effect}")
