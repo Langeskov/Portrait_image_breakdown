@@ -36,6 +36,7 @@ def _append_evidence_state(text: str, reverse_result) -> str:
 
 def run_gui(image_path=None):
     from PySide6.QtWidgets import QApplication, QCheckBox, QToolBar, QComboBox, QLabel, QMessageBox
+    from PySide6.QtGui import QAction
     _install_v2_engine()
     import gui.main_window as main_window_module
     from gui.main_window import MainWindow, apply_light_theme
