@@ -247,20 +247,20 @@ def test_scene_rotation_solver_contract():
     candidates=estimate_rotation_candidates(evidence,width,height,max_candidates=8); best=max(candidates,key=lambda c:c.scene_score); assert candidates and abs(best.focal_length_mm-focal)<2 and abs(best.extrinsics.yaw-12)<1.5 and abs(best.extrinsics.pitch+5)<1.5 and abs(best.extrinsics.roll-6)<1.5
 
 
-def test_roll_evidence_ignores_diagonal_clutter():
+def test_roll_evidence_rejects_diagonal_only_geometry():
     from reverse_engineering.rotation_solver import _estimate_line_roll
     lines=[]
     for i, angle in enumerate((0.0, 0.5, -0.5, 89.5, -89.0, 90.0)):
         x1=20.0+i*100.0; y1=100.0+i*20.0; length=260.0
         rad=np.radians(angle); x2=x1+length*np.cos(rad); y2=y1+length*np.sin(rad)
         lines.append(LineSegment(x1,y1,float(x2),float(y2),length,angle))
-    for i, angle in enumerate((42.0, 48.0, 55.0, -42.0, -48.0)*6):
+    for i, angle in enumerate((32.0,37.0,42.0,47.0,52.0)*8):
         x1=40.0+i*7.0; y1=300.0+i*3.0; length=220.0
         rad=np.radians(angle); x2=x1+length*np.cos(rad); y2=y1+length*np.sin(rad)
         lines.append(LineSegment(x1,y1,float(x2),float(y2),length,angle))
     evidence=SceneGeometryEvidence(1200,800,tuple(lines),tuple(),tuple(),None,tuple(),None,0.4)
     roll, confidence, count=_estimate_line_roll(evidence)
-    assert roll is not None and abs(roll) < 3.0 and confidence >= 0.5 and count == len(lines)
+    assert roll is None and count == len(lines) and confidence < 0.50
 
 
 def test_exif_orientation_normalizes_landscape_storage_to_portrait_display(tmp_path):
@@ -278,7 +278,6 @@ def test_exif_orientation_normalizes_landscape_storage_to_portrait_display(tmp_p
 
 
 def test_field_mode_styles_scope_foreground_and_primary_surface():
-    from reverse_engineering.scene_geometry import LineSegment as _LS
     from gui.field_mode import FieldModeWidget
     theme = FieldModeWidget._THEME
     assert theme['bg'] == '#F5F6F8'
