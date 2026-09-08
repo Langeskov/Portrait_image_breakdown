@@ -7,6 +7,7 @@ from typing import Optional
 import numpy as np
 from reverse_engineering.geometry import PoseCandidate, pose_driven_person_points
 from reverse_engineering.data_types import ReverseEngineeringResult
+from reverse_engineering.scene_anchors import SceneAnchor, default_scene_anchors, next_anchor_id
 
 
 @dataclass
@@ -82,12 +83,15 @@ class SceneModel:
     selected_candidate: int = 0
     subjects: list[SceneSubject] = field(default_factory=list)
     relative_layout: bool = False
+    anchors: list[SceneAnchor] = field(default_factory=default_scene_anchors)
 
     def __post_init__(self):
         if not self.subjects:
             self.subjects = [self.subject]
         elif self.subject not in self.subjects:
             self.subjects.insert(0, self.subject)
+        if self.anchors is None:
+            self.anchors = default_scene_anchors()
 
     @classmethod
     def from_reverse_result(cls, result: Optional[ReverseEngineeringResult]) -> "SceneModel":
@@ -129,11 +133,6 @@ class SceneModel:
                 else:
                     kp_pixels = None
                     fitted = None
-                # The x/y conversion keeps the observed image arrangement in the
-                # same camera-facing coordinate frame. It is deliberately scaled
-                # from FOV and camera distance instead of pretending to be a room
-                # survey. Relative z is used only when the layout has independent
-                # depth evidence.
                 nx, ny = person.center
                 lateral = (nx - base_cx) * 2.0 * math.tan(math.radians(scene.camera.horizontal_fov_deg) * 0.5) * scene.camera.distance
                 vertical = (base_cy - ny) * 2.0 * math.tan(math.radians(scene.camera.vertical_fov_deg) * 0.5) * scene.camera.distance
@@ -181,6 +180,40 @@ class SceneModel:
         self.camera.pitch = float(getattr(c.extrinsics, 'pitch', self.camera.pitch))
         self.camera.yaw = float(getattr(c.extrinsics, 'yaw', self.camera.yaw))
         self.camera.roll = float(getattr(c.extrinsics, 'roll', self.camera.roll))
+
+    def add_anchor(self, anchor: SceneAnchor) -> None:
+        errors = anchor.validate()
+        if errors:
+            raise ValueError("invalid scene anchor: " + "; ".join(errors))
+        if any(existing.anchor_id == anchor.anchor_id for existing in self.anchors):
+            raise ValueError(f"duplicate scene anchor id: {anchor.anchor_id}")
+        self.anchors.append(anchor)
+
+    def create_anchor(self, name: str = "Scene anchor", kind=None) -> SceneAnchor:
+        from reverse_engineering.scene_anchors import AnchorKind
+        anchor = SceneAnchor(
+            anchor_id=next_anchor_id(self.anchors),
+            name=name,
+            kind=kind or AnchorKind.POINT,
+        )
+        self.add_anchor(anchor)
+        return anchor
+
+    def remove_anchor(self, anchor_id: str) -> bool:
+        if anchor_id == "ground":
+            return False
+        before = len(self.anchors)
+        self.anchors = [anchor for anchor in self.anchors if anchor.anchor_id != anchor_id]
+        return len(self.anchors) != before
+
+    def anchor_by_id(self, anchor_id: str) -> Optional[SceneAnchor]:
+        return next((anchor for anchor in self.anchors if anchor.anchor_id == anchor_id), None)
+
+    def enabled_planes(self) -> list[SceneAnchor]:
+        return [anchor for anchor in self.anchors if anchor.enabled and anchor.kind.value == "plane"]
+
+    def anchor_summary(self) -> list[dict]:
+        return [anchor.to_dict() for anchor in self.anchors]
 
     def candidate_summary(self):
         return [
