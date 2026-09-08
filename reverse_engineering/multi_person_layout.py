@@ -8,7 +8,7 @@ observed depth separation is meaningful.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Iterable
 
 import numpy as np
@@ -109,7 +109,7 @@ def _keypoints(person: PoseResult, image_w: int, image_h: int) -> tuple[tuple[fl
     )
 
 
-def _sample_depth(depth_provider: DepthProvider, anchor: np.ndarray, image_w: int, image_h: int) -> float | None:
+def _sample_depth(depth_provider: DepthProvider, anchor: np.ndarray) -> float | None:
     try:
         value = depth_provider.get_depth(float(anchor[0]), float(anchor[1]))
         return float(value) if value is not None and np.isfinite(value) else None
@@ -134,13 +134,13 @@ def build_multi_person_layout(
     records = []
     for index, person in enumerate(persons):
         anchor = _visible_anchor(person)
-        depth = _sample_depth(depth_provider, anchor, image_w, image_h) if (depth_provider is not None and anchor is not None) else None
+        depth = _sample_depth(depth_provider, anchor) if (depth_provider is not None and anchor is not None) else None
         raw_depths.append(depth)
         bbox = _person_bbox(person, image_w, image_h)
         cx = (bbox[0] + bbox[2]) * 0.5
         cy = (bbox[1] + bbox[3]) * 0.5
         scale = max(0.0, (bbox[2] - bbox[0]) * (bbox[3] - bbox[1]))
-        records.append((index, person, bbox, (cx, cy), scale, anchor))
+        records.append((index, person, bbox, (cx, cy), scale))
 
     finite = np.asarray([d for d in raw_depths if d is not None], dtype=float)
     independent_depth = bool(
@@ -155,7 +155,7 @@ def build_multi_person_layout(
         lo, span = 0.0, 1.0
 
     people_out = []
-    for index, person, bbox, center, scale, anchor in records:
+    for index, person, bbox, center, scale in records:
         depth = raw_depths[index]
         if depth is None:
             relative_depth = 0.5
