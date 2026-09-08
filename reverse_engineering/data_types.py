@@ -36,12 +36,6 @@ class EstimatedValue:
 
     @property
     def evidence_state(self) -> str:
-        """Human-facing provenance state used by the v2.5 field UI.
-
-        Observed values come directly from image/metadata evidence. Values with
-        a non-zero confidence are estimates. Zero-confidence values are kept as
-        explicit unknowns instead of being presented as precise defaults.
-        """
         if self.is_observed:
             return "observed"
         if self.confidence > 0:
@@ -169,7 +163,6 @@ class ReverseEngineeringResult:
         return bool(self.multi_person_layout and getattr(self.multi_person_layout, "people", ()))
 
     def evidence_summary(self) -> dict:
-        """Return explicit observed / estimated / unknown states for the UI."""
         estimated_values = {
             "camera_height": self.camera_pose.camera_height,
             "camera_distance": self.camera_pose.camera_distance,
@@ -192,12 +185,7 @@ class ReverseEngineeringResult:
         observed_metadata = bool(self.intrinsics_evidence)
         if observed_metadata:
             counts["observed"] += 1
-        return {
-            "counts": counts,
-            "fields": fields,
-            "observed_metadata": observed_metadata,
-            "uncertainties": list(self.uncertainties),
-        }
+        return {"counts": counts, "fields": fields, "observed_metadata": observed_metadata, "uncertainties": list(self.uncertainties)}
 
     def to_shooting_state(self) -> ShootingState:
         return ShootingState(
@@ -208,8 +196,7 @@ class ReverseEngineeringResult:
                     "roll": self.camera_pose.camera_roll.value},
             lens={"type": self.focal_length.category.value,
                   "equivalent_focal_length": self.focal_length.equivalent_35mm.value,
-                  "range": [self.focal_length.equivalent_35mm.range_min,
-                            self.focal_length.equivalent_35mm.range_max]},
+                  "range": [self.focal_length.equivalent_35mm.range_min, self.focal_length.equivalent_35mm.range_max]},
             composition={"styles": [s["name"] for s in self.composition.styles],
                          "subject_position": self.composition.subject_position,
                          "negative_space_ratio": self.composition.negative_space_ratio},
@@ -219,15 +206,22 @@ class ReverseEngineeringResult:
             confidence=self.overall_confidence,
             uncertainties=self.uncertainties,
             camera_actions=self._camera_actions,
-            candidate_solutions=[{"focal_length_mm": c.focal_equiv_35mm,
-                                  "distance_m": c.distance, "height_m": c.height,
-                                  "score": c.score} for c in self._sim_candidates],
+            candidate_solutions=[
+                {"focal_length_mm": c.focal_equiv_35mm,
+                 "distance_m": c.distance,
+                 "height_m": c.height,
+                 "pitch_deg": c.extrinsics.pitch,
+                 "yaw_deg": c.extrinsics.yaw,
+                 "roll_deg": c.extrinsics.roll,
+                 "score": c.score,
+                 "source": c.losses.get("candidate_source") or c.losses.get("scene_orientation_source") or "candidate"}
+                for c in self._sim_candidates
+            ],
         )
 
     def to_dict(self) -> dict:
         return {
-            "observed": {"image_size": list(self.image_size),
-                         "subject_bbox": self.subject_bbox,
+            "observed": {"image_size": list(self.image_size), "subject_bbox": self.subject_bbox,
                          "subject_scale": round(self.subject_scale, 4),
                          "subject_keypoints_count": len(self.subject_keypoints) if self.subject_keypoints else 0,
                          "perspective_line_count": len(self.perspective.line_segments),
@@ -236,27 +230,17 @@ class ReverseEngineeringResult:
                 "perspective": {"strength": self.perspective.perspective_strength.to_dict(),
                                 "type": self.perspective.perspective_type.to_dict(),
                                 "vanishing_points": self.perspective.vanishing_points},
-                "camera_pose": {k: getattr(self.camera_pose, f"camera_{k}").to_dict()
-                                for k in ("height", "distance", "pitch", "yaw", "roll")},
-                "focal_length": {"category": self.focal_length.category.to_dict(),
-                                 "equivalent_35mm": self.focal_length.equivalent_35mm.to_dict()},
-                "depth_of_field": {"type": self.depth_of_field.dof_type.to_dict(),
-                                   "subject_sharp": self.depth_of_field.subject_sharp,
-                                   "background_blur": round(self.depth_of_field.background_blur, 3),
-                                   "aperture_range": self.depth_of_field.aperture_range.to_dict()},
-                "motion_blur": {"type": self.motion_blur.blur_type.to_dict(),
-                                "magnitude": round(self.motion_blur.blur_magnitude, 3),
-                                "shutter_range": self.motion_blur.shutter_range.to_dict()},
-                "composition": {"styles": self.composition.styles,
-                                "subject_position": [round(v, 3) for v in self.composition.subject_position],
-                                "subject_scale": round(self.composition.subject_scale, 3),
-                                "headroom": round(self.composition.headroom, 3)},
+                "camera_pose": {k: getattr(self.camera_pose, f"camera_{k}").to_dict() for k in ("height", "distance", "pitch", "yaw", "roll")},
+                "focal_length": {"category": self.focal_length.category.to_dict(), "equivalent_35mm": self.focal_length.equivalent_35mm.to_dict()},
+                "depth_of_field": {"type": self.depth_of_field.dof_type.to_dict(), "subject_sharp": self.depth_of_field.subject_sharp,
+                                   "background_blur": round(self.depth_of_field.background_blur, 3), "aperture_range": self.depth_of_field.aperture_range.to_dict()},
+                "motion_blur": {"type": self.motion_blur.blur_type.to_dict(), "magnitude": round(self.motion_blur.blur_magnitude, 3), "shutter_range": self.motion_blur.shutter_range.to_dict()},
+                "composition": {"styles": self.composition.styles, "subject_position": [round(v, 3) for v in self.composition.subject_position], "subject_scale": round(self.composition.subject_scale, 3), "headroom": round(self.composition.headroom, 3)},
                 "shooting_techniques": self.shooting_techniques.techniques,
                 "candidates": self.to_shooting_state().candidate_solutions,
                 "multi_person_layout": self.multi_person_layout.to_dict() if self.multi_person_layout is not None and hasattr(self.multi_person_layout, "to_dict") else None,
             },
-            "meta": {"overall_confidence": round(self.overall_confidence, 3),
-                     "uncertainties": self.uncertainties},
+            "meta": {"overall_confidence": round(self.overall_confidence, 3), "uncertainties": self.uncertainties},
         }
 
     def report(self) -> str:
@@ -280,34 +264,19 @@ class ReverseEngineeringResult:
             lines.extend(["", "-- Intrinsics Evidence --", f"  source:    {ex.get('source', 'unknown')}", f"  focal:     {ex.get('focal_length_mm')}", f"  35mm eq:   {ex.get('focal_length_35mm')}", f"  camera:    {ex.get('make') or ''} {ex.get('model') or ''}".strip()])
         if self.multi_person_layout is not None:
             mpl = self.multi_person_layout
-            people_count = len(getattr(mpl, "people", ()))
-            usable_count = len(getattr(mpl, "usable_people", ()))
-            lines.extend(["", "-- Multi-person Layout --", f"  people:    {people_count}", f"  relative 3D placements: {usable_count}", f"  depth:     {getattr(mpl, 'depth_backend', 'unknown')} ({getattr(mpl, 'depth_confidence', 0.0):.0%})"])
-        lines.extend(["", "-- Exposure (estimated) --"])
-        lines.append(f"  DOF type:  {self.depth_of_field.dof_type.value}  (conf {self.depth_of_field.dof_type.confidence:.0%})")
-        lines.append(f"  aperture:  {self.depth_of_field.aperture_range.value}")
-        lines.append(f"  shutter:   {self.motion_blur.shutter_range.value}")
+            lines.extend(["", "-- Multi-person Layout --", f"  people:    {len(getattr(mpl, 'people', ()))}", f"  relative 3D placements: {len(getattr(mpl, 'usable_people', ())) }", f"  depth:     {getattr(mpl, 'depth_backend', 'unknown')} ({getattr(mpl, 'depth_confidence', 0.0):.0%})"])
+        lines.extend(["", "-- Exposure (estimated) --", f"  DOF type:  {self.depth_of_field.dof_type.value}  (conf {self.depth_of_field.dof_type.confidence:.0%})", f"  aperture:  {self.depth_of_field.aperture_range.value}", f"  shutter:   {self.motion_blur.shutter_range.value}"])
         lines.extend(["", "-- Composition --"])
-        for s in self.composition.styles[:3]:
-            lines.append(f"  * {s['name']}  ({s['confidence']:.0%})")
+        for s in self.composition.styles[:3]: lines.append(f"  * {s['name']}  ({s['confidence']:.0%})")
         lines.append(f"  subject: ({self.composition.subject_position[0]:.2f}, {self.composition.subject_position[1]:.2f})")
         lines.extend(["", "-- Techniques --"])
-        for t in self.shooting_techniques.techniques[:5]:
-            lines.append(f"  * {t['name']}  ({t['confidence']:.0%})")
+        for t in self.shooting_techniques.techniques[:5]: lines.append(f"  * {t['name']}  ({t['confidence']:.0%})")
         if self._sim_candidates:
             lines.extend(["", "-- Candidate Solutions --"])
             for i, c in enumerate(self._sim_candidates[:5]):
-                lines.append(f"  #{i + 1}: {c.focal_equiv_35mm}mm / {c.distance:.2f}m / h={c.height:.2f}m  (score {c.score:.2f})")
-        summary = self.evidence_summary()
-        counts = summary["counts"]
-        lines.extend([
-            "",
-            "-- Evidence State --",
-            f"  observed:  {counts['observed']}",
-            f"  estimated: {counts['estimated']}",
-            f"  unknown:   {counts['unknown']}",
-        ])
-        lines.extend(["", f"-- Overall Confidence: {self.overall_confidence:.0%} --"])
+                lines.append(f"  #{i + 1}: {c.focal_equiv_35mm:.1f}mm / {c.distance:.2f}m / h={c.height:.2f}m / pitch={c.extrinsics.pitch:.1f}° / yaw={c.extrinsics.yaw:.1f}° / roll={c.extrinsics.roll:.1f}°  (score {c.score:.2f})")
+        summary = self.evidence_summary(); counts = summary["counts"]
+        lines.extend(["", "-- Evidence State --", f"  observed:  {counts['observed']}", f"  estimated: {counts['estimated']}", f"  unknown:   {counts['unknown']}", "", f"-- Overall Confidence: {self.overall_confidence:.0%} --"])
         if self.uncertainties:
             lines.append("  Uncertainties:")
             lines.extend(f"    * {u}" for u in self.uncertainties)
