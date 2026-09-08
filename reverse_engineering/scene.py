@@ -38,13 +38,7 @@ class SceneCamera:
         return v / max(np.linalg.norm(v), 1e-9)
 
     def aim_point(self, target=None):
-        """Return the point on the optical axis nearest the intended subject target.
-
-        Camera position/pitch are preserved as reconstructed values. The aim
-        point is used only for 3D visualization so an off-axis solution is made
-        explicit instead of silently pretending the optical axis hits the
-        subject center.
-        """
+        """Return the point on the optical axis nearest the intended subject target."""
         target = np.asarray(target if target is not None else [0.0, 0.0, 0.0], dtype=float)
         position = self.position(target)
         forward = self.forward()
@@ -65,6 +59,9 @@ class SceneSubject:
     center_z: float = 0.0
     keypoints: Optional[np.ndarray] = None
     fitted_points_3d: Optional[np.ndarray] = None
+    person_index: int = 0
+    depth_is_relative: bool = False
+    depth_confidence: float = 0.0
 
     def proxy_points(self):
         if self.fitted_points_3d is not None:
@@ -83,6 +80,14 @@ class SceneModel:
     ground_size: float = 24.0
     candidate_solutions: list[PoseCandidate] = field(default_factory=list)
     selected_candidate: int = 0
+    subjects: list[SceneSubject] = field(default_factory=list)
+    relative_layout: bool = False
+
+    def __post_init__(self):
+        if not self.subjects:
+            self.subjects = [self.subject]
+        elif self.subject not in self.subjects:
+            self.subjects.insert(0, self.subject)
 
     @classmethod
     def from_reverse_result(cls, result: Optional[ReverseEngineeringResult]) -> "SceneModel":
@@ -106,6 +111,50 @@ class SceneModel:
                 float(cp.camera_yaw.value or 0), float(cp.camera_pitch.value or 0),
                 float(cp.camera_roll.value or 0), float(fl.value or 50),
             )
+
+        layout = getattr(result, "multi_person_layout", None)
+        if layout is not None and getattr(layout, "people", None):
+            people = list(layout.people)
+            image_w, image_h = result.image_size
+            primary = people[0]
+            scene.subjects = []
+            base_cx, base_cy = primary.center
+            for person in people:
+                kp_rows = np.asarray(person.keypoints, dtype=float)
+                if kp_rows.ndim == 2 and kp_rows.shape[0] >= 17:
+                    kp_pixels = kp_rows[:17].copy()
+                    kp_pixels[:, 0] *= image_w
+                    kp_pixels[:, 1] *= image_h
+                    fitted = pose_driven_person_points(kp_pixels, image_w, image_h, scene.subject.height)
+                else:
+                    kp_pixels = None
+                    fitted = None
+                # The x/y conversion keeps the observed image arrangement in the
+                # same camera-facing coordinate frame. It is deliberately scaled
+                # from FOV and camera distance instead of pretending to be a room
+                # survey. Relative z is used only when the layout has independent
+                # depth evidence.
+                nx, ny = person.center
+                lateral = (nx - base_cx) * 2.0 * math.tan(math.radians(scene.camera.horizontal_fov_deg) * 0.5) * scene.camera.distance
+                vertical = (base_cy - ny) * 2.0 * math.tan(math.radians(scene.camera.vertical_fov_deg) * 0.5) * scene.camera.distance
+                depth_offset = float(person.relative_z) * max(0.5, scene.camera.distance * 0.35) if person.usable_3d else 0.0
+                subject = SceneSubject(
+                    height=scene.subject.height,
+                    center_x=float(lateral),
+                    center_y=float(vertical),
+                    center_z=float(depth_offset),
+                    keypoints=kp_pixels,
+                    fitted_points_3d=fitted,
+                    person_index=int(person.person_index),
+                    depth_is_relative=bool(layout.independent_depth and person.usable_3d),
+                    depth_confidence=float(person.depth_confidence),
+                )
+                scene.subjects.append(subject)
+            if scene.subjects:
+                scene.subject = next((s for s in scene.subjects if s.person_index == primary.person_index), scene.subjects[0])
+            scene.relative_layout = bool(layout.independent_depth)
+        else:
+            scene.subjects = [scene.subject]
         return scene
 
     def camera_position(self):
