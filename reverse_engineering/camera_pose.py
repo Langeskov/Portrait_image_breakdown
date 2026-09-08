@@ -1,9 +1,6 @@
 """Camera pose estimation from the shared bounded 2D-pose fitting model."""
 from __future__ import annotations
 
-import cv2
-import numpy as np
-
 from reverse_engineering.data_types import EstimatedValue, CameraPoseResult
 from reverse_engineering.geometry import PoseSolver
 from core.pose_detector import PoseResult
@@ -25,6 +22,30 @@ def estimate_image_roll(image) -> tuple[float, float, int]:
     return (float(roll) if roll is not None else 0.0, float(confidence), int(count))
 
 
+def estimate_camera_pose_candidates(
+    pose: PoseResult,
+    subject_bbox=None,
+    num_candidates: int = 8,
+):
+    """Return ranked pose-only camera candidates independently of simulation.
+
+    Candidate generation is a first-class output of the reverse-engineering
+    pipeline. The optional simulation/refinement stage may add scene/depth
+    constraints, but it must not be required for candidates to exist.
+    """
+    if pose is None:
+        return []
+    h, w = pose.image_height, pose.image_width
+    kp = [[lm.x, lm.y, lm.visibility] for lm in pose.landmarks[:17]]
+    return PoseSolver.fit_camera_to_pose(
+        kp,
+        w,
+        h,
+        subject_bbox=subject_bbox,
+        num_candidates=max(1, int(num_candidates)),
+    )
+
+
 def estimate_camera_pose(
     pose: PoseResult,
     perspective_vanishing_points=None,
@@ -34,15 +55,7 @@ def estimate_camera_pose(
 ) -> CameraPoseResult:
     """Return the same shared best-fit camera solution used by the 3D workspace."""
     del perspective_vanishing_points, representative_focal_mm, image
-    h, w = pose.image_height, pose.image_width
-    kp = [[lm.x, lm.y, lm.visibility] for lm in pose.landmarks[:17]]
-    candidates = PoseSolver.fit_camera_to_pose(
-        kp,
-        w,
-        h,
-        subject_bbox=subject_bbox,
-        num_candidates=8,
-    )
+    candidates = estimate_camera_pose_candidates(pose, subject_bbox=subject_bbox, num_candidates=8)
     if candidates:
         best = max(candidates, key=lambda c: c.score)
         return CameraPoseResult(
