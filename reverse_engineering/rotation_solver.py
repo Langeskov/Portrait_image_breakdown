@@ -60,7 +60,7 @@ def _estimate_line_roll(evidence: SceneGeometryEvidence) -> tuple[float | None, 
     # Search for one orientation r that simultaneously explains a horizontal
     # family at r and a vertical family at r+90. A broad tolerance is used to
     # accommodate perspective convergence, but diagonal clutter is not allowed
-    # to become a roll reference.
+    # to become a roll reference on its own.
     tolerance = 9.0
     grid = np.arange(-45.0, 45.0001, 0.5)
     weights = np.sqrt(np.asarray([length for _, length in usable], dtype=float))
@@ -92,8 +92,7 @@ def _estimate_line_roll(evidence: SceneGeometryEvidence) -> tuple[float | None, 
     for angle, length in usable:
         dh = _axis_angle_distance(angle, best_roll)
         dv = _axis_angle_distance(angle, _normalize_angle(best_roll + 90.0))
-        d = min(dh, dv)
-        if d <= tolerance:
+        if min(dh, dv) <= tolerance:
             residual = _normalize_angle(angle - best_roll)
             if abs(residual) > 45.0:
                 residual = _normalize_angle(residual - 90.0 if residual > 0 else residual + 90.0)
@@ -109,19 +108,22 @@ def _estimate_line_roll(evidence: SceneGeometryEvidence) -> tuple[float | None, 
     count_conf = min(1.0, len(usable) / 12.0)
     separation_conf = min(1.0, separation / max(best_score * 0.35, 1e-9))
     coherence_conf = math.exp(-max(0.0, spread - 5.0) / 8.0)
+    magnitude_prior = math.exp(-((abs(best_roll) / 18.0) ** 2))
     confidence = float(np.clip(
-        0.30 * count_conf
-        + 0.30 * family_support
-        + 0.20 * balance
-        + 0.10 * separation_conf
-        + 0.10 * coherence_conf,
+        (0.30 * count_conf
+         + 0.30 * family_support
+         + 0.20 * balance
+         + 0.10 * separation_conf
+         + 0.10 * coherence_conf)
+        * (0.35 + 0.65 * magnitude_prior),
         0.0,
         1.0,
     ))
 
     # Two orthogonal scene families are the minimum independent evidence for
-    # roll. A single dominant family can be an arbitrary architectural/textural
-    # direction, so it must never be promoted to a Dutch-angle estimate.
+    # roll. Large automatic Dutch-angle estimates need correspondingly stronger
+    # evidence; absent that, roll remains neutral rather than being guessed from
+    # diagonals or decorative geometry.
     strong_two_family = h_support > total_weight * 0.08 and v_support > total_weight * 0.08 and confidence >= 0.50
     if not strong_two_family:
         return None, confidence, len(usable)
@@ -242,7 +244,14 @@ def estimate_rotation_candidates(evidence: SceneGeometryEvidence, image_w: int, 
         if rotation is None:
             continue
         R, (pitch, yaw, raw_roll), orth_err = rotation
-        trusted_roll = preferred_roll if line_roll is not None and line_roll_confidence >= 0.50 else 0.0
+        if line_roll is not None and line_roll_confidence >= 0.50:
+            trusted_roll = line_roll
+        elif usable_line_count == 0 and evidence.horizon_angle_deg is not None:
+            # Synthetic/minimal contract inputs may have no raw LineSegment
+            # records; retain the legacy horizon value only in that case.
+            trusted_roll = float(evidence.horizon_angle_deg)
+        else:
+            trusted_roll = 0.0
         if abs(raw_roll - trusted_roll) > 1e-6:
             R = _force_roll(R, pitch, yaw, trusted_roll)
             pitch, yaw, _ = _angles_from_rotation(R)
