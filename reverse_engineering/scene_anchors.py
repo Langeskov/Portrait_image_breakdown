@@ -15,7 +15,12 @@ class AnchorKind(str, Enum):
 
 @dataclass
 class SceneAnchor:
-    """A user-editable point or plane in scene coordinates."""
+    """A user-editable point or plane in scene coordinates.
+
+    ``enabled`` controls whether an anchor participates in reconstruction logic;
+    ``visible`` is presentation-only and can be switched off without changing
+    the calibration model.
+    """
 
     anchor_id: str
     name: str
@@ -27,6 +32,7 @@ class SceneAnchor:
     source: str = "manual"
     locked: bool = False
     enabled: bool = True
+    visible: bool = True
     image_points: tuple[tuple[float, float], ...] = ()
 
     def normalized_normal(self) -> np.ndarray:
@@ -94,6 +100,7 @@ class SceneAnchor:
             "source": self.source,
             "locked": bool(self.locked),
             "enabled": bool(self.enabled),
+            "visible": bool(self.visible),
             "image_points": [[float(x), float(y)] for x, y in self.image_points],
         }
 
@@ -111,6 +118,7 @@ class SceneAnchor:
             source=str(data.get("source", "manual")),
             locked=bool(data.get("locked", False)),
             enabled=bool(data.get("enabled", True)),
+            visible=bool(data.get("visible", True)),
             image_points=tuple(
                 (float(p[0]), float(p[1]))
                 for p in data.get("image_points", ())
