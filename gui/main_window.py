@@ -8,7 +8,10 @@ from __future__ import annotations
 
 import hashlib
 import os
+import platform
+import traceback
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -81,8 +84,57 @@ def _resize_for_analysis(image: np.ndarray, max_side: int = 1600) -> np.ndarray:
     return cv2.resize(image, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
 
 
+def _safe_repr(value, max_len: int = 1200) -> str:
+    """Return a bounded representation suitable for a diagnostic log/dialog."""
+    try:
+        text = repr(value)
+    except Exception as exc:
+        text = f"<repr failed: {type(exc).__name__}: {exc}>"
+    if len(text) > max_len:
+        return text[:max_len] + "…"
+    return text
+
+
+def _diagnostic_log_path() -> Path:
+    """Choose a writable per-user log location, with a cwd fallback."""
+    candidates = []
+    if os.name == "nt":
+        local_app_data = os.environ.get("LOCALAPPDATA")
+        if local_app_data:
+            candidates.append(Path(local_app_data) / "PortraitImageBreakdown")
+    else:
+        state_home = os.environ.get("XDG_STATE_HOME")
+        if state_home:
+            candidates.append(Path(state_home) / "PortraitImageBreakdown")
+        candidates.append(Path.home() / ".local" / "state" / "PortraitImageBreakdown")
+    candidates.append(Path.cwd() / "PortraitImageBreakdown_logs")
+
+    for directory in candidates:
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+            probe = directory / ".write_test"
+            probe.write_text("ok", encoding="utf-8")
+            probe.unlink(missing_ok=True)
+            return directory / "analysis_errors.log"
+        except Exception:
+            continue
+    return Path.cwd() / "analysis_errors.log"
+
+
+def _write_diagnostic_log(report: str) -> Path:
+    path = _diagnostic_log_path()
+    try:
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write("\n" + "=" * 88 + "\n")
+            fh.write(report)
+            fh.write("\n")
+        return path
+    except Exception:
+        return Path("analysis_errors.log")
+
+
 class AnalysisWorker(QThread):
-    """Staged analysis worker with progress reporting."""
+    """Staged analysis worker with progress reporting and full diagnostics."""
     pose_ready = Signal(object)
     core_ready = Signal(object)
     reverse_ready = Signal(object)
@@ -97,28 +149,100 @@ class AnalysisWorker(QThread):
         self._analysis_image = analysis_image
         self._enable_re = enable_re
         self._bundle = AnalysisBundle()
+        self._stage = "initialization"
+
+    def _stage_begin(self, stage: str, progress: Optional[tuple[int, str]] = None):
+        self._stage = stage
+        if progress is not None:
+            self.progress.emit(progress[0], progress[1])
+
+    def _context(self) -> str:
+        image = self._analysis_image
+        pose = self._bundle.pose
+        lines = [
+            f"stage: {self._stage}",
+            f"python: {platform.python_version()}",
+            f"platform: {platform.platform()}",
+            f"numpy: {np.__version__}",
+            f"opencv: {cv2.__version__}",
+            f"worker image shape: {getattr(image, 'shape', None)}",
+            f"worker image dtype: {getattr(image, 'dtype', None)}",
+            f"worker image type: {type(image).__name__}",
+            f"full image shape: {getattr(self._image, 'shape', None)}",
+            f"engine type: {type(self._eng).__module__}.{type(self._eng).__name__ if self._eng is not None else None}",
+            f"reverse enabled: {self._enable_re}",
+        ]
+        if pose is not None:
+            lines.extend([
+                f"pose type: {type(pose).__module__}.{type(pose).__name__}",
+                f"pose bbox type: {type(getattr(pose, 'bbox', None)).__name__}",
+                f"pose bbox: {_safe_repr(getattr(pose, 'bbox', None))}",
+                f"pose landmarks type: {type(getattr(pose, 'landmarks', None)).__name__}",
+                f"pose landmarks count: {len(getattr(pose, 'landmarks', [])) if hasattr(getattr(pose, 'landmarks', None), '__len__') else 'n/a'}",
+            ])
+            landmarks = getattr(pose, "landmarks", None)
+            if landmarks:
+                first = landmarks[0]
+                lines.append(f"pose landmark[0]: {_safe_repr(first)}")
+                lines.append(f"pose landmark[0] type: {type(first).__module__}.{type(first).__name__}")
+        return "\n".join(lines)
+
+    def _emit_exception(self, exc: BaseException):
+        """Build and persist a complete diagnostic report without hiding the traceback."""
+        tb = traceback.format_exc()
+        report = "\n".join([
+            f"Portrait Image Breakdown diagnostic @ {datetime.now().isoformat(timespec='seconds')}",
+            self._context(),
+            "",
+            f"exception type: {type(exc).__module__}.{type(exc).__name__}",
+            f"exception message: {exc}",
+            "",
+            "FULL TRACEBACK:",
+            tb.rstrip(),
+        ])
+        log_path = _write_diagnostic_log(report)
+        message = (
+            f"Analysis failed at stage: {self._stage}\n\n"
+            f"{type(exc).__name__}: {exc}\n\n"
+            f"Full traceback was saved to:\n{log_path}\n\n"
+            "Open the diagnostic log and send the traceback back for the exact source line."
+            "\n\n"
+            "----- FULL TRACEBACK -----\n"
+            f"{tb.rstrip()}"
+        )
+        self.error.emit(message)
 
     def run(self):
         try:
-            self.progress.emit(5, "Detecting subject…")
+            self._stage_begin("1/8 PoseDetector.detect", (5, "[1/8] Detecting subject…"))
             pose = self._det.detect(self._analysis_image)
             if pose is None:
+                self._stage = "1/8 PoseDetector.detect (no person detected)"
                 self.error.emit("No person detected in image")
                 return
             self._bundle.pose = pose
             self.pose_ready.emit(pose)
-            self.progress.emit(20, "Pose detected · running 2D analysis…")
 
+            self._stage_begin("2/8 2D analyzer imports", (20, "[2/8] Loading 2D analyzers…"))
             from core.orientation import analyze_orientation
             from core.action_classifier import classify_action
             from core.camera_analyzer import analyze_camera
             from core.composition import analyze_composition
             from core.suggestion import generate_suggestions
 
+            self._stage_begin("3/8 analyze_orientation", (24, "[3/8] Analyzing orientation…"))
             orientation = analyze_orientation(pose)
+
+            self._stage_begin("4/8 classify_action", (28, "[4/8] Classifying action…"))
             action = classify_action(pose)
+
+            self._stage_begin("5/8 analyze_camera", (32, "[5/8] Analyzing camera…"))
             camera = analyze_camera(pose, self._analysis_image)
+
+            self._stage_begin("6/8 analyze_composition", (36, "[6/8] Analyzing composition…"))
             composition = analyze_composition(self._analysis_image, pose)
+
+            self._stage_begin("7/8 generate_suggestions", (40, "[7/8] Generating suggestions…"))
             suggestions = generate_suggestions(action, orientation, camera, composition)
 
             self._bundle.orientation = orientation
@@ -130,23 +254,26 @@ class AnalysisWorker(QThread):
             self.progress.emit(45, "2D analysis complete · reconstructing camera…")
 
             if self._enable_re and self._eng is not None:
+                self._stage_begin("8/8 reverse_engineering image preparation", (55, "[8/8] Preparing 3D reconstruction input…"))
                 re_image = _resize_for_analysis(self._analysis_image, max_side=1600)
-                self.progress.emit(60, "Calculating 3D camera geometry…")
+                self._stage_begin("8/8 ReverseEngineeringEngine.analyze", (60, "[8/8] Calculating 3D camera geometry…"))
                 re_result = self._eng.analyze(re_image, pose, pose.bbox)
                 self._bundle.reverse_result = re_result
-                self.progress.emit(95, "Finalizing projection validation…")
+                self._stage_begin("8/8 final projection validation", (95, "[8/8] Finalizing projection validation…"))
                 self.reverse_ready.emit(self._bundle)
                 self.progress.emit(100, "Analysis complete")
             else:
+                self._stage = "reverse_engineering skipped"
                 self.progress.emit(100, "Analysis complete")
 
         except Exception as e:
-            self.error.emit(str(e))
+            self._emit_exception(e)
 
 
 class Workspace(QWidget):
     def update_results(self, bundle: AnalysisBundle):
         pass
+
 
 from gui.canvas import ImageCanvas
 from gui.panels import AnalysisPanel, SuggestionPanel
@@ -314,4 +441,14 @@ class MainWindow(QMainWindow):
 
     def _sw(self, i): self._ws.setCurrentIndex(i)
 
-    def _err(self, msg): self._finish_progress("Analysis error"); QMessageBox.warning(self, "Analysis Error", msg)
+    def _err(self, msg):
+        self._finish_progress("Analysis error")
+        dialog = QMessageBox(self)
+        dialog.setIcon(QMessageBox.Icon.Critical)
+        dialog.setWindowTitle("Analysis Error — diagnostic mode")
+        dialog.setText("Analysis failed. The exact stage and complete traceback are shown below.")
+        dialog.setInformativeText(msg.split("\n\n----- FULL TRACEBACK -----", 1)[0])
+        if "----- FULL TRACEBACK -----" in msg:
+            dialog.setDetailedText(msg.split("\n\n----- FULL TRACEBACK -----", 1)[1].lstrip())
+        dialog.setStandardButtons(QMessageBox.StandardButton.Ok)
+        dialog.exec()
