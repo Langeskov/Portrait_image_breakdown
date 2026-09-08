@@ -107,10 +107,20 @@ class PoseResult:
         return np.array([[lm.world_x, lm.world_y, lm.world_z] for lm in self.landmarks])
 
     def rescaled(self, width: int, height: int) -> "PoseResult":
-        """Rescale pixel/normalized coordinates to another image size."""
+        """Rescale this pose and every attached person into one pixel coordinate space.
+
+        ``PoseResult`` is frequently produced on a resized analysis frame but later
+        consumed by scene/depth/multi-person modules operating on another frame.
+        Pixel coordinates and bbox are therefore scaled by the same factors. The
+        attached ``persons`` collection is recursively rescaled as well, while the
+        scaled primary object is reused for this object's first person entry.
+        """
         width, height = int(width), int(height)
-        sx = width / max(self.image_width, 1)
-        sy = height / max(self.image_height, 1)
+        src_width = max(int(self.image_width), 1)
+        src_height = max(int(self.image_height), 1)
+        sx = width / src_width
+        sy = height / src_height
+
         landmarks = [
             dataclasses.replace(
                 lm,
@@ -121,11 +131,35 @@ class PoseResult:
             )
             for lm in self.landmarks
         ]
+
         bbox = None
         if self.bbox is not None:
             x1, y1, x2, y2 = self.bbox
-            bbox = (round(x1 * sx), round(y1 * sy), round(x2 * sx), round(y2 * sy))
-        return PoseResult(landmarks, width, height, self.detection_confidence, bbox, None)
+            bbox = (
+                round(float(x1) * sx),
+                round(float(y1) * sy),
+                round(float(x2) * sx),
+                round(float(y2) * sy),
+            )
+
+        scaled = PoseResult(
+            landmarks,
+            width,
+            height,
+            self.detection_confidence,
+            bbox,
+            None,
+        )
+
+        if self.persons:
+            scaled_persons: list[PoseResult] = []
+            for person in self.persons:
+                if person is self:
+                    scaled_persons.append(scaled)
+                else:
+                    scaled_persons.append(person.rescaled(width, height))
+            scaled.persons = scaled_persons
+        return scaled
 
 
 def _interpolate_extended_landmarks(coco_landmarks: list[PoseLandmark]) -> list[PoseLandmark]:
