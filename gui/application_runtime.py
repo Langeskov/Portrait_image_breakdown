@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 import urllib.parse
+from pathlib import Path
 
 from PySide6.QtCore import QUrl
 from PySide6.QtGui import QAction, QDesktopServices
@@ -169,8 +170,10 @@ def _load_reconstruction_session(window) -> None:
         panel = getattr(window._w3, "_plane_constraints_panel", None)
         if panel is not None:
             panel.from_dicts(data.get("plane_constraints", []))
+            panel.sync_from_scene()
         anchor_panel = getattr(window._w3, "_anchor_camera_hypothesis", None)
         if anchor_panel is not None:
+            anchor_panel._refresh_plane_choices()
             anchor_panel.solve()
         stored_image = data.get("image", {}).get("path")
         if stored_image:
@@ -238,9 +241,29 @@ def install_v3_toolbar(window: ApplicationMainWindow, context: RuntimeContext) -
     def open_anchor_calibration():
         image = window.current_image
         if image is None:
-            QMessageBox.information(window, "Anchor Calibration", "请先加载一张照片并完成至少一次分析。"); return
-        dialog = AnchorCalibrationDialog(window._w3.scene_model, (image.shape[1], image.shape[0]), image=image, parent=window)
-        dialog.exec(); window._w3.refresh_scene_view()
+            QMessageBox.information(window, "Anchor Calibration", "请先加载一张照片并完成至少一次分析。")
+            return
+        dialog = AnchorCalibrationDialog(
+            window._w3.scene_model,
+            (image.shape[1], image.shape[0]),
+            image=image,
+            parent=window,
+        )
+        dialog.exec()
+
+        # The dialog edits the exact same SceneModel used by the V3 workspace.
+        # Immediately propagate its calibrated plane evidence into the constraint
+        # panel and refresh both 3D and 2D projection overlays.
+        panel = getattr(window._w3, "_plane_constraints_panel", None)
+        if panel is not None:
+            panel.sync_from_scene()
+        anchor_panel = getattr(window._w3, "_anchor_camera_hypothesis", None)
+        if anchor_panel is not None:
+            anchor_panel._refresh_plane_choices()
+            anchor_panel.solve()
+        window._w3._populate_anchors()
+        window._w3.refresh_scene_view()
+
     anchor_action.triggered.connect(open_anchor_calibration); bar.addAction(anchor_action)
 
     _install_settings_menu(window)
