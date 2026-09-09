@@ -1,6 +1,9 @@
 """Canonical v3 reconstruction workspace entry point."""
 from __future__ import annotations
 
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QFrame, QLabel, QSizePolicy, QVBoxLayout
+
 from gui.reverse_3d_reference import AnchorProjectionPreview, AnchorSceneView, CollapsibleSection, Reverse3DWorkspace as _BaseReverse3DWorkspace
 from gui.reverse_3d_reference_line import CameraVisualMatchSection, ReferenceLineProjectionPreview, install_visual_camera_match
 from gui.reference_line_calibration import CalibratedReferenceLinePreview, ReferenceLineCalibrationPanel, install_reference_line_calibration
@@ -13,6 +16,10 @@ class Reverse3DWorkspace(_BaseReverse3DWorkspace):
 
     Public methods below form the application boundary. Other widgets should not
     reach into this workspace's private controls or renderer state.
+
+    The 2D projection preview is intentionally presented as a parallel view over
+    the 3D canvas. Camera/anchor/candidate/reference controls remain consolidated
+    in the right-side inspector.
     """
 
     def __init__(self, parent=None):
@@ -23,8 +30,97 @@ class Reverse3DWorkspace(_BaseReverse3DWorkspace):
         panel = getattr(self, "_reference_line_calibration", None)
         if panel is not None:
             panel.evidence_changed.connect(self._on_reference_line_evidence_changed)
+        self._projection_overlay = None
+        self._move_projection_preview_to_canvas()
         self._sync_visual_camera_match()
         self._sync_anchor_reference_line()
+
+    def _move_projection_preview_to_canvas(self):
+        """Move the 2D preview out of the inspector into the 3D canvas corner."""
+        preview = getattr(self, "_preview", None)
+        if preview is None:
+            return
+
+        old_body = preview.parentWidget()
+        if old_body is not None:
+            old_layout = old_body.layout()
+            if old_layout is not None:
+                old_layout.removeWidget(preview)
+                metrics = getattr(self, "_preview_metrics", None)
+                if metrics is not None:
+                    old_layout.removeWidget(metrics)
+
+            section = old_body.parentWidget()
+            if isinstance(section, CollapsibleSection):
+                section.setVisible(False)
+
+        from PySide6.QtWidgets import QSplitter
+        splitter = self.findChild(QSplitter)
+        if splitter is None or splitter.count() < 1:
+            return
+        canvas = splitter.widget(0)
+        if canvas is None:
+            return
+
+        overlay = QFrame(canvas)
+        overlay.setObjectName("projectionOverlay")
+        overlay.setFrameShape(QFrame.StyledPanel)
+        overlay.setFrameShadow(QFrame.Raised)
+        overlay.setStyleSheet(
+            "#projectionOverlay { background:#0F172A; border:1px solid #CBD5E1; "
+            "border-radius:8px; }"
+            "#projectionOverlay QLabel { color:#E2E8F0; background:transparent; }"
+        )
+        overlay.setMinimumSize(330, 230)
+        overlay.setMaximumSize(460, 340)
+        overlay.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+
+        layout = QVBoxLayout(overlay)
+        layout.setContentsMargins(7, 6, 7, 6)
+        layout.setSpacing(4)
+
+        header = QLabel("2D Projection Preview")
+        header.setFont(self._view.font())
+        header.setStyleSheet("font-weight:600; color:#F8FAFC;")
+        layout.addWidget(header, 0)
+
+        preview.setParent(overlay)
+        preview.setMinimumHeight(200)
+        preview.setMaximumHeight(290)
+        preview.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        layout.addWidget(preview, 1)
+
+        metrics = getattr(self, "_preview_metrics", None)
+        if metrics is not None:
+            metrics.setParent(overlay)
+            metrics.setMaximumHeight(34)
+            metrics.setWordWrap(True)
+            layout.addWidget(metrics, 0)
+
+        overlay.raise_()
+        overlay.show()
+        self._projection_overlay = overlay
+        self._position_projection_overlay()
+
+    def _position_projection_overlay(self):
+        overlay = self._projection_overlay
+        if overlay is None:
+            return
+        parent = overlay.parentWidget()
+        if parent is None:
+            return
+        margin = 14
+        width = min(440, max(330, int(parent.width() * 0.34)))
+        width = min(width, max(330, parent.width() - margin * 2))
+        height = min(325, max(235, int(parent.height() * 0.38)))
+        height = min(height, max(235, parent.height() - 92))
+        overlay.resize(width, height)
+        overlay.move(max(margin, parent.width() - width - margin), margin)
+        overlay.raise_()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._position_projection_overlay()
 
     @property
     def scene_model(self):
@@ -44,6 +140,7 @@ class Reverse3DWorkspace(_BaseReverse3DWorkspace):
     def refresh_scene_view(self):
         self._view.update()
         self._refresh_projection()
+        self._position_projection_overlay()
 
     def set_camera_value(self, parameter: str, value: float):
         controls = {
