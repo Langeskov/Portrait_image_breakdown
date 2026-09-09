@@ -22,7 +22,7 @@ def _append_evidence_state(text: str, reverse_result) -> str:
     return _strip_evidence_block(text) + ("\n\n" + "=" * 55 + "\nEVIDENCE STATE\n" + "=" * 55 + "\n"
         f"Observed: {counts['observed']}  |  Estimated: {counts['estimated']}  |  Unknown: {counts['unknown']}\n"
         "Observed = directly supported by image/metadata.\n"
-        "Estimated = inferred from image, geometry, priors, and model confidence.\n"
+        "Estimated = inferred from available evidence and model confidence.\n"
         "Unknown = insufficient evidence; do not treat as a measured value.")
 
 
