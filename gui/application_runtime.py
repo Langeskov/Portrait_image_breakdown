@@ -105,7 +105,6 @@ def _install_settings_menu(window: ApplicationMainWindow) -> None:
         if index < 0:
             return
         window._ws.setCurrentIndex(index)
-        # Keep the debug page selected internally while its tab remains hidden.
         window._tabs.blockSignals(True)
         window._tabs.setCurrentIndex(index)
         window._tabs.blockSignals(False)
@@ -279,7 +278,10 @@ def install_v3_toolbar(window: ApplicationMainWindow, context: RuntimeContext) -
 
     _install_settings_menu(window)
     # Results stays instantiated and updated for diagnostics, but its tab is hidden from normal users.
-    results_index = window._tabs.indexOf("Results")
+    results_index = next(
+        (i for i in range(window._tabs.count()) if window._tabs.tabText(i) == "Results"),
+        -1,
+    )
     if results_index >= 0:
         window._tabs.setTabVisible(results_index, False)
         window._results_tab_index = results_index
