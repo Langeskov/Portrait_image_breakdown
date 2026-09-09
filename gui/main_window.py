@@ -1,9 +1,4 @@
-"""MainWindow - Two-phase analysis architecture (Fast + Full RE)
-
-Architecture:
-  Phase 1 (Fast): Pose → Orientation → Action → Camera → Composition → Suggestions
-  Phase 2 (Full RE): Image + Pose + Composition → ReverseEngineeringEngine (background)
-"""
+"""MainWindow - Two-phase analysis architecture (Fast + Full RE)"""
 from __future__ import annotations
 
 import hashlib
@@ -23,7 +18,7 @@ from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QSplitter,
     QToolBar, QFileDialog, QLabel, QStatusBar, QMessageBox, QCheckBox,
     QComboBox, QApplication, QTabBar, QStackedWidget, QScrollArea,
-    QProgressBar,
+    QProgressBar, QPushButton, QGridLayout, QGroupBox,
 )
 
 THEME = dict(
@@ -85,18 +80,14 @@ def _resize_for_analysis(image: np.ndarray, max_side: int = 1600) -> np.ndarray:
 
 
 def _safe_repr(value, max_len: int = 1200) -> str:
-    """Return a bounded representation suitable for a diagnostic log/dialog."""
     try:
         text = repr(value)
     except Exception as exc:
         text = f"<repr failed: {type(exc).__name__}: {exc}>"
-    if len(text) > max_len:
-        return text[:max_len] + "…"
-    return text
+    return text[:max_len] + ("…" if len(text) > max_len else "")
 
 
 def _diagnostic_log_path() -> Path:
-    """Choose a writable per-user log location, with a cwd fallback."""
     candidates = []
     if os.name == "nt":
         local_app_data = os.environ.get("LOCALAPPDATA")
@@ -108,7 +99,6 @@ def _diagnostic_log_path() -> Path:
             candidates.append(Path(state_home) / "PortraitImageBreakdown")
         candidates.append(Path.home() / ".local" / "state" / "PortraitImageBreakdown")
     candidates.append(Path.cwd() / "PortraitImageBreakdown_logs")
-
     for directory in candidates:
         try:
             directory.mkdir(parents=True, exist_ok=True)
@@ -125,16 +115,13 @@ def _write_diagnostic_log(report: str) -> Path:
     path = _diagnostic_log_path()
     try:
         with path.open("a", encoding="utf-8") as fh:
-            fh.write("\n" + "=" * 88 + "\n")
-            fh.write(report)
-            fh.write("\n")
+            fh.write("\n" + "=" * 88 + "\n" + report + "\n")
         return path
     except Exception:
         return Path("analysis_errors.log")
 
 
 class AnalysisWorker(QThread):
-    """Staged analysis worker with progress reporting and full diagnostics."""
     pose_ready = Signal(object)
     core_ready = Signal(object)
     reverse_ready = Signal(object)
@@ -143,136 +130,63 @@ class AnalysisWorker(QThread):
 
     def __init__(self, det, eng, image: np.ndarray, analysis_image: np.ndarray, enable_re: bool = True):
         super().__init__()
-        self._det = det
-        self._eng = eng
-        self._image = image
-        self._analysis_image = analysis_image
-        self._enable_re = enable_re
-        self._bundle = AnalysisBundle()
-        self._stage = "initialization"
+        self._det = det; self._eng = eng; self._image = image; self._analysis_image = analysis_image
+        self._enable_re = enable_re; self._bundle = AnalysisBundle(); self._stage = "initialization"
 
     def _stage_begin(self, stage: str, progress: Optional[tuple[int, str]] = None):
         self._stage = stage
-        if progress is not None:
-            self.progress.emit(progress[0], progress[1])
+        if progress is not None: self.progress.emit(progress[0], progress[1])
 
     def _context(self) -> str:
-        image = self._analysis_image
-        pose = self._bundle.pose
-        lines = [
-            f"stage: {self._stage}",
-            f"python: {platform.python_version()}",
-            f"platform: {platform.platform()}",
-            f"numpy: {np.__version__}",
-            f"opencv: {cv2.__version__}",
-            f"worker image shape: {getattr(image, 'shape', None)}",
-            f"worker image dtype: {getattr(image, 'dtype', None)}",
-            f"worker image type: {type(image).__name__}",
-            f"full image shape: {getattr(self._image, 'shape', None)}",
-            f"engine type: {type(self._eng).__module__}.{type(self._eng).__name__ if self._eng is not None else None}",
-            f"reverse enabled: {self._enable_re}",
-        ]
+        image = self._analysis_image; pose = self._bundle.pose
+        lines = [f"stage: {self._stage}", f"python: {platform.python_version()}", f"platform: {platform.platform()}", f"numpy: {np.__version__}", f"opencv: {cv2.__version__}", f"worker image shape: {getattr(image, 'shape', None)}", f"worker image dtype: {getattr(image, 'dtype', None)}", f"worker image type: {type(image).__name__}", f"full image shape: {getattr(self._image, 'shape', None)}", f"engine type: {type(self._eng).__module__}.{type(self._eng).__name__ if self._eng is not None else None}", f"reverse enabled: {self._enable_re}"]
         if pose is not None:
-            lines.extend([
-                f"pose type: {type(pose).__module__}.{type(pose).__name__}",
-                f"pose bbox type: {type(getattr(pose, 'bbox', None)).__name__}",
-                f"pose bbox: {_safe_repr(getattr(pose, 'bbox', None))}",
-                f"pose landmarks type: {type(getattr(pose, 'landmarks', None)).__name__}",
-                f"pose landmarks count: {len(getattr(pose, 'landmarks', [])) if hasattr(getattr(pose, 'landmarks', None), '__len__') else 'n/a'}",
-            ])
             landmarks = getattr(pose, "landmarks", None)
+            lines.extend([f"pose type: {type(pose).__module__}.{type(pose).__name__}", f"pose bbox type: {type(getattr(pose, 'bbox', None)).__name__}", f"pose bbox: {_safe_repr(getattr(pose, 'bbox', None))}", f"pose landmarks type: {type(landmarks).__name__}", f"pose landmarks count: {len(landmarks) if hasattr(landmarks, '__len__') else 'n/a'}"])
             if landmarks:
-                first = landmarks[0]
-                lines.append(f"pose landmark[0]: {_safe_repr(first)}")
-                lines.append(f"pose landmark[0] type: {type(first).__module__}.{type(first).__name__}")
+                lines.append(f"pose landmark[0]: {_safe_repr(landmarks[0])}")
+                lines.append(f"pose landmark[0] type: {type(landmarks[0]).__module__}.{type(landmarks[0]).__name__}")
         return "\n".join(lines)
 
     def _emit_exception(self, exc: BaseException):
-        """Build and persist a complete diagnostic report without hiding the traceback."""
         tb = traceback.format_exc()
-        report = "\n".join([
-            f"Portrait Image Breakdown diagnostic @ {datetime.now().isoformat(timespec='seconds')}",
-            self._context(),
-            "",
-            f"exception type: {type(exc).__module__}.{type(exc).__name__}",
-            f"exception message: {exc}",
-            "",
-            "FULL TRACEBACK:",
-            tb.rstrip(),
-        ])
+        report = "\n".join([f"Portrait Image Breakdown diagnostic @ {datetime.now().isoformat(timespec='seconds')}", self._context(), "", f"exception type: {type(exc).__module__}.{type(exc).__name__}", f"exception message: {exc}", "", "FULL TRACEBACK:", tb.rstrip()])
         log_path = _write_diagnostic_log(report)
-        message = (
-            f"Analysis failed at stage: {self._stage}\n\n"
-            f"{type(exc).__name__}: {exc}\n\n"
-            f"Full traceback was saved to:\n{log_path}\n\n"
-            "Open the diagnostic log and send the traceback back for the exact source line."
-            "\n\n"
-            "----- FULL TRACEBACK -----\n"
-            f"{tb.rstrip()}"
-        )
-        self.error.emit(message)
+        self.error.emit(f"Analysis failed at stage: {self._stage}\n\n{type(exc).__name__}: {exc}\n\nFull traceback was saved to:\n{log_path}\n\n----- FULL TRACEBACK -----\n{tb.rstrip()}")
 
     def run(self):
         try:
             self._stage_begin("1/8 PoseDetector.detect", (5, "[1/8] Detecting subject…"))
             pose = self._det.detect(self._analysis_image)
             if pose is None:
-                self._stage = "1/8 PoseDetector.detect (no person detected)"
-                self.error.emit("No person detected in image")
-                return
-            self._bundle.pose = pose
-            self.pose_ready.emit(pose)
-
+                self._stage = "1/8 PoseDetector.detect (no person detected)"; self.error.emit("No person detected in image"); return
+            self._bundle.pose = pose; self.pose_ready.emit(pose)
             self._stage_begin("2/8 2D analyzer imports", (20, "[2/8] Loading 2D analyzers…"))
             from core.orientation import analyze_orientation
             from core.action_classifier import classify_action
             from core.camera_analyzer import analyze_camera
             from core.composition import analyze_composition
             from core.suggestion import generate_suggestions
-
-            self._stage_begin("3/8 analyze_orientation", (24, "[3/8] Analyzing orientation…"))
-            orientation = analyze_orientation(pose)
-
-            self._stage_begin("4/8 classify_action", (28, "[4/8] Classifying action…"))
-            action = classify_action(pose)
-
-            self._stage_begin("5/8 analyze_camera", (32, "[5/8] Analyzing camera…"))
-            camera = analyze_camera(pose, self._analysis_image)
-
-            self._stage_begin("6/8 analyze_composition", (36, "[6/8] Analyzing composition…"))
-            composition = analyze_composition(self._analysis_image, pose)
-
-            self._stage_begin("7/8 generate_suggestions", (40, "[7/8] Generating suggestions…"))
-            suggestions = generate_suggestions(action, orientation, camera, composition)
-
-            self._bundle.orientation = orientation
-            self._bundle.action = action
-            self._bundle.camera = camera
-            self._bundle.composition = composition
-            self._bundle.suggestions = suggestions
-            self.core_ready.emit(self._bundle)
-            self.progress.emit(45, "2D analysis complete · reconstructing camera…")
-
+            self._stage_begin("3/8 analyze_orientation", (24, "[3/8] Analyzing orientation…")); orientation = analyze_orientation(pose)
+            self._stage_begin("4/8 classify_action", (28, "[4/8] Classifying action…")); action = classify_action(pose)
+            self._stage_begin("5/8 analyze_camera", (32, "[5/8] Analyzing camera…")); camera = analyze_camera(pose, self._analysis_image)
+            self._stage_begin("6/8 analyze_composition", (36, "[6/8] Analyzing composition…")); composition = analyze_composition(self._analysis_image, pose)
+            self._stage_begin("7/8 generate_suggestions", (40, "[7/8] Generating suggestions…")); suggestions = generate_suggestions(action, orientation, camera, composition)
+            self._bundle.orientation = orientation; self._bundle.action = action; self._bundle.camera = camera; self._bundle.composition = composition; self._bundle.suggestions = suggestions
+            self.core_ready.emit(self._bundle); self.progress.emit(45, "2D analysis complete · reconstructing camera…")
             if self._enable_re and self._eng is not None:
                 self._stage_begin("8/8 reverse_engineering image preparation", (55, "[8/8] Preparing 3D reconstruction input…"))
                 re_image = _resize_for_analysis(self._analysis_image, max_side=1600)
-                self._stage_begin("8/8 ReverseEngineeringEngine.analyze", (60, "[8/8] Calculating 3D camera geometry…"))
-                re_result = self._eng.analyze(re_image, pose, pose.bbox)
-                self._bundle.reverse_result = re_result
-                self._stage_begin("8/8 final projection validation", (95, "[8/8] Finalizing projection validation…"))
-                self.reverse_ready.emit(self._bundle)
-                self.progress.emit(100, "Analysis complete")
+                self._stage_begin("8/8 ReverseEngineeringEngine.analyze", (60, "[8/8] Calculating 3D camera geometry…")); re_result = self._eng.analyze(re_image, pose, pose.bbox)
+                self._bundle.reverse_result = re_result; self._stage_begin("8/8 final projection validation", (95, "[8/8] Finalizing projection validation…")); self.reverse_ready.emit(self._bundle); self.progress.emit(100, "Analysis complete")
             else:
-                self._stage = "reverse_engineering skipped"
-                self.progress.emit(100, "Analysis complete")
-
+                self._stage = "reverse_engineering skipped"; self.progress.emit(100, "Analysis complete")
         except Exception as e:
             self._emit_exception(e)
 
 
 class Workspace(QWidget):
-    def update_results(self, bundle: AnalysisBundle):
-        pass
+    def update_results(self, bundle: AnalysisBundle): pass
 
 
 from gui.canvas import ImageCanvas
@@ -280,58 +194,59 @@ from gui.panels import AnalysisPanel, SuggestionPanel
 
 
 class Analysis2DWorkspace(Workspace):
+    """2D analysis workspace; all visual overlay controls live here."""
     def __init__(self, parent=None):
         super().__init__(parent)
-        lo = QHBoxLayout(self); lo.setContentsMargins(0, 0, 0, 0)
+        lo = QVBoxLayout(self); lo.setContentsMargins(0, 0, 0, 0); lo.setSpacing(0)
+        self._overlay_group = QGroupBox("2D Overlays")
+        self._overlay_group.setStyleSheet("QGroupBox { margin: 6px 8px 4px 8px; padding-top: 6px; border: 1px solid #E2E8F0; border-radius: 6px; } QGroupBox::title { left: 8px; padding: 0 4px; color:#475569; }")
+        grid = QGridLayout(self._overlay_group); grid.setContentsMargins(10, 12, 10, 8); grid.setHorizontalSpacing(10); grid.setVerticalSpacing(4)
+        self._overlay_controls = []
+        specs = [("Skeleton", True, "skeleton"), ("3x3 Grid", True, "thirds"), ("Center", True, "center"), ("BBox", True, "bbox"), ("Headroom", False, "headroom"), ("Reference Target", True, "reference_target"), ("Visual Weight", False, "visual_weight"), ("Reverse Evidence", False, "reverse")]
+        for i, (label, checked, key) in enumerate(specs):
+            cb = QCheckBox(label); cb.setChecked(checked); cb.stateChanged.connect(self._apply_overlay_options); cb.setProperty("overlay_key", key); self._overlay_controls.append(cb); grid.addWidget(cb, i // 4, i % 4)
         sp = QSplitter(Qt.Horizontal)
         self._ap = AnalysisPanel(); sp.addWidget(self._ap)
         self._cv = ImageCanvas(); sp.addWidget(self._cv)
         self._sp = SuggestionPanel(); sp.addWidget(self._sp)
-        sp.setSizes([300, 700, 320]); sp.setStretchFactor(1, 1); lo.addWidget(sp)
+        sp.setSizes([300, 700, 320]); sp.setStretchFactor(1, 1); lo.addWidget(self._overlay_group, 0); lo.addWidget(sp, 1)
+        self._apply_overlay_options()
 
     def set_image(self, img: np.ndarray): self._cv.set_image(img)
 
+    def _apply_overlay_options(self, _state=0):
+        values = {cb.property("overlay_key"): cb.isChecked() for cb in self._overlay_controls}
+        self._cv.set_overlay_options(**values)
+
+    def set_overlay_options(self, **kwargs):
+        for cb in self._overlay_controls:
+            key = cb.property("overlay_key")
+            if key in kwargs:
+                cb.blockSignals(True); cb.setChecked(bool(kwargs[key])); cb.blockSignals(False)
+        self._apply_overlay_options()
+
     def update_results(self, bundle: AnalysisBundle):
         if bundle.pose:
-            self._cv.set_pose(bundle.pose)
-            vis = sum(1 for lm in bundle.pose.landmarks[:17] if lm.visibility > 0.4)
-            self._ap.update_pose(bundle.pose.detection_confidence, vis)
+            self._cv.set_pose(bundle.pose); vis = sum(1 for lm in bundle.pose.landmarks[:17] if lm.visibility > 0.4); self._ap.update_pose(bundle.pose.detection_confidence, vis)
         if bundle.orientation: self._ap.update_orientation(bundle.orientation)
         if bundle.action: self._ap.update_action(bundle.action)
-        if bundle.camera:
-            self._ap.update_camera(bundle.camera); self._cv.set_camera(bundle.camera)
-        if bundle.composition:
-            self._ap.update_composition(bundle.composition); self._cv.set_composition(bundle.composition)
+        if bundle.camera: self._ap.update_camera(bundle.camera); self._cv.set_camera(bundle.camera)
+        if bundle.composition: self._ap.update_composition(bundle.composition); self._cv.set_composition(bundle.composition)
         if bundle.suggestions: self._sp.update_suggestions(bundle.suggestions)
-
-    def set_overlay_options(self, **kwargs): self._cv.set_overlay_options(**kwargs)
+        if bundle.reverse_result: self._cv.set_reverse_result(bundle.reverse_result)
 
 
 class Reverse3DWorkspace(Workspace):
-    """Lightweight fallback workspace used when the dedicated 3D view is unavailable."""
     def __init__(self, parent=None):
-        super().__init__(parent)
-        lo = QVBoxLayout(self); lo.setContentsMargins(16, 16, 16, 16)
-        title = QLabel("3D Reverse Engineering Workspace")
-        title.setFont(QFont("Segoe UI", 16, QFont.Weight.Bold)); title.setAlignment(Qt.AlignmentFlag.AlignCenter); lo.addWidget(title)
-        self._info = QLabel("Displays: Subject position, Camera frustum, Ground plane, Candidate solutions\nRequires: OpenGL 3D renderer (future phase)")
-        self._info.setAlignment(Qt.AlignmentFlag.AlignCenter); lo.addWidget(self._info)
-
+        super().__init__(parent); lo = QVBoxLayout(self); lo.setContentsMargins(16, 16, 16, 16); title = QLabel("3D Reverse Engineering Workspace"); title.setFont(QFont("Segoe UI", 16, QFont.Weight.Bold)); title.setAlignment(Qt.AlignmentFlag.AlignCenter); lo.addWidget(title); self._info = QLabel("Displays: Subject position, Camera frustum, Ground plane, Candidate solutions\nRequires: OpenGL 3D renderer (future phase)"); self._info.setAlignment(Qt.AlignCenter); lo.addWidget(self._info)
     def update_results(self, bundle: AnalysisBundle):
-        if bundle.reverse_result:
-            self._info.setText(f"RE complete. Overall confidence: {bundle.reverse_result.overall_confidence:.0%}\nCandidates: {len(bundle.reverse_result._sim_candidates)}")
+        if bundle.reverse_result: self._info.setText(f"RE complete. Overall confidence: {bundle.reverse_result.overall_confidence:.0%}\nCandidates: {len(bundle.reverse_result._sim_candidates)}")
 
 
 class ResultsWorkspace(Workspace):
     def __init__(self, parent=None):
-        super().__init__(parent)
-        lo = QVBoxLayout(self); lo.setContentsMargins(16, 16, 16, 16)
-        title = QLabel("Reverse Engineering Report"); title.setFont(QFont("Segoe UI", 14, QFont.Weight.Bold)); lo.addWidget(title)
-        self._rl = QLabel("No results yet. Waiting for analysis..."); self._rl.setFont(QFont("Consolas", 10)); self._rl.setAlignment(Qt.AlignmentFlag.AlignTop); self._rl.setWordWrap(True); self._rl.setStyleSheet(f"color: {THEME['text']};")
-        sc = QScrollArea(); sc.setWidget(self._rl); sc.setWidgetResizable(True); sc.setStyleSheet(f"QScrollArea {{ border: 1px solid {THEME['border']}; background: {THEME['panel']}; }}"); lo.addWidget(sc)
-
-    def update_results(self, bundle: AnalysisBundle):
-        self._rl.setText(bundle.reverse_result.report() if bundle.reverse_result else "Reverse engineering not yet complete...")
+        super().__init__(parent); lo = QVBoxLayout(self); lo.setContentsMargins(16, 16, 16, 16); title = QLabel("Reverse Engineering Report"); title.setFont(QFont("Segoe UI", 14, QFont.Weight.Bold)); lo.addWidget(title); self._rl = QLabel("No results yet. Waiting for analysis..."); self._rl.setFont(QFont("Consolas", 10)); self._rl.setAlignment(Qt.AlignTop); self._rl.setWordWrap(True); self._rl.setStyleSheet(f"color: {THEME['text']};"); sc = QScrollArea(); sc.setWidget(self._rl); sc.setWidgetResizable(True); sc.setStyleSheet(f"QScrollArea {{ border: 1px solid {THEME['border']}; background: {THEME['panel']}; }}"); lo.addWidget(sc)
+    def update_results(self, bundle: AnalysisBundle): self._rl.setText(bundle.reverse_result.report() if bundle.reverse_result else "Reverse engineering not yet complete...")
 
 
 class MainWindow(QMainWindow):
@@ -340,50 +255,48 @@ class MainWindow(QMainWindow):
         from core.pose_detector import PoseDetector
         self._det = PoseDetector(); self._eng = None; self._re_enabled = True
         self._img: Optional[np.ndarray] = None; self._bundle = AnalysisBundle(); self._wk: Optional[AnalysisWorker] = None; self._result_cache: dict[str, AnalysisBundle] = {}
-
         tb = QToolBar("Main"); tb.setMovable(False); self.addToolBar(tb)
         ao = QAction("Open Image", self); ao.setShortcut(QKeySequence.Open); ao.triggered.connect(self._open); tb.addAction(ao); tb.addSeparator()
-        tb.addWidget(QLabel("  Dataset: ")); self._cb = QComboBox(); self._cb.setMinimumWidth(200); self._cb.currentTextChanged.connect(self._sel); tb.addWidget(self._cb); tb.addSeparator()
-        self._chk_skeleton = QCheckBox("Skeleton"); self._chk_skeleton.setChecked(True); self._chk_skeleton.stateChanged.connect(self._update_overlays); tb.addWidget(self._chk_skeleton)
-        self._chk_thirds = QCheckBox("3x3 Grid"); self._chk_thirds.setChecked(True); self._chk_thirds.stateChanged.connect(self._update_overlays); tb.addWidget(self._chk_thirds)
-        self._chk_center = QCheckBox("Center"); self._chk_center.setChecked(True); self._chk_center.stateChanged.connect(self._update_overlays); tb.addWidget(self._chk_center)
-        self._chk_bbox = QCheckBox("BBox"); self._chk_bbox.setChecked(True); self._chk_bbox.stateChanged.connect(self._update_overlays); tb.addWidget(self._chk_bbox)
-        self._chk_vweight = QCheckBox("Visual Weight"); self._chk_vweight.stateChanged.connect(self._update_overlays); tb.addWidget(self._chk_vweight)
-        self._chk_headroom = QCheckBox("Headroom"); self._chk_headroom.stateChanged.connect(self._update_overlays); tb.addWidget(self._chk_headroom)
-        self._chk_reference_target = QCheckBox("Reference Target"); self._chk_reference_target.setChecked(True); self._chk_reference_target.stateChanged.connect(self._update_overlays); tb.addWidget(self._chk_reference_target)
-
+        tb.addWidget(QLabel("  Dataset: ")); self._cb = QComboBox(); self._cb.setMinimumWidth(220); self._cb.addItem("Select folder…", ""); self._cb.currentIndexChanged.connect(self._sel); tb.addWidget(self._cb)
+        choose = QAction("Choose Folder", self); choose.triggered.connect(self._choose_dataset_folder); tb.addAction(choose); tb.addSeparator()
+        self._dataset_folder: Optional[Path] = None
+        self._chk_skeleton = None; self._chk_thirds = None; self._chk_center = None; self._chk_bbox = None; self._chk_vweight = None; self._chk_headroom = None; self._chk_reference_target = None
         self._tabs = QTabBar(); [self._tabs.addTab(t) for t in ("2D Analysis", "3D Reverse Engineering", "Results")]; self._tabs.currentChanged.connect(self._sw)
         self._ws = QStackedWidget(); self._w2 = Analysis2DWorkspace(); self._w3 = Reverse3DWorkspace(); self._wr = ResultsWorkspace(); [self._ws.addWidget(w) for w in (self._w2, self._w3, self._wr)]
         cen = QWidget(); ml = QVBoxLayout(cen); ml.setContentsMargins(0, 0, 0, 0); ml.setSpacing(0); ml.addWidget(self._tabs); ml.addWidget(self._ws); self.setCentralWidget(cen)
+        self._st = QStatusBar(); self.setStatusBar(self._st); self._progress = QProgressBar(); self._progress.setRange(0, 100); self._progress.setValue(0); self._progress.setTextVisible(True); self._progress.setVisible(False); self._st.addPermanentWidget(self._progress, 1); self._st.showMessage("Ready")
+        self._load_dataset_folder(None); self.setAcceptDrops(True)
 
-        self._st = QStatusBar(); self.setStatusBar(self._st)
-        self._progress = QProgressBar(); self._progress.setRange(0, 100); self._progress.setValue(0); self._progress.setTextVisible(True); self._progress.setVisible(False); self._st.addPermanentWidget(self._progress, 1)
-        self._st.showMessage("Ready")
-        self._dd = Path(__file__).parent.parent / "dataset"; self._dd = self._dd if self._dd.exists() else Path.cwd() / "dataset"; self._ld(); self.setAcceptDrops(True)
+    def _choose_dataset_folder(self):
+        start = str(self._dataset_folder or Path.home())
+        path = QFileDialog.getExistingDirectory(self, "Select image folder", start)
+        if not path: return
+        self._load_dataset_folder(Path(path))
 
-    def _ld(self):
-        self._cb.blockSignals(True); self._cb.clear(); self._cb.addItem("Select image...")
-        if self._dd.exists():
-            for f in sorted(p.name for p in self._dd.iterdir() if p.suffix.lower() in (".jpg", ".jpeg", ".png", ".bmp", ".webp")): self._cb.addItem(f)
+    def _load_dataset_folder(self, path: Optional[Path]):
+        self._dataset_folder = Path(path) if path else None
+        self._cb.blockSignals(True); self._cb.clear(); self._cb.addItem("Select folder…", "")
+        if self._dataset_folder and self._dataset_folder.exists():
+            files = [p for p in sorted(self._dataset_folder.iterdir(), key=lambda x: x.name.lower()) if p.suffix.lower() in (".jpg", ".jpeg", ".png", ".bmp", ".webp")]
+            for f in files: self._cb.addItem(f.name, str(f))
+            self._st.showMessage(f"Image folder: {self._dataset_folder} · {len(files)} images")
+        else:
+            self._st.showMessage("No image folder selected")
         self._cb.blockSignals(False)
 
-    def _sel(self, n):
-        if n and n != "Select image...":
-            p = self._dd / n
-            if p.exists(): self._la(str(p))
+    def _ld(self):
+        self._load_dataset_folder(self._dataset_folder)
+
+    def _sel(self, index):
+        path = self._cb.itemData(index)
+        if path and Path(path).exists(): self._la(str(path))
 
     def _open(self):
-        p, _ = QFileDialog.getOpenFileName(self, "Select Image", str(self._dd), "Images (*.jpg *.jpeg *.png *.bmp *.webp)")
+        p, _ = QFileDialog.getOpenFileName(self, "Select Image", str(self._dataset_folder or Path.home()), "Images (*.jpg *.jpeg *.png *.bmp *.webp)")
         if p: self._la(p)
 
-    def _set_progress(self, value: int, message: str):
-        self._progress.setValue(max(0, min(100, int(value))))
-        self._progress.setVisible(True)
-        self._st.showMessage(message)
-
-    def _finish_progress(self, message: str = "Analysis complete"):
-        self._progress.setValue(100); self._st.showMessage(message)
-        self._progress.setVisible(False)
+    def _set_progress(self, value: int, message: str): self._progress.setValue(max(0, min(100, int(value)))); self._progress.setVisible(True); self._st.showMessage(message)
+    def _finish_progress(self, message: str = "Analysis complete"): self._progress.setValue(100); self._st.showMessage(message); self._progress.setVisible(False)
 
     def _la(self, path: str):
         from core.image_io import load_image, frame_orientation
@@ -392,8 +305,8 @@ class MainWindow(QMainWindow):
         self._img = img; self._bundle = AnalysisBundle(); self._w2.set_image(img)
         cache_key = _image_hash(img)
         if cache_key in self._result_cache:
-            self._bundle = self._result_cache[cache_key]; self._apply_bundle(self._bundle); self._finish_progress(f"Loaded from cache | {frame_orientation(img)} | " + os.path.basename(path)); return
-        self._set_progress(0, f"Preparing analysis | {frame_orientation(img)} | " + os.path.basename(path))
+            self._bundle = self._result_cache[cache_key]; self._apply_bundle(self._bundle); self._finish_progress(f"Loaded from cache | {frame_orientation(img)} | {os.path.basename(path)}"); return
+        self._set_progress(0, f"Preparing analysis | {frame_orientation(img)} | {os.path.basename(path)}")
         if self._wk and self._wk.isRunning(): self._wk.terminate(); self._wk.wait()
         analysis_img = _resize_for_analysis(img, max_side=1600)
         if self._re_enabled and self._eng is None:
@@ -403,23 +316,19 @@ class MainWindow(QMainWindow):
         self._wk.progress.connect(self._set_progress); self._wk.pose_ready.connect(self._on_pose_ready); self._wk.core_ready.connect(self._on_core_ready); self._wk.reverse_ready.connect(self._on_reverse_ready); self._wk.error.connect(self._err); self._wk.start()
 
     def _on_pose_ready(self, pose):
-        self._bundle.pose = pose
-        self._w2._cv.set_pose(pose)
-        if hasattr(self, "_reference_mode") and self._img is not None:
-            self._reference_mode.set_current(pose, self._img)
+        self._bundle.pose = pose; self._w2._cv.set_pose(pose)
+        if hasattr(self, "_reference_mode") and self._img is not None: self._reference_mode.set_current(pose, self._img)
         self._st.showMessage("Pose detected")
 
     def _on_core_ready(self, bundle: AnalysisBundle):
-        self._bundle = bundle; self._w2.update_results(bundle)
-        if self._img is not None: self._result_cache[_image_hash(self._img)] = bundle
+        self._bundle = bundle; self._w2.update_results(bundle); self._result_cache[_image_hash(self._img)] = bundle if self._img is not None else bundle
         action_name = bundle.action.category.value if bundle.action else "?"; self._st.showMessage(f"Core analysis complete | {action_name}")
 
     def _on_reverse_ready(self, bundle: AnalysisBundle):
-        self._bundle = bundle; self._w3.update_results(bundle); self._wr.update_results(bundle)
+        self._bundle = bundle; self._w3.update_results(bundle); self._wr.update_results(bundle); self._w2.update_results(bundle)
         if hasattr(self, '_reference_mode'): self._reference_mode.set_current(bundle.pose, self._img)
         if hasattr(self, '_field_mode') and bundle.action and bundle.orientation and bundle.camera and bundle.composition:
-            confidence = float(bundle.reverse_result.overall_confidence) if bundle.reverse_result else None
-            self._field_mode.set_analysis(bundle.action, bundle.orientation, bundle.camera, bundle.composition, bundle.pose, confidence)
+            confidence = float(bundle.reverse_result.overall_confidence) if bundle.reverse_result else None; self._field_mode.set_analysis(bundle.action, bundle.orientation, bundle.camera, bundle.composition, bundle.pose, confidence)
         self._finish_progress("Analysis complete")
         if self._img is not None: self._result_cache[_image_hash(self._img)] = bundle
 
@@ -428,27 +337,14 @@ class MainWindow(QMainWindow):
         if bundle.reverse_result: self._w3.update_results(bundle); self._wr.update_results(bundle)
         if hasattr(self, '_reference_mode') and bundle.pose and self._img is not None: self._reference_mode.set_current(bundle.pose, self._img)
         if hasattr(self, '_field_mode') and bundle.action and bundle.orientation and bundle.camera and bundle.composition:
-            confidence = float(bundle.reverse_result.overall_confidence) if bundle.reverse_result else None
-            self._field_mode.set_analysis(bundle.action, bundle.orientation, bundle.camera, bundle.composition, bundle.pose, confidence)
+            confidence = float(bundle.reverse_result.overall_confidence) if bundle.reverse_result else None; self._field_mode.set_analysis(bundle.action, bundle.orientation, bundle.camera, bundle.composition, bundle.pose, confidence)
 
     def _update_overlays(self):
-        self._w2.set_overlay_options(
-            skeleton=self._chk_skeleton.isChecked(), thirds=self._chk_thirds.isChecked(),
-            center=self._chk_center.isChecked(), bbox=self._chk_bbox.isChecked(),
-            visual_weight=self._chk_vweight.isChecked(), headroom=self._chk_headroom.isChecked(),
-            reference_target=self._chk_reference_target.isChecked(),
-        )
+        self._w2._apply_overlay_options()
 
     def _sw(self, i): self._ws.setCurrentIndex(i)
 
     def _err(self, msg):
-        self._finish_progress("Analysis error")
-        dialog = QMessageBox(self)
-        dialog.setIcon(QMessageBox.Icon.Critical)
-        dialog.setWindowTitle("Analysis Error — diagnostic mode")
-        dialog.setText("Analysis failed. The exact stage and complete traceback are shown below.")
-        dialog.setInformativeText(msg.split("\n\n----- FULL TRACEBACK -----", 1)[0])
-        if "----- FULL TRACEBACK -----" in msg:
-            dialog.setDetailedText(msg.split("\n\n----- FULL TRACEBACK -----", 1)[1].lstrip())
-        dialog.setStandardButtons(QMessageBox.StandardButton.Ok)
-        dialog.exec()
+        self._finish_progress("Analysis error"); dialog = QMessageBox(self); dialog.setIcon(QMessageBox.Icon.Critical); dialog.setWindowTitle("Analysis Error — diagnostic mode"); dialog.setText("Analysis failed. The exact stage and complete traceback are shown below."); dialog.setInformativeText(msg.split("\n\n----- FULL TRACEBACK -----", 1)[0]);
+        if "----- FULL TRACEBACK -----" in msg: dialog.setDetailedText(msg.split("\n\n----- FULL TRACEBACK -----", 1)[1].lstrip())
+        dialog.setStandardButtons(QMessageBox.StandardButton.Ok); dialog.exec()
