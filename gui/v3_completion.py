@@ -1,7 +1,7 @@
-"""V3 UI integration: plane constraints, anchor camera solve, and temporal workspace.
+"""V3 reconstruction UI integration.
 
-The application runtime owns session save/load and the main toolbar. This module
-owns reconstruction-specific panels only, avoiding duplicate toolbar actions.
+Application-level actions such as Settings and session I/O remain in
+``application_runtime``. This module owns reconstruction-specific panels.
 """
 from __future__ import annotations
 
@@ -22,8 +22,8 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMessageBox,
     QPushButton,
-    QVBoxLayout,
     QScrollArea,
+    QVBoxLayout,
     QWidget,
 )
 
@@ -35,11 +35,12 @@ from reverse_engineering.plane_constraints import (
     evaluate_constraint,
 )
 from reverse_engineering.reference_pose_generation import generate_composition_aware_pose_target
+from reverse_engineering.scene_anchors import AnchorKind
 from reverse_engineering.temporal import TemporalFrameState, TemporalSmoother
 
 
 def coerce_plane_relation(value) -> PlaneRelation:
-    """Normalize enum, persisted value, or display label into PlaneRelation."""
+    """Normalize enum values, persisted values, and display labels."""
     if isinstance(value, PlaneRelation):
         return value
     text = str(value).strip()
@@ -48,6 +49,12 @@ def coerce_plane_relation(value) -> PlaneRelation:
     except ValueError:
         labels = {relation.label.lower(): relation for relation in PlaneRelation}
         return labels.get(text.lower(), PlaneRelation.ON_PLANE)
+
+
+def _is_plane(anchor) -> bool:
+    return getattr(anchor, "kind", None) == AnchorKind.PLANE or getattr(
+        getattr(anchor, "kind", None), "value", None
+    ) == AnchorKind.PLANE.value
 
 
 class PlaneConstraintPanel(QWidget):
@@ -63,9 +70,7 @@ class PlaneConstraintPanel(QWidget):
         root.setSpacing(5)
         root.addWidget(QLabel("Plane-aware constraints"))
 
-        hint = QLabel(
-            "把人物/物体位置约束到平面或距离平面指定偏移；方向关系保留为 API primitive。"
-        )
+        hint = QLabel("把人物/物体位置约束到平面或距离平面指定偏移；方向关系保留为 API primitive。")
         hint.setWordWrap(True)
         hint.setStyleSheet("color:#64748B;")
         root.addWidget(hint)
@@ -114,7 +119,7 @@ class PlaneConstraintPanel(QWidget):
         self.plane.blockSignals(True)
         self.plane.clear()
         for anchor in self.workspace.scene.anchors:
-            if getattr(anchor.kind, "value", anchor.kind) == AnchorKindValue.PLANE:
+            if _is_plane(anchor):
                 self.plane.addItem(anchor.name, anchor.anchor_id)
         if current is not None:
             index = self.plane.findData(current)
@@ -123,52 +128,40 @@ class PlaneConstraintPanel(QWidget):
         self.plane.blockSignals(False)
 
     def sync_from_scene(self):
-        """Synchronize calibration-derived constraints with the canonical SceneModel."""
+        """Synchronize calibration-derived constraints with the canonical scene."""
         self.refresh_planes()
-        plane_ids = {
-            anchor.anchor_id
-            for anchor in self.workspace.scene.anchors
-            if getattr(anchor.kind, "value", anchor.kind) == AnchorKindValue.PLANE
-        }
+        plane_ids = {anchor.anchor_id for anchor in self.workspace.scene.anchors if _is_plane(anchor)}
         calibrated_ids = {
             anchor.anchor_id
             for anchor in self.workspace.scene.anchors
-            if getattr(anchor.kind, "value", anchor.kind) == AnchorKindValue.PLANE
-            and len(getattr(anchor, "image_points", ())) >= 4
+            if _is_plane(anchor) and len(getattr(anchor, "image_points", ())) >= 4
         }
 
-        cleaned: list[PlaneConstraint] = []
+        cleaned = []
         for constraint in self._constraints:
-            relation = coerce_plane_relation(constraint.relation)
-            constraint.relation = relation
-            # Calibration-generated constraints are derived state. Remove them
-            # as soon as their supporting plane is no longer calibrated.
-            if constraint.source == "anchor_calibration" and (
-                constraint.plane_anchor_id not in plane_ids
-                or constraint.plane_anchor_id not in calibrated_ids
-            ):
-                continue
+            constraint.relation = coerce_plane_relation(constraint.relation)
+            if constraint.source == "anchor_calibration":
+                if constraint.plane_anchor_id not in plane_ids or constraint.plane_anchor_id not in calibrated_ids:
+                    continue
             cleaned.append(constraint)
         self._constraints = cleaned
 
-        by_plane = {c.plane_anchor_id: c for c in self._constraints}
-        changed = len(cleaned) != len(self._constraints)
+        existing_ids = {constraint.plane_anchor_id for constraint in self._constraints}
         for anchor_id in calibrated_ids:
-            if anchor_id in by_plane:
+            if anchor_id in existing_ids:
                 continue
-            constraint = PlaneConstraint(
-                constraint_id=f"anchor_calibration_{anchor_id}",
-                plane_anchor_id=anchor_id,
-                relation=PlaneRelation.ON_PLANE,
-                offset_m=0.0,
-                source="anchor_calibration",
+            self._constraints.append(
+                PlaneConstraint(
+                    constraint_id=f"anchor_calibration_{anchor_id}",
+                    plane_anchor_id=anchor_id,
+                    relation=PlaneRelation.ON_PLANE,
+                    offset_m=0.0,
+                    source="anchor_calibration",
+                )
             )
-            self._constraints.append(constraint)
-            by_plane[anchor_id] = constraint
-            changed = True
 
         self._rebuild_list()
-        self.workspace.scene.plane_constraints = [constraint.to_dict() for constraint in self._constraints]
+        self.workspace.scene.plane_constraints = [c.to_dict() for c in self._constraints]
 
     def _rebuild_list(self):
         self._list.blockSignals(True)
@@ -181,22 +174,24 @@ class PlaneConstraintPanel(QWidget):
         plane_id = self.plane.currentData()
         if not plane_id:
             return
-        constraint = PlaneConstraint(
-            constraint_id=f"plane_constraint_{len(self._constraints) + 1}",
-            plane_anchor_id=str(plane_id),
-            relation=coerce_plane_relation(self.relation.currentData()),
-            offset_m=float(self.offset.value()),
+        self._constraints.append(
+            PlaneConstraint(
+                constraint_id=f"plane_constraint_{len(self._constraints) + 1}",
+                plane_anchor_id=str(plane_id),
+                relation=coerce_plane_relation(self.relation.currentData()),
+                offset_m=float(self.offset.value()),
+            )
         )
-        self._constraints.append(constraint)
         self._rebuild_list()
         self.workspace.scene.plane_constraints = [c.to_dict() for c in self._constraints]
 
     def _remove(self):
         row = self._list.currentRow()
-        if 0 <= row < len(self._constraints):
-            self._constraints.pop(row)
-            self._rebuild_list()
-            self.workspace.scene.plane_constraints = [c.to_dict() for c in self._constraints]
+        if not 0 <= row < len(self._constraints):
+            return
+        self._constraints.pop(row)
+        self._rebuild_list()
+        self.workspace.scene.plane_constraints = [c.to_dict() for c in self._constraints]
 
     def _apply(self):
         row = self._list.currentRow()
@@ -252,7 +247,7 @@ class PlaneConstraintPanel(QWidget):
 
 
 class AnchorCameraHypothesisPanel(QWidget):
-    """Independent PnP cross-check plus optional selected-plane overlay."""
+    """Independent anchor PnP solve with optional scene-plane visualization."""
 
     def __init__(self, workspace, parent=None):
         super().__init__(parent)
@@ -264,9 +259,7 @@ class AnchorCameraHypothesisPanel(QWidget):
         root.setSpacing(5)
         root.addWidget(QLabel("Anchored camera cross-check"))
 
-        hint = QLabel(
-            "用当前已绑定的 2D/3D anchors 做独立 PnP 假设；不会自动覆盖活动相机。"
-        )
+        hint = QLabel("用当前已绑定的 2D/3D anchors 做独立 PnP 假设；不会自动覆盖活动相机。")
         hint.setWordWrap(True)
         hint.setStyleSheet("color:#64748B;")
         root.addWidget(hint)
@@ -307,7 +300,7 @@ class AnchorCameraHypothesisPanel(QWidget):
         self.plane_combo.clear()
         self.plane_combo.addItem("Auto / solved plane", "")
         for anchor in self.workspace.scene.anchors:
-            if getattr(anchor.kind, "value", anchor.kind) != AnchorKindValue.PLANE:
+            if not _is_plane(anchor):
                 continue
             suffix = " · calibrated" if len(getattr(anchor, "image_points", ())) >= 4 else ""
             self.plane_combo.addItem(f"{anchor.name}{suffix}", anchor.anchor_id)
@@ -321,10 +314,7 @@ class AnchorCameraHypothesisPanel(QWidget):
         if selected:
             return self.workspace.scene.anchor_by_id(str(selected))
         for anchor in self.workspace.scene.anchors:
-            if (
-                getattr(anchor.kind, "value", anchor.kind) == AnchorKindValue.PLANE
-                and len(getattr(anchor, "image_points", ())) >= 4
-            ):
+            if _is_plane(anchor) and len(getattr(anchor, "image_points", ())) >= 4:
                 return anchor
         return None
 
@@ -380,7 +370,7 @@ class AnchorCameraHypothesisPanel(QWidget):
 
 
 class TemporalWorker(QThread):
-    """Sample a video and smooth 17-point pose observations over time."""
+    """Sample a video and smooth 17-point pose observations."""
 
     progressed = Signal(int, float, int)
     completed = Signal()
@@ -398,12 +388,10 @@ class TemporalWorker(QThread):
         capture = None
         try:
             from core.pose_detector import PoseDetector
-
             detector = PoseDetector()
             capture = cv2.VideoCapture(self.video_path)
             if not capture.isOpened():
                 raise RuntimeError("Unable to open video")
-
             fps = float(capture.get(cv2.CAP_PROP_FPS) or 30.0)
             stride = max(1, int(round(fps / self.sample_fps)))
             smoother = TemporalSmoother(alpha=self.alpha)
@@ -489,9 +477,7 @@ class TemporalWorkspace(QWidget):
             self.status.setText("Stopping…")
 
     def _open(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Select video", "", "Video (*.mp4 *.mov *.avi *.mkv)"
-        )
+        path, _ = QFileDialog.getOpenFileName(self, "Select video", "", "Video (*.mp4 *.mov *.avi *.mkv)")
         if not path:
             return
         self._stop()
@@ -513,6 +499,32 @@ class TemporalWorkspace(QWidget):
         self._stop()
         if self.worker and self.worker.isRunning():
             self.worker.wait(1500)
+
+
+def _generate_target(reference, label):
+    if reference._reference_pose is None or reference._reference is None or reference._current_pose is None:
+        label.setText("Reference + current pose are required.")
+        return
+    width, height = reference._current_image_size
+    from reverse_engineering.reference_reconstruction import build_reference_composition
+    current = build_reference_composition(reference._current_pose, width, height)
+    result = generate_composition_aware_pose_target(
+        reference._reference_pose.landmarks,
+        reference._reference,
+        current,
+    )
+    if not result.success:
+        label.setText(result.message)
+        return
+    target = result.target
+    reference._last_target = target
+    reference._sync_canvas_target()
+    visible = target.visible_count if target is not None else 0
+    label.setText(
+        f"{result.message} · target center "
+        f"{target.subject_center[0] / width:.0%}, {target.subject_center[1] / height:.0%} · "
+        f"{visible}/17 landmarks"
+    )
 
 
 def install_v3_completion(window):
@@ -540,7 +552,10 @@ def install_v3_completion(window):
 
     if hasattr(workspace, "_anchors"):
         workspace._anchors.currentRowChanged.connect(
-            lambda _row: (constraint_panel.sync_from_scene(), anchor_panel.refresh_plane_choices())
+            lambda _row: (
+                constraint_panel.sync_from_scene(),
+                anchor_panel.refresh_plane_choices(),
+            )
         )
 
     constraint_panel.sync_from_scene()
@@ -553,9 +568,7 @@ def install_v3_completion(window):
         label.setWordWrap(True)
         target_layout.addWidget(label)
         button = QPushButton("Generate target")
-        button.clicked.connect(
-            lambda: _generate_target(reference, label)
-        )
+        button.clicked.connect(lambda: _generate_target(reference, label))
         target_layout.addWidget(button)
         reference.layout().addWidget(target_box)
 
@@ -564,38 +577,6 @@ def install_v3_completion(window):
     window._ws.addWidget(temporal)
     window._temporal_workspace = temporal
     return temporal
-
-
-def _generate_target(reference, label):
-    if reference._reference_pose is None or reference._reference is None or reference._current_pose is None:
-        label.setText("Reference + current pose are required.")
-        return
-    width, height = reference._current_image_size
-    from reverse_engineering.reference_reconstruction import build_reference_composition
-
-    current = build_reference_composition(reference._current_pose, width, height)
-    result = generate_composition_aware_pose_target(
-        reference._reference_pose.landmarks,
-        reference._reference,
-        current,
-    )
-    if not result.success:
-        label.setText(result.message)
-        return
-    target = result.target
-    reference._last_target = target
-    reference._sync_canvas_target()
-    visible = target.visible_count if target is not None else 0
-    label.setText(
-        f"{result.message} · target center "
-        f"{target.subject_center[0] / width:.0%}, {target.subject_center[1] / height:.0%} · "
-        f"{visible}/17 landmarks"
-    )
-
-
-# Keep this local alias to avoid importing the enum into every legacy helper call.
-from reverse_engineering.scene_anchors import AnchorKind
-AnchorKindValue = AnchorKind
 
 
 __all__ = [
