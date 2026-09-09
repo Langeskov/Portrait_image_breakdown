@@ -33,7 +33,6 @@ from PySide6.QtWidgets import (
 
 from core.application_services import ApplicationServices
 from gui.application_window import ApplicationMainWindow
-from gui.reverse_3d_v3 import Reverse3DWorkspace
 from gui.field_mode import install_field_mode
 from gui.reference_mode import install_reference_mode
 from gui.anchor_calibration_dialog import AnchorCalibrationDialog
@@ -49,19 +48,6 @@ class RuntimeContext:
     services: ApplicationServices
     calibration_profile: str = "Generic"
     current_path: Optional[str] = None
-
-
-def _install_real_3d_workspace(window: ApplicationMainWindow) -> None:
-    """Replace the legacy placeholder workspace with the canonical V3 workspace."""
-    old = window._w3
-    index = window._ws.indexOf(old)
-    replacement = Reverse3DWorkspace(window)
-    if index < 0:
-        return
-    window._ws.removeWidget(old)
-    old.deleteLater()
-    window._ws.insertWidget(index, replacement)
-    window._w3 = replacement
 
 
 def _install_settings_menu(window: ApplicationMainWindow) -> None:
@@ -296,7 +282,6 @@ def build_window(services: ApplicationServices) -> tuple[ApplicationMainWindow, 
     window = ApplicationMainWindow(services)
     window._runtime_context = context
     window._calibration_profile = context.calibration_profile
-    _install_real_3d_workspace(window)
     install_field_mode(window)
     install_reference_mode(window)
     install_v3_completion(window)
