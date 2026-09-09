@@ -14,7 +14,6 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
-    QFileDialog,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -247,7 +246,7 @@ class PlaneConstraintPanel(QWidget):
 
 
 class AnchorCameraHypothesisPanel(QWidget):
-    """Independent anchor PnP solve with optional scene-plane visualization."""
+    """Independent anchor PnP cross-check with optional plane visualization."""
 
     def __init__(self, workspace, parent=None):
         super().__init__(parent)
@@ -320,6 +319,9 @@ class AnchorCameraHypothesisPanel(QWidget):
 
     def _sync_selected_plane(self):
         plane = self._selected_plane()
+        for anchor in self.workspace.scene.anchors:
+            if _is_plane(anchor) and anchor is not plane and getattr(anchor, "source", "") == "anchor_calibration":
+                anchor.visible = False
         if plane is None:
             return
         plane.visible = bool(self.show_plane.isChecked())
@@ -542,11 +544,20 @@ def install_v3_completion(window):
         return None
 
     constraint_panel = PlaneConstraintPanel(workspace)
-    layout.insertWidget(2, constraint_panel)
+    anchor_section = next(
+        (
+            widget
+            for widget in inner.findChildren(QWidget)
+            if getattr(getattr(widget, "button", None), "text", lambda: "")() == "Scene anchors"
+        ),
+        None,
+    )
+    insert_at = layout.indexOf(anchor_section) + 1 if anchor_section is not None else min(3, layout.count())
+    layout.insertWidget(insert_at, constraint_panel)
     workspace._plane_constraints_panel = constraint_panel
 
     anchor_panel = AnchorCameraHypothesisPanel(workspace)
-    layout.insertWidget(3, anchor_panel)
+    layout.insertWidget(insert_at + 1, anchor_panel)
     workspace._anchor_camera_hypothesis = anchor_panel
     workspace.camera_edited.connect(anchor_panel.solve)
 
