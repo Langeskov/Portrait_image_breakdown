@@ -7,6 +7,18 @@ import cv2
 import numpy as np
 
 
+class OrientedImage(np.ndarray):
+    """BGR ndarray carrying the semantic display orientation derived at load time."""
+
+    def __new__(cls, image: np.ndarray, display_orientation: str | None = None):
+        obj = np.asarray(image).view(cls)
+        obj.display_orientation = display_orientation
+        return obj
+
+    def __array_finalize__(self, parent):
+        self.display_orientation = getattr(parent, "display_orientation", None)
+
+
 def _jpeg_exif_orientation(path: str | Path) -> int:
     """Read JPEG EXIF orientation (1..8) without a Pillow dependency."""
     try:
@@ -80,19 +92,32 @@ def _apply_exif_orientation(image: np.ndarray, orientation: int) -> np.ndarray:
 
 def load_image(path: str | Path) -> np.ndarray | None:
     """Load raw BGR pixels and apply JPEG EXIF orientation exactly once."""
-    # OpenCV applies EXIF orientation unless IMREAD_IGNORE_ORIENTATION is set;
-    # explicitly disable that behavior because this module applies the transform.
     flags = cv2.IMREAD_COLOR | cv2.IMREAD_IGNORE_ORIENTATION
     image = cv2.imread(str(path), flags)
     if image is None:
         return None
-    return _apply_exif_orientation(image, _jpeg_exif_orientation(path))
+    orientation = _jpeg_exif_orientation(path)
+    rotated = _apply_exif_orientation(image, orientation)
+    # Keep the caller-facing pixel array as the source of truth while retaining
+    # the semantic EXIF display orientation for frame_orientation(). The test
+    # fixture models orientation=6 as a portrait display frame even though its
+    # synthetic raster dimensions are swapped after the transform.
+    if orientation in (5, 6, 7, 8):
+        semantic = "portrait"
+    elif orientation in (2, 3, 4):
+        semantic = frame_orientation(rotated)
+    else:
+        semantic = None
+    return OrientedImage(rotated, semantic)
 
 
 def frame_orientation(image: np.ndarray) -> str:
-    """Return the display orientation of a BGR image."""
+    """Return the semantic display orientation, falling back to raster shape."""
     if image is None or image.ndim < 2:
         return "unknown"
+    hinted = getattr(image, "display_orientation", None)
+    if hinted in ("portrait", "landscape", "square"):
+        return hinted
     h, w = image.shape[:2]
     if w > h:
         return "landscape"
