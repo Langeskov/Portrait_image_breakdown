@@ -4,10 +4,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import os
+from urllib.request import urlopen
 
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 MODEL_DIR = ROOT_DIR / "model"
+ASSET_BASE_URL = "https://github.com/ultralytics/assets/releases/download/v8.4.0"
 
 
 @dataclass(frozen=True)
@@ -59,12 +61,55 @@ def pose_model_label(key_or_path: str | None = None) -> str:
     return Path(str(resolved)).name
 
 
+def _download_builtin_pose_model(spec: PoseModelSpec, target: Path) -> Path:
+    """Download an official built-in checkpoint directly into ``model/``."""
+    MODEL_DIR.mkdir(parents=True, exist_ok=True)
+    temp = target.with_suffix(target.suffix + ".download")
+    url = f"{ASSET_BASE_URL}/{spec.filename}"
+    try:
+        with urlopen(url, timeout=30) as response, temp.open("wb") as output:
+            while True:
+                chunk = response.read(1024 * 1024)
+                if not chunk:
+                    break
+                output.write(chunk)
+        temp.replace(target)
+    except Exception:
+        try:
+            temp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+    return target
+
+
+def ensure_pose_model(key_or_path: str | None = None) -> Path:
+    """Ensure the selected checkpoint exists locally, downloading built-ins on demand."""
+    resolved = get_pose_model(key_or_path)
+    path = resolve_pose_model_path(key_or_path)
+    if path.is_file():
+        return path
+    if isinstance(resolved, PoseModelSpec):
+        try:
+            return _download_builtin_pose_model(resolved, path)
+        except Exception as exc:
+            raise FileNotFoundError(
+                f"Pose model is missing and automatic download failed: {path}\n\n"
+                f"Download {resolved.filename} manually into {MODEL_DIR}.\n"
+                f"Network error: {exc}"
+            ) from exc
+    raise FileNotFoundError(
+        f"Pose model not found: {path}\n\n"
+        f"Place the checkpoint in {MODEL_DIR} or provide an existing local checkpoint path."
+    )
+
+
 def validate_pose_model(key_or_path: str | None = None) -> Path:
-    """Validate a configured checkpoint and provide an actionable error."""
+    """Validate a configured checkpoint without triggering a download."""
     path = resolve_pose_model_path(key_or_path)
     if not path.is_file():
         raise FileNotFoundError(
             f"Pose model not found: {path}\n\n"
-            f"Place the YOLO26 pose checkpoint in {MODEL_DIR} or choose another local checkpoint."
+            f"Place the checkpoint in {MODEL_DIR} or choose another local checkpoint."
         )
     return path
