@@ -17,6 +17,7 @@ from gui.reference_line_calibration import (
     ReferenceLineCalibrationPanel,
     install_reference_line_calibration,
 )
+from gui.reference_line_apply import RollCorrectionController, install_roll_correction
 from reverse_engineering.reference_line_calibration import ReferenceLineConstraint
 
 
@@ -27,6 +28,7 @@ class Reverse3DWorkspace(_BaseReverse3DWorkspace):
         super().__init__(parent)
         install_visual_camera_match(self)
         install_reference_line_calibration(self)
+        install_roll_correction(self)
         panel = getattr(self, "_reference_line_calibration", None)
         if panel is not None:
             panel.evidence_changed.connect(self._on_reference_line_evidence_changed)
@@ -77,6 +79,9 @@ class Reverse3DWorkspace(_BaseReverse3DWorkspace):
         preview.set_constraint(constraint)
         preview.set_evidence_points(points)
         self._reference_line_evidence = preview.evidence()
+        controller = getattr(panel, "_roll_apply_controller", None) if panel is not None else None
+        if controller is not None:
+            controller.refresh(self._reference_line_evidence)
 
     def _poll_reference_mode(self):
         window = self.window()
@@ -161,6 +166,9 @@ class Reverse3DWorkspace(_BaseReverse3DWorkspace):
             else:
                 anchor.image_points = (tuple(evidence.p1), tuple(evidence.p2))
                 anchor.reference_line_constraint = evidence.constraint.value
+        controller = getattr(self._reference_line_calibration, "_roll_apply_controller", None)
+        if controller is not None:
+            controller.refresh(evidence)
         self._update_reference_hypothesis()
 
 
@@ -173,4 +181,5 @@ __all__ = [
     "ReferenceLineCalibrationPanel",
     "ReferenceLineProjectionPreview",
     "Reverse3DWorkspace",
+    "RollCorrectionController",
 ]
