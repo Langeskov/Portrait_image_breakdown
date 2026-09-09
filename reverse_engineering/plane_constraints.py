@@ -3,11 +3,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Iterable
+from typing import Iterable, Optional
 
 import numpy as np
 
-from reverse_engineering.scene_anchors import SceneAnchor, AnchorKind
+from reverse_engineering.scene_anchors import AnchorKind, SceneAnchor
 
 
 class PlaneRelation(str, Enum):
@@ -104,7 +104,6 @@ def align_direction_with_plane(direction, plane: SceneAnchor, relation: PlaneRel
         projected = unit - float(np.dot(unit, normal)) * normal
         pnorm = float(np.linalg.norm(projected))
         if pnorm < 1e-9:
-            # Choose a stable in-plane axis when the original direction is normal.
             tangent, _, _ = plane.plane_basis()
             projected = tangent
             pnorm = 1.0
@@ -116,19 +115,46 @@ def align_direction_with_plane(direction, plane: SceneAnchor, relation: PlaneRel
     return tuple(float(v) for v in unit)
 
 
-def evaluate_constraint(position, constraint: PlaneConstraint, anchors: Iterable[SceneAnchor], *, tolerance_m: float = 0.03) -> PlaneConstraintEvaluation:
+def evaluate_constraint(
+    position,
+    constraint: PlaneConstraint,
+    anchors: Iterable[SceneAnchor],
+    *,
+    direction: Optional[Iterable[float]] = None,
+    tolerance_m: float = 0.03,
+) -> PlaneConstraintEvaluation:
     plane = _plane_or_raise(anchors, constraint.plane_anchor_id)
-    distance = abs(signed_distance_to_plane(position, plane))
-    target = abs(float(constraint.offset_m)) if constraint.relation is PlaneRelation.OFFSET else 0.0
-    residual = abs(distance - target)
-    satisfied = residual <= max(float(tolerance_m), 0.0)
-    if constraint.relation is PlaneRelation.ON_PLANE:
-        message = f"distance to {plane.name}: {distance:.3f} m"
-    elif constraint.relation is PlaneRelation.OFFSET:
-        message = f"distance {distance:.3f} m · target {target:.3f} m"
+    if constraint.relation in {PlaneRelation.ON_PLANE, PlaneRelation.OFFSET}:
+        distance = abs(signed_distance_to_plane(position, plane))
+        target = abs(float(constraint.offset_m)) if constraint.relation is PlaneRelation.OFFSET else 0.0
+        residual = abs(distance - target)
+        satisfied = residual <= max(float(tolerance_m), 0.0)
+        if constraint.relation is PlaneRelation.ON_PLANE:
+            message = f"distance to {plane.name}: {distance:.3f} m"
+        else:
+            message = f"distance {distance:.3f} m · target {target:.3f} m"
+        return PlaneConstraintEvaluation(constraint.constraint_id, satisfied, float(residual), message)
+
+    if direction is None:
+        return PlaneConstraintEvaluation(
+            constraint.constraint_id,
+            False,
+            float("inf"),
+            f"{constraint.relation.label} requires a target direction vector; no angular claim was made.",
+        )
+    vector = np.asarray(direction, dtype=float).reshape(3)
+    normal = plane.normalized_normal()
+    norm = float(np.linalg.norm(vector))
+    if norm < 1e-9 or not np.isfinite(vector).all():
+        return PlaneConstraintEvaluation(constraint.constraint_id, False, float("inf"), "target direction is invalid")
+    unit = vector / norm
+    cosine = abs(float(np.dot(unit, normal)))
+    if constraint.relation is PlaneRelation.PERPENDICULAR:
+        residual = abs(1.0 - cosine)
     else:
-        message = f"position component compatible with {constraint.relation.label.lower()} relation"
-    return PlaneConstraintEvaluation(constraint.constraint_id, satisfied, float(residual), message)
+        residual = cosine
+    satisfied = residual <= max(float(tolerance_m), 0.0)
+    return PlaneConstraintEvaluation(constraint.constraint_id, satisfied, float(residual), f"direction residual {residual:.3f}")
 
 
 def apply_position_constraint(position, constraint: PlaneConstraint, anchors: Iterable[SceneAnchor]) -> tuple[float, float, float]:
