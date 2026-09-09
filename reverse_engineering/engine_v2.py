@@ -47,7 +47,14 @@ def _normalize_pose_input(pose: PoseResult, image_w: int, image_h: int, bbox=Non
     normalized_bbox = None
     if source_bbox is not None:
         x0, y0, x1, y1 = map(float, source_bbox)
-        normalized_bbox = (round(x0 * sx), round(y0 * sy), round(x1 * sx), round(y1 * sy))
+        # Bounding boxes are half-open image regions: use floor for the top-left
+        # and ceil for the bottom-right so scaling never removes the final row/col.
+        normalized_bbox = (
+            int(math.floor(x0 * sx)),
+            int(math.floor(y0 * sy)),
+            int(math.ceil(x1 * sx)),
+            int(math.ceil(y1 * sy)),
+        )
     return normalized_pose, normalized_bbox, True
 
 
@@ -154,10 +161,6 @@ class ReverseEngineeringEngineV2:
             support_plane = estimate_support_plane(kp, w, h)
             people = getattr(pose, "persons", None) or [pose]
             multi_person_layout = build_multi_person_layout(people, w, h, self._depth_provider)
-
-            # Candidate generation is always available. Simulation adds optional
-            # optimization/ranking, while scene rotation remains authoritative for
-            # candidate orientation even when simulation is disabled.
             scene_for_fusion = scene_evidence if (scene_evidence.lines and (scene_evidence.has_three_directions or len(scene_evidence.lines) >= 4)) else None
             if self._enable_simulation:
                 candidates = optimize_parameters(
@@ -217,15 +220,9 @@ class ReverseEngineeringEngineV2:
         if candidates and candidates[0].losses.get("image_refinement"):
             uncertainties.append(f"bounded image-space refinement: {candidates[0].losses.get('image_refinement')} Δ={candidates[0].losses.get('image_refinement_delta_deg', '0')} deg; correction is intentionally limited")
         if depth_evidence is not None:
-            uncertainties.append(
-                f"relative depth constraint active: {depth_evidence.valid_count} landmarks, confidence {depth_evidence.confidence:.0%}; used only as a soft ranking signal"
-                if depth_evidence.usable else "relative depth constraint unavailable or too weak; camera height/distance remain primarily pose-derived"
-            )
+            uncertainties.append(f"relative depth constraint active: {depth_evidence.valid_count} landmarks, confidence {depth_evidence.confidence:.0%}; used only as a soft ranking signal" if depth_evidence.usable else "relative depth constraint unavailable or too weak; camera height/distance remain primarily pose-derived")
         if support_plane is not None:
-            uncertainties.append(
-                f"support-plane hypothesis active: {support_plane.visible_ankles} ankle contacts, confidence {support_plane.confidence:.0%}; pitch consistency is a soft ranking signal"
-                if support_plane.usable else "support-plane hypothesis unavailable; pitch is not constrained by contact geometry"
-            )
+            uncertainties.append(f"support-plane hypothesis active: {support_plane.visible_ankles} ankle contacts, confidence {support_plane.confidence:.0%}; pitch consistency is a soft ranking signal" if support_plane.usable else "support-plane hypothesis unavailable; pitch is not constrained by contact geometry")
         if scene_evidence.has_three_directions and scene_evidence.confidence >= 0.45:
             uncertainties.append("rotation fusion uses Manhattan scene geometry because scene confidence is sufficient")
         elif len(scene_evidence.lines) >= 4:
