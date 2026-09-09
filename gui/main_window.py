@@ -122,7 +122,7 @@ def _write_diagnostic_log(report: str) -> Path:
             fh.write("\n" + "=" * 88 + "\n" + report + "\n")
         return path
     except Exception:
-        return Path("analysis_errors.log")
+        return Path.cwd() / "analysis_errors.log"
 
 
 class AnalysisWorker(QThread):
@@ -221,8 +221,7 @@ class Analysis2DWorkspace(Workspace):
 
     def set_image(self, img: np.ndarray): self._cv.set_image(img)
 
-    def _apply_overlay_options(self, _state=0):
-        self._cv.set_overlay_options(**{cb.property("overlay_key"): cb.isChecked() for cb in self._overlay_controls})
+    def _apply_overlay_options(self, _state=0): self._cv.set_overlay_options(**{cb.property("overlay_key"): cb.isChecked() for cb in self._overlay_controls})
 
     def set_overlay_options(self, **kwargs):
         for cb in self._overlay_controls:
@@ -253,10 +252,10 @@ class ResultsWorkspace(Workspace):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self):
+    def __init__(self, pose_model: str | None = None):
         super().__init__(); self.setWindowTitle("Portrait Image Breakdown"); self.setMinimumSize(1200, 700); self.resize(1400, 800)
         from core.pose_detector import PoseDetector
-        self._det = PoseDetector(); self._eng = None; self._re_enabled = True
+        self._det = PoseDetector(model=pose_model); self._eng = None; self._re_enabled = True
         self._img: Optional[np.ndarray] = None; self._bundle = AnalysisBundle(); self._wk: Optional[AnalysisWorker] = None; self._result_cache: dict[str, AnalysisBundle] = {}
         toolbar = QToolBar("Main"); toolbar.setMovable(False); self.addToolBar(toolbar)
         open_action = QAction("Open Image", self); open_action.setShortcut(QKeySequence.Open); open_action.triggered.connect(self._open); toolbar.addAction(open_action); toolbar.addSeparator()
@@ -306,26 +305,15 @@ class MainWindow(QMainWindow):
         self._wk.progress.connect(self._set_progress); self._wk.pose_ready.connect(self._on_pose_ready); self._wk.core_ready.connect(self._on_core_ready); self._wk.reverse_ready.connect(self._on_reverse_ready); self._wk.error.connect(self._err); self._wk.start()
     def _on_pose_ready(self, pose):
         self._bundle.pose = pose; self._w2._cv.set_pose(pose)
-        if hasattr(self, "_reference_mode") and self._img is not None: self._reference_mode.set_current(pose, self._img)
-        self._st.showMessage("Pose detected")
-    def _on_core_ready(self, bundle: AnalysisBundle):
-        self._bundle = bundle; self._w2.update_results(bundle); self._result_cache[_image_hash(self._img)] = bundle if self._img is not None else bundle; action_name = bundle.action.category.value if bundle.action else "?"; self._st.showMessage(f"Core analysis complete | {action_name}")
-    def _on_reverse_ready(self, bundle: AnalysisBundle):
-        self._bundle = bundle; self._w3.update_results(bundle); self._wr.update_results(bundle); self._w2.update_results(bundle)
-        if hasattr(self, '_reference_mode'): self._reference_mode.set_current(bundle.pose, self._img)
-        if hasattr(self, '_field_mode') and bundle.action and bundle.orientation and bundle.camera and bundle.composition:
-            confidence = float(bundle.reverse_result.overall_confidence) if bundle.reverse_result else None; self._field_mode.set_analysis(bundle.action, bundle.orientation, bundle.camera, bundle.composition, bundle.pose, confidence)
-        self._finish_progress("Analysis complete")
-        if self._img is not None: self._result_cache[_image_hash(self._img)] = bundle
-    def _apply_bundle(self, bundle):
-        self._w2.update_results(bundle)
-        if bundle.reverse_result: self._w3.update_results(bundle); self._wr.update_results(bundle)
-        if hasattr(self, '_reference_mode') and bundle.pose and self._img is not None: self._reference_mode.set_current(bundle.pose, self._img)
-        if hasattr(self, '_field_mode') and bundle.action and bundle.orientation and bundle.camera and bundle.composition:
-            confidence = float(bundle.reverse_result.overall_confidence) if bundle.reverse_result else None; self._field_mode.set_analysis(bundle.action, bundle.orientation, bundle.camera, bundle.composition, bundle.pose, confidence)
-    def _update_overlays(self): self._w2._apply_overlay_options()
-    def _sw(self, i): self._ws.setCurrentIndex(i)
-    def _err(self, msg):
-        self._finish_progress("Analysis error"); dialog = QMessageBox(self); dialog.setIcon(QMessageBox.Icon.Critical); dialog.setWindowTitle("Analysis Error — diagnostic mode"); dialog.setText("Analysis failed. The exact stage and complete traceback are shown below."); dialog.setInformativeText(msg.split("\n\n----- FULL TRACEBACK -----", 1)[0]);
-        if "----- FULL TRACEBACK -----" in msg: dialog.setDetailedText(msg.split("\n\n----- FULL TRACEBACK -----", 1)[1].lstrip())
-        dialog.setStandardButtons(QMessageBox.StandardButton.Ok); dialog.exec()
+        if hasattr(self, "_reference_mode") and self._img is not None: self._reference_mode.set_current_image(self._img, pose)
+    def _on_core_ready(self, bundle): self._bundle = bundle; self._w2.update_results(bundle); self._w3.update_results(bundle)
+    def _on_reverse_ready(self, bundle): self._bundle = bundle; self._result_cache[_image_hash(self._img)] = bundle; self._w2.update_results(bundle); self._w3.update_results(bundle); self._finish_progress()
+    def _apply_bundle(self, bundle): self._w2.update_results(bundle); self._w3.update_results(bundle)
+    def _err(self, message: str): self._progress.setVisible(False); QMessageBox.critical(self, "Analysis error", message)
+    def _sw(self, index): self._ws.setCurrentIndex(index)
+
+    def set_overlay_options(self, **kwargs): self._w2.set_overlay_options(**kwargs)
+    @property
+    def current_image(self): return self._img
+    @property
+    def current_path(self): return getattr(self, "_current_path", None)
