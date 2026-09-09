@@ -117,6 +117,11 @@ def _install_settings_menu(window: ApplicationMainWindow, context: RuntimeContex
         model_actions.append(action)
         model_menu.addAction(action)
 
+    current_action = QAction(f"Current: {pose_model_label(context.pose_model)}", window)
+    current_action.setEnabled(False)
+    model_menu.addSeparator()
+    model_menu.addAction(current_action)
+
     def on_model_triggered(action: QAction):
         selected = str(action.data())
         if selected == context.pose_model:
@@ -124,7 +129,9 @@ def _install_settings_menu(window: ApplicationMainWindow, context: RuntimeContex
         try:
             window.set_pose_model(selected)
             context.pose_model = selected
-            model_menu.setTitle(f"Pose Model · {pose_model_label(selected)}")
+            label = pose_model_label(selected)
+            model_menu.setTitle(f"Pose Model · {label}")
+            current_action.setText(f"Current: {label}")
             window._st.showMessage(f"Pose model: {window.pose_model_name}")
         except Exception as exc:
             QMessageBox.critical(
@@ -137,10 +144,6 @@ def _install_settings_menu(window: ApplicationMainWindow, context: RuntimeContex
                 current.setChecked(True)
 
     model_group.triggered.connect(on_model_triggered)
-    model_menu.addSeparator()
-    current_action = QAction(f"Current: {pose_model_label(context.pose_model)}", window)
-    current_action.setEnabled(False)
-    model_menu.addAction(current_action)
 
     results = QAction("Results", window)
 
@@ -163,6 +166,7 @@ def _install_settings_menu(window: ApplicationMainWindow, context: RuntimeContex
     window._pose_model_menu = model_menu
     window._pose_model_actions = model_actions
     window._pose_model_group = model_group
+    window._pose_model_current_action = current_action
 
 
 def _session_reference_metadata(window) -> dict:
