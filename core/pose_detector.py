@@ -14,7 +14,7 @@ from typing import Optional
 import numpy as np
 from ultralytics import YOLO
 
-from core.model_config import DEFAULT_POSE_MODEL, get_pose_model, resolve_pose_model_path, validate_pose_model
+from core.model_config import get_pose_model, resolve_pose_model_path, validate_pose_model
 
 
 class LandmarkIndex(IntEnum):
@@ -181,7 +181,7 @@ def _interpolate_extended_landmarks(coco_landmarks: list[PoseLandmark]) -> list[
 
 
 class PoseDetector:
-    """YOLO26 pose detector with a centralized, local-checkpoint configuration."""
+    """YOLO26 pose detector with centralized local-checkpoint configuration."""
 
     def __init__(
         self,
@@ -192,8 +192,7 @@ class PoseDetector:
     ):
         self.model = get_pose_model(model)
         self.model_path = resolve_pose_model_path(model)
-        if not self.model_path.is_file():
-            raise validate_pose_model(model)
+        validate_pose_model(model)
         self._model = YOLO(str(self.model_path))
         self._conf = conf
         self._iou = iou
