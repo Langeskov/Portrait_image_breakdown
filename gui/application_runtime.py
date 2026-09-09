@@ -32,6 +32,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.application_services import ApplicationServices
+from core.model_config import DEFAULT_POSE_MODEL, pose_model_choices, pose_model_label
 from gui.application_window import ApplicationMainWindow
 from gui.field_mode import install_field_mode
 from gui.reference_mode import install_reference_mode
@@ -48,9 +49,10 @@ class RuntimeContext:
     services: ApplicationServices
     calibration_profile: str = "Generic"
     current_path: Optional[str] = None
+    pose_model: str = DEFAULT_POSE_MODEL
 
 
-def _install_settings_menu(window: ApplicationMainWindow) -> None:
+def _install_settings_menu(window: ApplicationMainWindow, context: RuntimeContext) -> None:
     bars = window.findChildren(QToolBar)
     if not bars:
         return
@@ -101,6 +103,42 @@ def _install_settings_menu(window: ApplicationMainWindow) -> None:
     menu.addSeparator()
 
     advanced = menu.addMenu("Advanced")
+
+    model_menu = advanced.addMenu("Pose Model")
+    model_action_group = []
+    for spec in pose_model_choices():
+        action = QAction(spec.label, window)
+        action.setCheckable(True)
+        action.setData(spec.key)
+        action.setChecked(spec.key == context.pose_model)
+        model_action_group.append(action)
+        model_menu.addAction(action)
+
+        def on_model_triggered(checked=False, selected=spec.key):
+            if not checked:
+                return
+            for item in model_action_group:
+                item.setChecked(item.data() == selected)
+            if selected == context.pose_model:
+                return
+            try:
+                window.set_pose_model(selected)
+                context.pose_model = selected
+                context.services = ApplicationServices.create(calibration_profile=context.calibration_profile)
+                model_menu.setTitle(f"Pose Model · {pose_model_label(selected)}")
+            except Exception as exc:
+                QMessageBox.critical(window, "Pose model", f"Unable to switch pose model.\n\n{type(exc).__name__}: {exc}")
+                for item in model_action_group:
+                    item.setChecked(item.data() == context.pose_model)
+
+        action.triggered.connect(on_model_triggered)
+
+    model_menu.setTitle(f"Pose Model · {pose_model_label(context.pose_model)}")
+    model_menu.addSeparator()
+    current_action = QAction(window)
+    current_action.setEnabled(False)
+    model_menu.addAction(current_action)
+
     results = QAction("Results", window)
 
     def show_results() -> None:
@@ -119,6 +157,7 @@ def _install_settings_menu(window: ApplicationMainWindow) -> None:
     window._settings_menu = menu
     window._feedback_action = feedback
     window._advanced_results_action = results
+    window._pose_model_menu = model_menu
 
 
 def _session_reference_metadata(window) -> dict:
@@ -269,7 +308,7 @@ def install_v3_toolbar(window: ApplicationMainWindow, context: RuntimeContext) -
     anchor_action.triggered.connect(open_anchor_calibration)
     bar.addAction(anchor_action)
 
-    _install_settings_menu(window)
+    _install_settings_menu(window, context)
     results_index = next((i for i in range(window._tabs.count()) if window._tabs.tabText(i) == "Results"), -1)
     if results_index >= 0:
         window._tabs.setTabVisible(results_index, False)
@@ -282,6 +321,7 @@ def build_window(services: ApplicationServices) -> tuple[ApplicationMainWindow, 
     window = ApplicationMainWindow(services)
     window._runtime_context = context
     window._calibration_profile = context.calibration_profile
+    context.pose_model = window.pose_model
     install_field_mode(window)
     install_reference_mode(window)
     install_v3_completion(window)
