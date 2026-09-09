@@ -29,7 +29,7 @@ DEFAULT_POSE_MODEL = "x"
 
 
 def get_pose_model(key_or_path: str | None = None) -> PoseModelSpec | str:
-    """Resolve a built-in model key, filename, or arbitrary local checkpoint path."""
+    """Resolve a built-in model key, filename, or arbitrary checkpoint path."""
     value = str(key_or_path or os.getenv("PIB_POSE_MODEL", DEFAULT_POSE_MODEL)).strip()
     for spec in POSE_MODELS:
         if value.lower() in {spec.key, spec.filename.lower()}:
@@ -37,11 +37,11 @@ def get_pose_model(key_or_path: str | None = None) -> PoseModelSpec | str:
     path = Path(value).expanduser()
     if path.is_absolute() or path.parent != Path("."):
         return str(path)
-    return value
+    return str(MODEL_DIR / path.name)
 
 
 def resolve_pose_model_path(key_or_path: str | None = None) -> Path:
-    """Return the local model path expected by the application."""
+    """Return the local checkpoint path expected by the application."""
     resolved = get_pose_model(key_or_path)
     if isinstance(resolved, PoseModelSpec):
         return MODEL_DIR / resolved.filename
