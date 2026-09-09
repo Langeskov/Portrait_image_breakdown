@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QListWidget, QListWidgetItem, QMessageBox, QPushButton, QVBoxLayout, QWidget,
 )
 
+from reverse_engineering.anchor_calibration import estimate_camera_from_anchors
 from reverse_engineering.plane_constraints import PlaneConstraint, PlaneRelation, apply_position_constraint, evaluate_constraint
 from reverse_engineering.reference_pose_generation import generate_composition_aware_pose_target
 from reverse_engineering.reconstruction_session import load_session, save_session
@@ -19,7 +20,7 @@ from reverse_engineering.temporal import TemporalFrameState, TemporalSmoother
 
 
 class PlaneConstraintPanel(QWidget):
-    """UI for positional plane constraints; angular relations remain an API-only primitive until target orientation exists."""
+    """UI for conservative positional plane constraints on the primary subject."""
 
     def __init__(self, workspace, parent=None):
         super().__init__(parent)
@@ -30,7 +31,7 @@ class PlaneConstraintPanel(QWidget):
         root.setSpacing(5)
         title = QLabel("Plane-aware constraints")
         root.addWidget(title)
-        hint = QLabel("用于把人物/物体位置约束到平面或距离平面指定偏移；平行/垂直方向约束等待对象方向模型后启用。")
+        hint = QLabel("把人物/物体位置约束到平面或距离平面指定偏移；方向约束仍保持为 API primitive，不会伪装成位置测量。")
         hint.setWordWrap(True)
         root.addWidget(hint)
         row = QHBoxLayout()
@@ -58,10 +59,16 @@ class PlaneConstraintPanel(QWidget):
         self.refresh_planes()
 
     def refresh_planes(self):
+        current = self.plane.currentData()
+        self.plane.blockSignals(True)
         self.plane.clear()
         for anchor in self.workspace.scene.anchors:
             if getattr(anchor.kind, "value", anchor.kind) == "plane":
                 self.plane.addItem(anchor.name, anchor.anchor_id)
+        if current is not None:
+            index = self.plane.findData(current)
+            if index >= 0: self.plane.setCurrentIndex(index)
+        self.plane.blockSignals(False)
 
     def _add(self):
         plane_id = self.plane.currentData()
@@ -125,6 +132,71 @@ class PlaneConstraintPanel(QWidget):
             self._constraints.append(c)
             self._list.addItem(QListWidgetItem(f"{c.relation.label}: {c.plane_anchor_id} · {c.offset_m:+.2f} m"))
         self.workspace.scene.plane_constraints = [c.to_dict() for c in self._constraints]
+        self.refresh_planes()
+
+
+class AnchorCameraHypothesisPanel(QWidget):
+    """Cross-check explicit anchor PnP against the active scene camera without mutating it."""
+
+    def __init__(self, workspace, parent=None):
+        super().__init__(parent)
+        self.workspace = workspace
+        self._last_result = None
+        root = QVBoxLayout(self)
+        root.setContentsMargins(8, 6, 8, 6)
+        root.setSpacing(5)
+        title = QLabel("Anchored camera cross-check")
+        root.addWidget(title)
+        hint = QLabel("使用当前已绑定的 2D/3D anchors 做独立 PnP 假设，并与当前 SceneCamera 分开显示。不会自动覆盖活动相机。")
+        hint.setWordWrap(True)
+        root.addWidget(hint)
+        row = QHBoxLayout()
+        solve = QPushButton("Solve from anchors")
+        solve.clicked.connect(self.solve)
+        row.addWidget(solve)
+        self.status = QLabel("No anchor solve yet")
+        self.status.setWordWrap(True)
+        row.addWidget(self.status, 1)
+        root.addLayout(row)
+        self.position = QLabel("Camera position: —")
+        self.rmse = QLabel("Reprojection RMSE: —")
+        self.delta = QLabel("Active camera: unchanged")
+        for label in (self.position, self.rmse, self.delta):
+            label.setStyleSheet("color:#475569;")
+            label.setWordWrap(True)
+            root.addWidget(label)
+
+    def solve(self):
+        image = getattr(self.workspace, "_source_image", None)
+        if image is None:
+            self.status.setText("需要先加载当前照片。")
+            return None
+        height, width = image.shape[:2]
+        camera = self.workspace.scene.camera
+        result = estimate_camera_from_anchors(
+            self.workspace.scene.anchors,
+            width,
+            height,
+            focal_length_mm=float(camera.focal_length_mm),
+            sensor_width_mm=float(camera.sensor_width_mm),
+        )
+        self._last_result = result
+        if not result.success:
+            self.status.setText(result.message)
+            self.position.setText("Camera position: —")
+            self.rmse.setText("Reprojection RMSE: —")
+            self.delta.setText("Active camera: unchanged")
+            return result
+        px, py, pz = result.position
+        self.status.setText(result.message)
+        self.position.setText(f"Camera position hypothesis: ({px:.2f}, {py:.2f}, {pz:.2f}) m")
+        self.rmse.setText(f"Reprojection RMSE: {result.reprojection_rmse_px:.2f} px · {result.point_count} correspondences")
+        self.delta.setText(
+            f"Active camera: unchanged · reference hypothesis: {getattr(self.workspace, '_hypothesis', None).confidence:.0%} confidence"
+            if getattr(self.workspace, "_hypothesis", None) is not None
+            else "Active camera: unchanged · no reference-camera hypothesis yet"
+        )
+        return result
 
 
 class TemporalWorker(QThread):
@@ -182,20 +254,27 @@ class TemporalWorkspace(QWidget):
         super().__init__(parent)
         self.worker = None
         root = QVBoxLayout(self); root.setContentsMargins(14, 12, 14, 12)
-        root.addWidget(QLabel("V3 Temporal Reconstruction"))
-        hint = QLabel("视频序列模式：连续帧人体关键点做时间平滑；TemporalSmoother 同时支持相机状态输入，但本 UI 不会把单帧视频伪装成绝对相机测量。")
+        title = QLabel("V3 Temporal Reconstruction"); title.setStyleSheet("font-size:14pt; font-weight:600;"); root.addWidget(title)
+        hint = QLabel("视频序列模式：连续帧人体关键点做时间平滑；不会把单帧视频伪装成绝对相机运动。")
         hint.setWordWrap(True); root.addWidget(hint)
         bar = QHBoxLayout(); open_button = QPushButton("Open video"); open_button.clicked.connect(self._open); bar.addWidget(open_button)
         self.alpha = QDoubleSpinBox(); self.alpha.setRange(0.05, 1.0); self.alpha.setSingleStep(0.05); self.alpha.setValue(0.35); bar.addWidget(QLabel("Smoothing")); bar.addWidget(self.alpha)
+        stop_button = QPushButton("Stop"); stop_button.clicked.connect(self._stop); bar.addWidget(stop_button)
         self.status = QLabel("Idle"); bar.addWidget(self.status, 1); root.addLayout(bar)
         self.frame = QLabel("Frame: —"); self.confidence = QLabel("Temporal confidence: —"); self.visible = QLabel("Visible landmarks: —")
         root.addWidget(self.frame); root.addWidget(self.confidence); root.addWidget(self.visible); root.addStretch(1)
 
+    def _stop(self):
+        if self.worker and self.worker.isRunning():
+            self.worker.stop_requested = True
+            self.status.setText("Stopping…")
+
     def _open(self):
         path, _ = QFileDialog.getOpenFileName(self, "Select video", "", "Video (*.mp4 *.mov *.avi *.mkv)")
         if not path: return
+        self._stop()
         if self.worker and self.worker.isRunning():
-            self.worker.stop_requested = True; self.worker.wait(1000)
+            self.worker.wait(1000)
         self.worker = TemporalWorker(path, alpha=self.alpha.value())
         self.worker.progressed.connect(self._progress); self.worker.completed.connect(lambda: self.status.setText("Sequence complete")); self.worker.failed.connect(lambda text: self.status.setText(text))
         self.status.setText(Path(path).name); self.worker.start()
@@ -203,9 +282,22 @@ class TemporalWorkspace(QWidget):
     def _progress(self, index, confidence, visible):
         self.frame.setText(f"Frame: {int(index)}"); self.confidence.setText(f"Temporal confidence: {confidence:.0%}"); self.visible.setText(f"Visible landmarks: {visible}/17")
 
+    def close_worker(self):
+        self._stop()
+        if self.worker and self.worker.isRunning():
+            self.worker.wait(1500)
+
+
+def _workspace_reference_metadata(window):
+    reference = getattr(window, "_reference_mode", None)
+    return {
+        "reference_image_path": getattr(reference, "_reference_path", None) if reference is not None else None,
+        "reference_active": bool(getattr(reference, "_reference", None)) if reference is not None else False,
+    }
+
 
 def install_v3_completion(window):
-    """Install final v3 tools without replacing the existing v2/v2.5 analysis engine."""
+    """Install and connect the complete v3 desktop workflow."""
     bars = window.findChildren(__import__("PySide6.QtWidgets", fromlist=["QToolBar"]).QToolBar)
     bar = bars[0] if bars else None
 
@@ -214,7 +306,15 @@ def install_v3_completion(window):
         if not path: return
         panel = getattr(window._w3, "_plane_constraints_panel", None)
         constraints = panel.to_dicts() if panel is not None else getattr(window._w3.scene, "plane_constraints", [])
-        save_session(path, window._w3.scene, image_path=getattr(window, "_current_path", None), image_shape=window._img.shape[:2][::-1] if window._img is not None else None, plane_constraints=constraints)
+        metadata = _workspace_reference_metadata(window)
+        save_session(
+            path,
+            window._w3.scene,
+            image_path=getattr(window, "_current_path", None),
+            image_shape=window._img.shape[:2][::-1] if window._img is not None else None,
+            metadata=metadata,
+            plane_constraints=constraints,
+        )
         window._st.showMessage(f"Saved reconstruction session · {Path(path).name}")
 
     def load_action():
@@ -222,10 +322,25 @@ def install_v3_completion(window):
         if not path: return
         try:
             scene, data = load_session(path)
-            window._w3.scene = scene; window._w3._view.scene = scene
-            window._w3._view.update(); window._w3._sync_controls(); window._w3._refresh_projection()
+            window._w3.scene = scene
+            window._w3._view.set_scene(scene)
+            window._w3._sync_controls()
+            window._w3._populate_people()
+            window._w3._populate_anchors()
+            window._w3._populate_candidates()
+            window._w3._refresh_projection()
             panel = getattr(window._w3, "_plane_constraints_panel", None)
-            if panel is not None: panel.from_dicts(data.get("plane_constraints", []))
+            if panel is not None:
+                panel.from_dicts(data.get("plane_constraints", []))
+            anchor_panel = getattr(window._w3, "_anchor_camera_hypothesis", None)
+            if anchor_panel is not None:
+                anchor_panel.solve()
+            metadata = dict(data.get("metadata", {}))
+            reference = getattr(window, "_reference_mode", None)
+            reference_path = metadata.get("reference_image_path")
+            if reference is not None and reference_path:
+                reference.load_reference_path(reference_path)
+            window._current_path = data.get("image", {}).get("path") or getattr(window, "_current_path", None)
             window._st.showMessage(f"Loaded reconstruction session · {Path(path).name}")
         except Exception as exc:
             QMessageBox.critical(window, "Load session failed", f"{type(exc).__name__}: {exc}")
@@ -244,6 +359,15 @@ def install_v3_completion(window):
             else: layout.insertWidget(2, panel)
         window._w3._plane_constraints_panel = panel
 
+        anchor_panel = AnchorCameraHypothesisPanel(window._w3)
+        if scrolls:
+            inner = scrolls[0].widget(); layout = inner.layout()
+            constraint_index = layout.indexOf(panel)
+            layout.insertWidget(constraint_index + 1, anchor_panel)
+        window._w3._anchor_camera_hypothesis = anchor_panel
+
+        window._w3.camera_edited.connect(anchor_panel.solve)
+
     ref = getattr(window, "_reference_mode", None)
     if ref is not None:
         target_box = QGroupBox("Generated composition-aware pose target"); tl = QVBoxLayout(target_box)
@@ -256,10 +380,15 @@ def install_v3_completion(window):
             from reverse_engineering.reference_reconstruction import build_reference_composition
             current = build_reference_composition(ref._current_pose, width, height)
             result = generate_composition_aware_pose_target(ref._reference_pose.landmarks, ref._reference, current)
-            if not result.success: label.setText(result.message); return
+            if not result.success:
+                label.setText(result.message); return
             target = result.target
+            ref._last_target = target
+            ref._sync_canvas_target()
             visible = target.visible_count if target is not None else 0
-            label.setText(f"{result.message} · target center {target.subject_center[0]/width:.0%}, {target.subject_center[1]/height:.0%} · {visible}/17 landmarks")
+            label.setText(
+                f"{result.message} · target center {target.subject_center[0]/width:.0%}, {target.subject_center[1]/height:.0%} · {visible}/17 landmarks"
+            )
         button.clicked.connect(generate); ref.layout().addWidget(target_box)
 
     temporal = TemporalWorkspace(window); window._tabs.addTab("Temporal"); window._ws.addWidget(temporal); window._temporal_workspace = temporal
