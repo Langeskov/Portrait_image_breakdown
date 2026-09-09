@@ -1,43 +1,68 @@
 # Portrait Image Breakdown
 
-Photography analysis and camera reverse-engineering for portrait work.
+面向人像摄影的照片分析与相机反推工具。
 
-A native **PySide6** desktop application that combines 2D pose/composition analysis with conservative camera estimation, editable 3D scene reconstruction, and reference-image shooting guidance.
+这是一个原生 **PySide6** 桌面应用，将 2D 姿态/构图分析、保守的相机参数估计、可编辑的 3D 场景重建，以及参考图拍摄指导整合在一起。
 
-## What it does
+## 功能概览
 
 ```text
-Reference image ─┐
-                 ├─→ composition / pose deltas ─→ shooting target
-Current image  ──┘
-                        │
-                        ├─→ 2D overlays
-                        ├─→ camera candidate family
-                        ├─→ editable 3D scene
-                        ├─→ image-space anchors / PnP cross-check
-                        └─→ reference camera hypothesis
+参考图 ─────┐
+            ├─→ 构图 / 姿态偏差 ─→ 拍摄目标
+当前图 ─────┘
+                     │
+                     ├─→ 2D 叠加层
+                     ├─→ 相机候选解
+                     ├─→ 可编辑 3D 场景
+                     ├─→ 图像空间锚点 / PnP 交叉验证
+                     └─→ 参考相机假设
 ```
 
-The application deliberately reports **evidence, estimates, and unknowns separately**. A single photograph cannot uniquely determine focal length, camera distance, or metric room geometry, so the system keeps ambiguous quantities as candidate families or hypotheses instead of presenting them as facts.
+应用会明确区分 **Observed（观测）**、**Estimated（估计）** 和 **Unknown（未知）**。单张照片无法唯一确定焦距、相机距离或房间的绝对尺度，因此程序会保留候选解或假设，不把它们伪装成精确测量值。
 
-## Current V3 workflow
+## 当前 V3 工作流
 
-1. Load a reference image and a current image.
-2. Compare pose, subject scale, center, and framing.
-3. Use the 2D target overlay to guide composition and pose changes.
-4. Open **3D Reverse Engineering** to edit Camera and Scene anchors.
-5. Bind image-space points or plane evidence to selected scene anchors.
-6. Inspect the anchor-based PnP cross-check and **Reference Camera Hypothesis**.
-7. Add horizontal / vertical / free reference-line constraints and optional roll correction.
-8. Apply plane-aware positional constraints and inspect the live 2D projection.
-9. Save or restore a versioned `.pibr.json` reconstruction session.
-10. Use the Temporal workspace for conservative pose smoothing on sampled sequences.
+1. 打开参考图和当前照片。
+2. 比较姿态、主体比例、中心位置和取景。
+3. 使用 2D 目标叠加层调整构图与姿态。
+4. 进入 **3D 反向工程**，编辑 Camera 与 Scene anchors。
+5. 将图像空间点或平面证据绑定到场景锚点。
+6. 查看基于锚点的 PnP 交叉验证和 **Reference Camera Hypothesis**。
+7. 添加水平 / 垂直 / 自由参考线约束，可选相机 roll 修正。
+8. 应用平面位置约束并实时查看 2D 投影。
+9. 保存或恢复版本化 `.pibr.json` 重建会话。
+10. 使用 Temporal 工作区对采样序列进行保守的姿态平滑。
 
-The 3D inspector keeps **Camera** and **Scene anchors** near the top, while **Scene people** stays at the bottom. The live **2D Projection Preview** highlights the selected plane or point to keep image-space evidence tied to the scene model.
+3D 检查器会把 **Camera** 和 **Scene anchors** 放在前面，把 **Scene people** 放到底部；**2D Projection Preview** 会高亮当前选中的点或平面，让图像证据始终对应到场景模型。
 
-## Architecture
+## 图片导入
 
-The repository separates application composition, GUI presentation, analysis, and reconstruction mathematics:
+主画布空闲时可直接：
+
+- 点击画布打开图片选择器；
+- 将图片文件拖入画布后直接开始分析。
+
+支持 `.jpg`、`.jpeg`、`.png`、`.bmp`、`.webp`。
+
+工具栏中的 **打开图片** 仍然提供传统文件选择方式；数据集模式则可以选择一个图片文件夹并逐张切换。
+
+## 项目结构
+
+```text
+core/                  2D 分析、姿态、构图、摄影提示
+reverse_engineering/   相机几何、重建、参考推理
+gui/                   桌面界面与 V3 工作区
+model/                 本地 YOLO 姿态模型权重（被 gitignore）
+tests/                 确定性回归测试
+docs/                  架构与领域说明
+main.py                桌面 / CLI 入口
+pyproject.toml         Python 包元数据与依赖
+uv.lock                锁定环境
+```
+
+## 架构
+
+仓库将应用组装、GUI 展示、分析逻辑和重建数学分开：
 
 ```text
 main.py
@@ -51,23 +76,23 @@ main.py
 
 GUI / V3
   gui.reverse_3d_v3
-      ├─ gui.reverse_3d_workspace   # 3D inspector + anchor/projection workspace
-      ├─ gui.reverse_3d             # low-level 3D scene/projection rendering
+      ├─ gui.reverse_3d_workspace   # 3D 检查器 + 锚点/投影工作区
+      ├─ gui.reverse_3d             # 底层 3D 场景/投影绘制
       ├─ gui.reverse_3d_reference_line
-      │   └─ reference-line / camera-match controls
+      │   └─ 参考线 / 相机匹配控制
       └─ gui.reference_line_calibration
-          └─ interactive line evidence + roll correction
+          └─ 交互式线段证据 + roll 修正
 
-Reverse engineering
+反向工程
   reverse_engineering.engine
-      └─ reverse_engineering.engine_v2   # current 2.5 engine implementation
-          ├─ camera / geometry / projection
-          ├─ depth / support-plane evidence
-          ├─ image-space refinement
-          ├─ multi-person layout
-          └─ shooting-technique scoring
+      └─ reverse_engineering.engine_v2   # 当前 2.5 engine 实现
+          ├─ 相机 / 几何 / 投影
+          ├─ 深度 / 支撑平面证据
+          ├─ 图像空间优化
+          ├─ 多人物布局
+          └─ 拍摄技术评分
 
-Reference reconstruction
+参考重建
   reference_reconstruction
       └─ reference_anchor
   reference_camera
@@ -76,77 +101,63 @@ Reference reconstruction
       └─ scene / scene_anchors
 ```
 
-A more detailed dependency and cleanup map is kept in [`docs/DEPENDENCY_GRAPH.md`](docs/DEPENDENCY_GRAPH.md).
+更详细的依赖关系和清理路线见 [`docs/DEPENDENCY_GRAPH.md`](docs/DEPENDENCY_GRAPH.md)。
 
-## Repository layout
+## 姿态模型配置
 
-```text
-core/                  2D analysis, pose, composition, photographer cues
-reverse_engineering/   camera geometry, reconstruction, reference reasoning
-gui/                   desktop UI and V3 workspaces
-model/                 local YOLO pose checkpoints (ignored by git)
-tests/                 deterministic regression contracts
-docs/                  architecture and domain notes
-main.py                desktop / CLI entry point
-pyproject.toml         Python package metadata and dependencies
-uv.lock                locked environment
-```
-
-## Pose model configuration
-
-Pose detection is centralized in `core/model_config.py`. The default is **YOLO26x Pose** and the application expects the checkpoint at:
+姿态检测统一由 `core/model_config.py` 管理。默认模型为 **YOLO26x Pose**，程序默认查找：
 
 ```text
 model/yolo26x-pose.pt
 ```
 
-The built-in choices are `n`, `s`, `m`, `l`, and `x`. A bare custom filename is resolved inside `model/`, while an explicit path can point to another checkpoint.
+内置选择为 `n`、`s`、`m`、`l` 和 `x`。只写模型文件名时会在 `model/` 中查找；显式路径则可以指向其他 checkpoint。
 
-For development, set `PIB_POSE_MODEL` before starting the application. Examples:
+开发时可在启动前设置 `PIB_POSE_MODEL`：
 
 ```bash
 PIB_POSE_MODEL=x uv run python main.py
 PIB_POSE_MODEL=yolo26m-pose.pt uv run python main.py
 ```
 
-The first use of a built-in checkpoint downloads the official weight into `model/` when it is missing. This keeps model assets out of the repository while making a clean checkout self-bootstrapping when network access is available.
+首次使用内置 checkpoint 时，如果本地不存在对应权重，程序会从官方来源下载到 `model/`。模型文件本身不进入仓库；只要网络可用，干净 checkout 即可完成自启动配置。
 
-Ultralytics currently provides YOLO26 Pose checkpoints in all five scales, using the standard 17-keypoint COCO pose format. See [`model/README.md`](model/README.md) for the local checkpoint layout.
+Ultralytics 当前为 YOLO26 Pose 提供五种尺寸，并使用标准 17 点 COCO 姿态格式。模型目录说明见 [`model/README.md`](model/README.md)。
 
-## Installation
+## 安装与运行
 
-Python **3.12+** is required.
+需要 Python **3.12+**。
 
 ```bash
 uv sync
 uv run python main.py
 ```
 
-The deterministic test suite can be run with:
+运行确定性测试：
 
 ```bash
 uv run pytest
 ```
 
-Model-backed end-to-end checks may require local YOLO weights and a suitable runtime environment; the regression suite is intentionally designed not to depend on network services.
+依赖真实 YOLO 权重的端到端检查可能需要本地模型文件和合适的运行环境；回归测试刻意不依赖网络服务。
 
-## Evidence rules
+## 证据规则
 
-- **Observed** — directly supported by pixels, EXIF, or explicit user input.
-- **Estimated** — inferred from pose, geometry, priors, depth, or solver output.
-- **Unknown** — insufficient evidence; it should not be treated as measured.
+- **Observed / 观测**：直接由像素、EXIF 或用户输入支持。
+- **Estimated / 估计**：由姿态、几何关系、先验、深度或求解器推断。
+- **Unknown / 未知**：证据不足，不应当作实测值。
 
-Important examples:
+重要例子：
 
-- focal length and distance are a candidate family, not a uniquely solved pair;
-- relative monocular depth is used as a soft ranking signal, not metric room scale;
-- camera roll is accepted only from independent scene-line evidence;
-- reference-camera output is a delta/hypothesis and does not silently replace the active SceneCamera.
+- focal length 与 distance 是候选族，而不是唯一解；
+- 单目相对深度只作为软排序信号，不代表房间的绝对尺度；
+- camera roll 只有在有独立场景线证据时才接受；
+- reference-camera 输出是 delta / hypothesis，不会静默替换当前 SceneCamera。
 
-## Status
+## 状态
 
-**V2.5:** functionally complete for the current deterministic camera-analysis pipeline.
+**V2.5：** 当前确定性相机分析流水线已经功能完整。
 
-**V3 Phase 2.5:** the current desktop reference-reconstruction loop is functionally complete, including reference targets, multi-person relative layout, editable scene anchors, image-space calibration, anchor PnP cross-checks, reference camera hypotheses, reference-line constraints, plane-aware constraints, reconstruction sessions, and temporal pose smoothing.
+**V3 Phase 2.5：** 当前桌面端参考重建闭环已经功能完整，包括参考目标、多人物相对布局、可编辑场景锚点、图像空间标定、锚点 PnP 交叉验证、参考相机假设、参考线约束、平面约束、重建会话以及 Temporal 姿态平滑。
 
-Future work focuses on richer whole-body target solving, multi-observation evidence records, sampled per-frame camera solving, and optional live camera/tether integration.
+后续工作主要集中于更丰富的全身目标求解、多观测证据记录、逐帧相机求解，以及可选的实时相机 / tether 集成。
