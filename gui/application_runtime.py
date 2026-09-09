@@ -11,7 +11,7 @@ from typing import Optional
 import urllib.parse
 
 from PySide6.QtCore import QUrl
-from PySide6.QtGui import QAction, QDesktopServices
+from PySide6.QtGui import QAction, QActionGroup, QDesktopServices
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -104,38 +104,41 @@ def _install_settings_menu(window: ApplicationMainWindow, context: RuntimeContex
 
     advanced = menu.addMenu("Advanced")
 
-    model_menu = advanced.addMenu("Pose Model")
-    model_action_group = []
+    model_menu = advanced.addMenu(f"Pose Model · {pose_model_label(context.pose_model)}")
+    model_actions = []
+    model_group = QActionGroup(window)
+    model_group.setExclusive(True)
     for spec in pose_model_choices():
         action = QAction(spec.label, window)
         action.setCheckable(True)
         action.setData(spec.key)
         action.setChecked(spec.key == context.pose_model)
-        model_action_group.append(action)
+        model_group.addAction(action)
+        model_actions.append(action)
         model_menu.addAction(action)
 
-        def on_model_triggered(checked=False, selected=spec.key):
-            if not checked:
-                return
-            for item in model_action_group:
-                item.setChecked(item.data() == selected)
-            if selected == context.pose_model:
-                return
-            try:
-                window.set_pose_model(selected)
-                context.pose_model = selected
-                context.services = ApplicationServices.create(calibration_profile=context.calibration_profile)
-                model_menu.setTitle(f"Pose Model · {pose_model_label(selected)}")
-            except Exception as exc:
-                QMessageBox.critical(window, "Pose model", f"Unable to switch pose model.\n\n{type(exc).__name__}: {exc}")
-                for item in model_action_group:
-                    item.setChecked(item.data() == context.pose_model)
+    def on_model_triggered(action: QAction):
+        selected = str(action.data())
+        if selected == context.pose_model:
+            return
+        try:
+            window.set_pose_model(selected)
+            context.pose_model = selected
+            model_menu.setTitle(f"Pose Model · {pose_model_label(selected)}")
+            window._st.showMessage(f"Pose model: {window.pose_model_name}")
+        except Exception as exc:
+            QMessageBox.critical(
+                window,
+                "Pose model",
+                f"Unable to switch pose model.\n\n{type(exc).__name__}: {exc}",
+            )
+            current = next((item for item in model_actions if str(item.data()) == context.pose_model), None)
+            if current is not None:
+                current.setChecked(True)
 
-        action.triggered.connect(on_model_triggered)
-
-    model_menu.setTitle(f"Pose Model · {pose_model_label(context.pose_model)}")
+    model_group.triggered.connect(on_model_triggered)
     model_menu.addSeparator()
-    current_action = QAction(window)
+    current_action = QAction(f"Current: {pose_model_label(context.pose_model)}", window)
     current_action.setEnabled(False)
     model_menu.addAction(current_action)
 
@@ -158,6 +161,8 @@ def _install_settings_menu(window: ApplicationMainWindow, context: RuntimeContex
     window._feedback_action = feedback
     window._advanced_results_action = results
     window._pose_model_menu = model_menu
+    window._pose_model_actions = model_actions
+    window._pose_model_group = model_group
 
 
 def _session_reference_metadata(window) -> dict:
