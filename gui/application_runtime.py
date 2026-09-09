@@ -1,17 +1,34 @@
-"""Explicit application composition for the desktop GUI."""
+"""Application composition for the desktop GUI.
+
+Runtime owns application-level actions such as Settings and session I/O.
+Reconstruction-specific widgets are installed by ``v3_completion``.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 import urllib.parse
-from pathlib import Path
 
 from PySide6.QtCore import QUrl
 from PySide6.QtGui import QAction, QDesktopServices
 from PySide6.QtWidgets import (
-    QComboBox, QDialog, QDialogButtonBox, QFormLayout, QHBoxLayout,
-    QLabel, QLineEdit, QMenu, QMessageBox, QPlainTextEdit, QToolBar,
-    QToolButton, QVBoxLayout, QWidget, QFileDialog, QPushButton,
+    QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QFormLayout,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMenu,
+    QMessageBox,
+    QPlainTextEdit,
+    QPushButton,
+    QToolBar,
+    QToolButton,
+    QVBoxLayout,
+    QWidget,
+    QFileDialog,
 )
 
 from core.application_services import ApplicationServices
@@ -35,18 +52,19 @@ class RuntimeContext:
 
 
 def _install_real_3d_workspace(window: ApplicationMainWindow) -> None:
+    """Replace the legacy placeholder workspace with the canonical V3 workspace."""
     old = window._w3
     index = window._ws.indexOf(old)
     replacement = Reverse3DWorkspace(window)
-    if index >= 0:
-        window._ws.removeWidget(old)
-        old.deleteLater()
-        window._ws.insertWidget(index, replacement)
-        window._w3 = replacement
+    if index < 0:
+        return
+    window._ws.removeWidget(old)
+    old.deleteLater()
+    window._ws.insertWidget(index, replacement)
+    window._w3 = replacement
 
 
 def _install_settings_menu(window: ApplicationMainWindow) -> None:
-    """Expose advanced/debug functions without consuming normal navigation space."""
     bars = window.findChildren(QToolBar)
     if not bars:
         return
@@ -66,9 +84,7 @@ def _install_settings_menu(window: ApplicationMainWindow) -> None:
         form = QFormLayout()
         subject = QLineEdit("Portrait Image Breakdown feedback")
         body = QPlainTextEdit()
-        body.setPlaceholderText(
-            "请描述遇到的问题、复现步骤、期望结果，以及任何有帮助的日志信息。"
-        )
+        body.setPlaceholderText("请描述问题、复现步骤、期望结果，以及任何有帮助的日志信息。")
         form.addRow("Subject", subject)
         form.addRow("Details", body)
         layout.addLayout(form)
@@ -129,8 +145,7 @@ def _session_reference_metadata(window) -> dict:
 
 def _save_reconstruction_session(window) -> None:
     path, _ = QFileDialog.getSaveFileName(
-        window, "Save reconstruction session", "",
-        "Reconstruction Session (*.pibr.json)"
+        window, "Save reconstruction session", "", "Reconstruction Session (*.pibr.json)"
     )
     if not path:
         return
@@ -153,8 +168,7 @@ def _save_reconstruction_session(window) -> None:
 
 def _load_reconstruction_session(window) -> None:
     path, _ = QFileDialog.getOpenFileName(
-        window, "Load reconstruction session", "",
-        "Reconstruction Session (*.pibr.json)"
+        window, "Load reconstruction session", "", "Reconstruction Session (*.pibr.json)"
     )
     if not path:
         return
@@ -167,14 +181,17 @@ def _load_reconstruction_session(window) -> None:
         window._w3._populate_anchors()
         window._w3._populate_candidates()
         window._w3._refresh_projection()
+
         panel = getattr(window._w3, "_plane_constraints_panel", None)
         if panel is not None:
             panel.from_dicts(data.get("plane_constraints", []))
             panel.sync_from_scene()
+
         anchor_panel = getattr(window._w3, "_anchor_camera_hypothesis", None)
         if anchor_panel is not None:
-            anchor_panel._refresh_plane_choices()
+            anchor_panel.refresh_plane_choices()
             anchor_panel.solve()
+
         stored_image = data.get("image", {}).get("path")
         if stored_image:
             window._current_path = stored_image
@@ -190,22 +207,18 @@ def _load_reconstruction_session(window) -> None:
 
 
 def _install_temporal_session_controls(window) -> None:
-    """Keep exactly one Save/Load Session entry point inside Temporal."""
+    """Expose the single session entry point inside Temporal."""
     temporal = getattr(window, "_temporal_workspace", None)
     if temporal is None:
         return
-    for bar in window.findChildren(QToolBar):
-        for action in list(bar.actions()):
-            if action.text() in {"Save Session", "Load Session"}:
-                bar.removeAction(action)
-    session_box = QWidget(temporal)
-    layout = QVBoxLayout(session_box)
+    box = QWidget(temporal)
+    layout = QVBoxLayout(box)
     layout.setContentsMargins(0, 10, 0, 0)
     layout.setSpacing(5)
     title = QLabel("Reconstruction session")
     title.setStyleSheet("font-size:11pt; font-weight:600;")
     layout.addWidget(title)
-    hint = QLabel("Save / Load preserves the editable V3 reconstruction scene, anchors, plane constraints and session metadata.")
+    hint = QLabel("Save / Load preserves the editable V3 scene, anchors, plane constraints and session metadata.")
     hint.setWordWrap(True)
     hint.setStyleSheet("color:#64748B;")
     layout.addWidget(hint)
@@ -214,12 +227,14 @@ def _install_temporal_session_controls(window) -> None:
     load_button = QPushButton("Load Session")
     save_button.clicked.connect(lambda: _save_reconstruction_session(window))
     load_button.clicked.connect(lambda: _load_reconstruction_session(window))
-    row.addWidget(save_button); row.addWidget(load_button); row.addStretch(1)
+    row.addWidget(save_button)
+    row.addWidget(load_button)
+    row.addStretch(1)
     layout.addLayout(row)
     root = temporal.layout()
     if root is not None:
-        root.addWidget(session_box)
-    window._temporal_session_controls = session_box
+        root.addWidget(box)
+    window._temporal_session_controls = box
 
 
 def install_v3_toolbar(window: ApplicationMainWindow, context: RuntimeContext) -> None:
@@ -228,16 +243,21 @@ def install_v3_toolbar(window: ApplicationMainWindow, context: RuntimeContext) -
         return
     bar = bars[0]
     bar.addWidget(QLabel("  Calibration: "))
-    combo = QComboBox(); combo.addItems(list(BUILTIN_PROFILES.keys())); combo.setCurrentText(context.calibration_profile)
+    combo = QComboBox()
+    combo.addItems(list(BUILTIN_PROFILES.keys()))
+    combo.setCurrentText(context.calibration_profile)
 
     def on_profile_changed(name):
         context.calibration_profile = name or "Generic"
         window.set_calibration_profile(context.calibration_profile)
         if window._current_path:
             window.load_image(window._current_path)
-    combo.currentTextChanged.connect(on_profile_changed); bar.addWidget(combo)
+
+    combo.currentTextChanged.connect(on_profile_changed)
+    bar.addWidget(combo)
 
     anchor_action = QAction("Anchor Calibration", window)
+
     def open_anchor_calibration():
         image = window.current_image
         if image is None:
@@ -250,21 +270,18 @@ def install_v3_toolbar(window: ApplicationMainWindow, context: RuntimeContext) -
             parent=window,
         )
         dialog.exec()
-
-        # The dialog edits the exact same SceneModel used by the V3 workspace.
-        # Immediately propagate its calibrated plane evidence into the constraint
-        # panel and refresh both 3D and 2D projection overlays.
         panel = getattr(window._w3, "_plane_constraints_panel", None)
         if panel is not None:
             panel.sync_from_scene()
         anchor_panel = getattr(window._w3, "_anchor_camera_hypothesis", None)
         if anchor_panel is not None:
-            anchor_panel._refresh_plane_choices()
+            anchor_panel.refresh_plane_choices()
             anchor_panel.solve()
         window._w3._populate_anchors()
         window._w3.refresh_scene_view()
 
-    anchor_action.triggered.connect(open_anchor_calibration); bar.addAction(anchor_action)
+    anchor_action.triggered.connect(open_anchor_calibration)
+    bar.addAction(anchor_action)
 
     _install_settings_menu(window)
     results_index = next((i for i in range(window._tabs.count()) if window._tabs.tabText(i) == "Results"), -1)
