@@ -8,7 +8,7 @@ import urllib.parse
 from PySide6.QtCore import QUrl
 from PySide6.QtGui import QAction, QDesktopServices
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QHBoxLayout,
+    QComboBox, QDialog, QDialogButtonBox, QFormLayout, QHBoxLayout,
     QLabel, QLineEdit, QMenu, QMessageBox, QPlainTextEdit, QToolBar,
     QToolButton, QVBoxLayout, QWidget, QFileDialog, QPushButton,
 )
@@ -101,7 +101,7 @@ def _install_settings_menu(window: ApplicationMainWindow) -> None:
     results = QAction("Results", window)
 
     def show_results() -> None:
-        index = window._ws.indexOf(window._wr)
+        index = getattr(window, "_results_tab_index", -1)
         if index < 0:
             return
         window._ws.setCurrentIndex(index)
@@ -175,24 +175,23 @@ def _load_reconstruction_session(window) -> None:
         stored_image = data.get("image", {}).get("path")
         if stored_image:
             window._current_path = stored_image
+        reference = getattr(window, "_reference_mode", None)
+        reference_path = dict(data.get("metadata", {})).get("reference_image_path")
+        if reference is not None and reference_path:
+            loader = getattr(reference, "load_reference_path", None)
+            if loader is not None:
+                loader(reference_path)
         window._st.showMessage(f"Loaded reconstruction session · {path.rsplit('/', 1)[-1]}")
     except Exception as exc:
         QMessageBox.critical(window, "Load session failed", f"{type(exc).__name__}: {exc}")
 
 
 def _install_temporal_session_controls(window) -> None:
-    """Move Save/Load Session from the toolbar into the Temporal workspace."""
+    """Keep Save/Load Session inside Temporal instead of the global toolbar."""
     temporal = getattr(window, "_temporal_workspace", None)
     if temporal is None:
         return
-
-    bars = window.findChildren(QToolBar)
-    if bars:
-        bar = bars[0]
-        for action in list(bar.actions()):
-            if action.text() in {"Save Session", "Load Session"}:
-                bar.removeAction(action)
-
+    # v3_completion no longer owns toolbar actions, so only install the page controls here.
     session_box = QWidget(temporal)
     layout = QVBoxLayout(session_box)
     layout.setContentsMargins(0, 10, 0, 0)
@@ -227,22 +226,6 @@ def install_v3_toolbar(window: ApplicationMainWindow, context: RuntimeContext) -
     if not bars:
         return
     bar = bars[0]
-    reverse_toggle = QCheckBox("Reverse Evidence")
-
-    def update_reverse_overlay(_state=0):
-        window._w2.set_overlay_options(
-            skeleton=window._chk_skeleton.isChecked(),
-            thirds=window._chk_thirds.isChecked(),
-            center=window._chk_center.isChecked(),
-            bbox=window._chk_bbox.isChecked(),
-            visual_weight=window._chk_vweight.isChecked(),
-            headroom=window._chk_headroom.isChecked(),
-            reference_target=window._chk_reference_target.isChecked(),
-            reverse=reverse_toggle.isChecked(),
-        )
-
-    reverse_toggle.stateChanged.connect(update_reverse_overlay)
-    bar.addWidget(reverse_toggle)
     bar.addWidget(QLabel("  Calibration: "))
     combo = QComboBox()
     combo.addItems(list(BUILTIN_PROFILES.keys()))
@@ -277,15 +260,13 @@ def install_v3_toolbar(window: ApplicationMainWindow, context: RuntimeContext) -
     bar.addAction(anchor_action)
 
     _install_settings_menu(window)
-    # Results stays instantiated and updated for diagnostics, but its tab is hidden from normal users.
     results_index = next(
         (i for i in range(window._tabs.count()) if window._tabs.tabText(i) == "Results"),
         -1,
     )
     if results_index >= 0:
         window._tabs.setTabVisible(results_index, False)
-        window._results_tab_index = results_index
-
+    window._results_tab_index = results_index
     _install_temporal_session_controls(window)
 
 
