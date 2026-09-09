@@ -27,6 +27,9 @@ class Reverse3DWorkspace(_BaseReverse3DWorkspace):
         super().__init__(parent)
         install_visual_camera_match(self)
         install_reference_line_calibration(self)
+        panel = getattr(self, "_reference_line_calibration", None)
+        if panel is not None:
+            panel.evidence_changed.connect(self._on_reference_line_evidence_changed)
         self._sync_visual_camera_match()
         self._sync_anchor_reference_line()
 
@@ -140,6 +143,8 @@ class Reverse3DWorkspace(_BaseReverse3DWorkspace):
         self._ref_pitch.setText(f"{h.reframe_pitch_deg:+.1f}°")
         self._ref_focal.setText(f"{h.focal_length_mm:.1f} mm (same focal prior)")
         support = h.support
+        if h.line_observed_angle_deg is not None:
+            support += f" · line obs {h.line_observed_angle_deg:+.1f}°"
         if h.roll_correction_deg is not None:
             support += f" · roll {h.roll_correction_deg:+.1f}° ({h.line_constraint})"
         self._ref_support.setText(support + (f" · selected {h.anchor_name}" if h.anchor_name else ""))
@@ -152,6 +157,7 @@ class Reverse3DWorkspace(_BaseReverse3DWorkspace):
         if anchor is not None:
             if evidence is None:
                 anchor.image_points = ()
+                anchor.reference_line_constraint = ReferenceLineConstraint.FREE.value
             else:
                 anchor.image_points = (tuple(evidence.p1), tuple(evidence.p2))
                 anchor.reference_line_constraint = evidence.constraint.value
