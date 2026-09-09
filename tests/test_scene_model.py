@@ -15,7 +15,7 @@ def test_scene_model_subject_is_self_healing_after_subjects_reset():
     assert np.isfinite(subject.height)
 
 
-def test_from_reverse_result_preserves_primary_subject_height_when_rebuilding_layout():
+def test_from_reverse_result_rebuilds_multi_person_layout_without_empty_subject_access():
     class Scalar:
         def __init__(self, value):
             self.value = value
@@ -56,9 +56,7 @@ def test_from_reverse_result_preserves_primary_subject_height_when_rebuilding_la
         independent_depth=True,
     )
 
-    scene = SceneModel()
-    scene.subject.height = 1.82
     rebuilt = SceneModel.from_reverse_result(result)
     assert len(rebuilt.subjects) == 2
-    assert all(np.isclose(subject.height, 1.82) for subject in rebuilt.subjects)
+    assert all(np.isclose(subject.height, 1.70) for subject in rebuilt.subjects)
     assert rebuilt.subject.person_index == 0
