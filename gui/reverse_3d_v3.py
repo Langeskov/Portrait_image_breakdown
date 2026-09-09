@@ -1,7 +1,6 @@
 """Canonical v3 reconstruction workspace entry point."""
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QFrame, QLabel, QSizePolicy, QSplitter, QVBoxLayout, QWidget
 
 from gui.reverse_3d_reference import AnchorProjectionPreview, AnchorSceneView, CollapsibleSection, Reverse3DWorkspace as _BaseReverse3DWorkspace
@@ -32,8 +31,6 @@ class Reverse3DWorkspace(_BaseReverse3DWorkspace):
         preview = getattr(self, "_preview", None)
         if preview is None:
             return
-
-        # The preview is initially inside the inspector's collapsible section.
         old_body = preview.parentWidget()
         old_section = old_body.parentWidget() if old_body is not None else None
         if old_body is not None:
@@ -49,7 +46,6 @@ class Reverse3DWorkspace(_BaseReverse3DWorkspace):
         splitter = self.findChild(QSplitter)
         if splitter is None or splitter.count() < 2:
             return
-        left = splitter.widget(0)
         inspector = splitter.widget(1)
         splitter.removeWidget(inspector)
 
@@ -88,18 +84,11 @@ class Reverse3DWorkspace(_BaseReverse3DWorkspace):
 
         right_layout.addWidget(projection, 0)
         right_layout.addWidget(inspector, 1)
-
         splitter.addWidget(right)
         splitter.setSizes([900, 520])
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 0)
         self._projection_panel = projection
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        panel = self._projection_panel
-        if panel is not None:
-            panel.updateGeometry()
 
     @property
     def scene_model(self):
