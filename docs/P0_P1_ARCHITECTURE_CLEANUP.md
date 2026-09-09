@@ -1,19 +1,15 @@
 # P0/P1 architecture cleanup
 
+This cleanup establishes explicit application boundaries and removes duplicated mutable state while preserving the v3 evidence model.
+
 ## Canonical boundaries
-- `ApplicationServices` owns engine and cache construction.
-- `ApplicationMainWindow` is the application-owned injected window.
+- `ApplicationServices` owns engine/cache construction.
+- `ApplicationMainWindow` is the injected application window.
 - `gui.reverse_3d_v3.Reverse3DWorkspace` is the canonical v3 reconstruction workspace.
-- `SceneAnchor` is reserved for world-space scene geometry.
+- `SceneAnchor` is reserved for world-space geometry.
 - `ReferenceImageAnchor` is reserved for image-space reference anchors.
-- `SceneModel.subjects` is the canonical people collection; `subject` is compatibility access to the selected primary entry.
-- reconstruction sessions use schema v2; v1 sessions are migrated on load.
+- `SceneModel.subjects` is the canonical people collection; `subject` is a compatibility accessor.
+- Reconstruction sessions use schema v2 and migrate v1 deterministically.
 
-## P0 cleanup
-The application entry point composes concrete services and widgets explicitly. It does not rewrite module globals or class methods at runtime.
-
-## P1 cleanup
-World geometry and image observations use different names; primary-subject state is stored only once; sessions have an explicit migration path; camera reference deltas use separate reframe names rather than pretending to be orbit values.
-
-## Compatibility
-Legacy imports remain available where needed, but compatibility aliases are explicitly marked and are not used by the application composition layer.
+## Remaining follow-up
+Cooperative cancellation inside heavy stages, stronger cache keys, full endpoint reprojection residuals, richer Qt integration tests, and final removal of legacy render shims remain P2/P3 work.
