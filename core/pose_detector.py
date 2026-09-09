@@ -1,7 +1,7 @@
 """
-骨架检测模块 — 基于 YOLOv26 Pose 的人体姿态估计
+骨架检测模块 — 基于 YOLO26 Pose 的人体姿态估计
 
-YOLOv26 Pose 使用 COCO 17关键点格式, 通过检测+姿态估计联合模型完成。
+YOLO26 Pose 使用 COCO 17关键点格式, 通过检测+姿态估计联合模型完成。
 输出保留原 PoseResult 接口，同时支持多人检测，并提供统一的坐标重标定接口。
 """
 
@@ -9,12 +9,12 @@ from __future__ import annotations
 
 import dataclasses
 from enum import IntEnum
-from pathlib import Path
 from typing import Optional
 
-import cv2
 import numpy as np
 from ultralytics import YOLO
+
+from core.model_config import DEFAULT_POSE_MODEL, get_pose_model, resolve_pose_model_path, validate_pose_model
 
 
 class LandmarkIndex(IntEnum):
@@ -107,14 +107,7 @@ class PoseResult:
         return np.array([[lm.world_x, lm.world_y, lm.world_z] for lm in self.landmarks])
 
     def rescaled(self, width: int, height: int) -> "PoseResult":
-        """Rescale this pose and every attached person into one pixel coordinate space.
-
-        ``PoseResult`` is frequently produced on a resized analysis frame but later
-        consumed by scene/depth/multi-person modules operating on another frame.
-        Pixel coordinates and bbox are therefore scaled by the same factors. The
-        attached ``persons`` collection is recursively rescaled as well, while the
-        scaled primary object is reused for this object's first person entry.
-        """
+        """Rescale this pose and every attached person into one pixel coordinate space."""
         width, height = int(width), int(height)
         src_width = max(int(self.image_width), 1)
         src_height = max(int(self.image_height), 1)
@@ -142,22 +135,11 @@ class PoseResult:
                 round(float(y2) * sy),
             )
 
-        scaled = PoseResult(
-            landmarks,
-            width,
-            height,
-            self.detection_confidence,
-            bbox,
-            None,
-        )
-
+        scaled = PoseResult(landmarks, width, height, self.detection_confidence, bbox, None)
         if self.persons:
             scaled_persons: list[PoseResult] = []
             for person in self.persons:
-                if person is self:
-                    scaled_persons.append(scaled)
-                else:
-                    scaled_persons.append(person.rescaled(width, height))
+                scaled_persons.append(scaled if person is self else person.rescaled(width, height))
             scaled.persons = scaled_persons
         return scaled
 
@@ -198,19 +180,27 @@ def _interpolate_extended_landmarks(coco_landmarks: list[PoseLandmark]) -> list[
     return ext
 
 
-def _find_model_path() -> str:
-    candidates = [Path.cwd() / "yolo26s-pose.pt", Path(__file__).parent.parent / "yolo26s-pose.pt"]
-    for p in candidates:
-        if p.exists():
-            return str(p)
-    return "yolo26s-pose.pt"
-
-
 class PoseDetector:
-    def __init__(self, model_size: str = "s", conf: float = 0.5, iou: float = 0.7, model_complexity: int = 1):
-        self._model = YOLO(f"yolo26{model_size}-pose.pt")
+    """YOLO26 pose detector with a centralized, local-checkpoint configuration."""
+
+    def __init__(
+        self,
+        model: str | None = None,
+        conf: float = 0.5,
+        iou: float = 0.7,
+        model_complexity: int | None = None,
+    ):
+        self.model = get_pose_model(model)
+        self.model_path = resolve_pose_model_path(model)
+        if not self.model_path.is_file():
+            raise validate_pose_model(model)
+        self._model = YOLO(str(self.model_path))
         self._conf = conf
         self._iou = iou
+
+    @property
+    def model_name(self) -> str:
+        return self.model_path.name
 
     def _results_to_poses(self, result, width: int, height: int) -> list[PoseResult]:
         if result.keypoints is None or len(result.keypoints) == 0:
@@ -262,10 +252,10 @@ class PoseDetector:
         return poses[0]
 
     def close(self):
-        del self._model
+        self._model = None
 
     def __del__(self):
         try:
-            del self._model
+            self.close()
         except Exception:
             pass
