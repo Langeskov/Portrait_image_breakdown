@@ -305,7 +305,7 @@ class MainWindow(QMainWindow):
         self._wk.progress.connect(self._set_progress); self._wk.pose_ready.connect(self._on_pose_ready); self._wk.core_ready.connect(self._on_core_ready); self._wk.reverse_ready.connect(self._on_reverse_ready); self._wk.error.connect(self._err); self._wk.start()
     def _on_pose_ready(self, pose):
         self._bundle.pose = pose; self._w2._cv.set_pose(pose)
-        if hasattr(self, "_reference_mode") and self._img is not None: self._reference_mode.set_current_image(self._img, pose)
+        if hasattr(self, "_reference_mode") and self._img is not None: self._reference_mode.set_current(pose, self._img)
     def _on_core_ready(self, bundle): self._bundle = bundle; self._w2.update_results(bundle); self._w3.update_results(bundle)
     def _on_reverse_ready(self, bundle): self._bundle = bundle; self._result_cache[_image_hash(self._img)] = bundle; self._w2.update_results(bundle); self._w3.update_results(bundle); self._finish_progress()
     def _apply_bundle(self, bundle): self._w2.update_results(bundle); self._w3.update_results(bundle)
