@@ -75,37 +75,22 @@ def estimate_reference_camera_hypothesis(
     selected_anchor: Optional[SceneAnchor] = None,
     line_evidence: Optional[ReferenceLineEvidence] = None,
 ) -> ReferenceCameraHypothesis:
-    """Estimate a reference-camera delta from composition plus optional line evidence.
-
-    The subject bbox area is used as a scale cue. Under a fixed focal length
-    prior, image area is approximately proportional to ``1 / distance²``. The
-    center offset becomes an optical-axis re-aim angle. A semantic horizontal
-    or vertical image line can directly support roll; it is not used to invent
-    a yaw/pitch solution.
-    """
+    """Estimate a reference-camera delta from composition plus optional line evidence."""
     if reference is None or current is None:
         return _without_line(scene, selected_anchor, "Reference and current compositions are required.", success=False, confidence=0.0)
     if reference.subject_scale <= 1e-9 or current.subject_scale <= 1e-9:
-        return _without_line(
-            scene,
-            selected_anchor,
-            "Visible subject extent is insufficient for a stable distance hypothesis.",
-        )
+        return _without_line(scene, selected_anchor, "Visible subject extent is insufficient for a stable distance hypothesis.")
 
     current_distance = max(float(scene.camera.distance), 0.1)
     area_ratio = float(reference.subject_scale / current.subject_scale)
-    # reference/current area = (current_distance/reference_distance)^2
     reference_distance = current_distance / math.sqrt(max(area_ratio, 1e-9))
     reference_distance = max(0.25, min(reference_distance, 100.0))
 
     ref_cx, ref_cy = _norm_center(reference)
     cur_cx, cur_cy = _norm_center(current)
-    center_dx = ref_cx - cur_cx
-    center_dy = ref_cy - cur_cy
+    center_dx = round(ref_cx - cur_cx, 6)
+    center_dy = round(ref_cy - cur_cy, 6)
 
-    # Re-aim angle, not SceneCamera.yaw/pitch. SceneCamera yaw/pitch also
-    # encode the orbit position around the target, so directly replacing them
-    # would not reproduce a screen-space framing offset.
     yaw = center_dx * scene.camera.horizontal_fov_deg
     pitch = -center_dy * scene.camera.vertical_fov_deg
     yaw = max(-35.0, min(35.0, yaw))
