@@ -8,6 +8,7 @@ an ungrounded metric scene claim.
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QFont, QImage, QPixmap
@@ -33,9 +34,11 @@ class ReferenceModeWidget(QWidget):
         self._reference_pose = None
         self._reference_image = None
         self._reference = None
+        self._reference_path: str | None = None
         self._current_pose = None
         self._current_image = None
         self._current_image_size = (1, 1)
+        self._last_target = None
         self._reference_pixmap = QPixmap()
         self._current_pixmap = QPixmap()
 
@@ -133,7 +136,7 @@ class ReferenceModeWidget(QWidget):
         self._refresh_previews()
 
     def _sync_canvas_target(self):
-        window = self.parentWidget()
+        window = self.window()
         canvas = getattr(getattr(window, "_w2", None), "_cv", None)
         if canvas is None:
             return
@@ -145,35 +148,44 @@ class ReferenceModeWidget(QWidget):
         deltas = compare_pose_to_reference(self._reference_pose, self._current_pose, width, height)
         canvas.set_reference_target(self._reference, current, deltas, visible=True)
 
-    def _load_reference(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Select Reference Image", "",
-            "Images (*.jpg *.jpeg *.png *.bmp *.webp)"
-        )
-        if not path:
-            return
+    def load_reference_path(self, path: str) -> bool:
+        """Load a reference image programmatically for reconstruction-session restore."""
+        path = str(Path(path).expanduser())
         image = load_image(path)
         if image is None:
-            self._summary.setText("Reference image could not be read.")
-            return
+            self._summary.setText(f"Reference image could not be read: {Path(path).name}")
+            return False
         pose = self._detector.detect(image)
         if pose is None:
-            self._summary.setText("No person detected in reference image.")
-            return
+            self._summary.setText(f"No person detected in reference image: {Path(path).name}")
+            return False
+        self._reference_path = path
         self._reference_image = image
         self._reference_pose = pose
         self._reference = build_reference_composition(pose, image.shape[1], image.shape[0])
+        self._last_target = None
         self._set_pixmap(self._reference_preview, image, "_reference_pixmap")
         self._summary.setText(
             os.path.basename(path) + f" · {frame_orientation(image)} · " + reference_summary(self._reference)
         )
         self._render_compare()
         self._sync_canvas_target()
+        return True
+
+    def _load_reference(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select Reference Image", "",
+            "Images (*.jpg *.jpeg *.png *.bmp *.webp)"
+        )
+        if path:
+            self.load_reference_path(path)
 
     def clear_reference(self):
         self._reference_image = None
         self._reference_pose = None
         self._reference = None
+        self._reference_path = None
+        self._last_target = None
         self._reference_pixmap = QPixmap()
         self._delta_list.clear()
         self._composition.setText("Composition delta: —")
@@ -206,6 +218,7 @@ class ReferenceModeWidget(QWidget):
 
         deltas = compare_pose_to_reference(self._reference_pose, self._current_pose, width, height)
         plan = build_reference_target_plan(self._reference, current, deltas)
+        self._last_target = plan
         self._target.setText(plan.as_text())
 
         self._delta_list.clear()
