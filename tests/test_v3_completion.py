@@ -43,6 +43,15 @@ def test_plane_constraint_projects_point_and_reports_residual():
     assert not result.satisfied
 
 
+def test_angular_plane_constraint_requires_target_direction():
+    plane = SceneAnchor("wall", "Wall", AnchorKind.PLANE, (0, 0, 0), (0, 0, 1), (4, 4))
+    constraint = PlaneConstraint("c2", "wall", relation=PlaneRelation.PARALLEL)
+    result = evaluate_constraint((0, 0, 0), constraint, [plane], direction=None)
+    assert not result.satisfied
+    assert result.residual_m == float("inf")
+    assert "requires a target direction" in result.message
+
+
 def test_composition_aware_target_uses_reference_center_and_scale():
     reference = ReferenceComposition(1000, 1000, (), (400, 200, 600, 800), (500, 500), 0.12)
     current = ReferenceComposition(1000, 1000, (), (300, 200, 500, 700), (400, 450), 0.08)
