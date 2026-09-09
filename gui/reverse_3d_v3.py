@@ -1,7 +1,7 @@
 """Canonical v3 reconstruction workspace entry point."""
 from __future__ import annotations
 
-from PySide6.QtWidgets import QFrame, QLabel, QSizePolicy, QSplitter, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QFrame, QLabel, QSizePolicy, QSplitter, QVBoxLayout
 
 from gui.reverse_3d_reference import AnchorProjectionPreview, AnchorSceneView, CollapsibleSection, Reverse3DWorkspace as _BaseReverse3DWorkspace
 from gui.reverse_3d_reference_line import CameraVisualMatchSection, ReferenceLineProjectionPreview, install_visual_camera_match
@@ -170,8 +170,10 @@ class Reverse3DWorkspace(_BaseReverse3DWorkspace):
             return
         ref = getattr(widget, "_reference", None)
         pose = getattr(widget, "_current_pose", None)
-        image = getattr(widget, "_current_image", None)
-        signature = (id(ref), id(pose), tuple(image.shape[:2]) if image is not None else None)
+        image = getattr(window, "_img", None)
+        if image is None:
+            image = getattr(widget, "_current_image", None)
+        signature = (id(ref), id(pose), id(image), tuple(image.shape[:2]) if image is not None else None)
         if signature == self._last_ref_signature:
             return
         self._last_ref_signature = signature
