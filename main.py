@@ -22,7 +22,7 @@ def _append_evidence_state(text: str, reverse_result) -> str:
     return _strip_evidence_block(text) + ("\n\n" + "=" * 55 + "\nEVIDENCE STATE\n" + "=" * 55 + "\n"
         f"Observed: {counts['observed']}  |  Estimated: {counts['estimated']}  |  Unknown: {counts['unknown']}\n"
         "Observed = directly supported by image/metadata.\n"
-        "Estimated = inferred from available evidence and model confidence.\n"
+        "Estimated = inferred from image, geometry, priors, and model confidence.\n"
         "Unknown = insufficient evidence; do not treat as a measured value.")
 
 
@@ -31,7 +31,7 @@ def run_gui(image_path: str | None = None, calibration_profile: str = "Generic")
     from core.application_services import ApplicationServices
     from gui.application_runtime import build_window
     from gui.main_window import apply_light_theme
-    from gui.i18n_zh import install_chinese_ui
+    from gui.i18n_zh_extra import install_chinese_ui
     services = ApplicationServices.create(calibration_profile=calibration_profile)
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
