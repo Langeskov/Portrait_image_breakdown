@@ -45,6 +45,7 @@ def run_gui(image_path=None):
     from gui.field_mode import install_field_mode
     from gui.reference_mode import install_reference_mode
     from gui.anchor_calibration_dialog import AnchorCalibrationDialog
+    from gui.v3_completion import install_v3_completion
     from reverse_engineering.calibration import BUILTIN_PROFILES
     import reverse_engineering.engine as engine_module
 
@@ -63,6 +64,7 @@ def run_gui(image_path=None):
 
     app = QApplication(sys.argv); app.setStyle("Fusion"); apply_light_theme(app)
     window = MainWindow(); window._result_cache = AnalysisCache(capacity=8); install_field_mode(window); install_reference_mode(window)
+    install_v3_completion(window)
     selected_profile = {"name": "Generic"}; EngineV2 = engine_module.ReverseEngineeringEngine
 
     def engine_factory(enable_simulation=True):
