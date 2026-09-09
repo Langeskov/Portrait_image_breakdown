@@ -1,10 +1,4 @@
-"""v3 reference-photo comparison workspace.
-
-The workspace keeps the reference image as an explicit target and compares the
-current analysis against it using pose/composition deltas. It is intentionally
-2D-first: camera reconstruction remains evidence-backed and is not replaced by
-an ungrounded metric scene claim.
-"""
+"""v3 reference-photo comparison workspace."""
 from __future__ import annotations
 
 import os
@@ -47,28 +41,28 @@ class ReferenceModeWidget(QWidget):
         lo.setSpacing(9)
 
         header = QHBoxLayout()
-        title = QLabel("REFERENCE RECONSTRUCTION · V3 PHASE 2")
+        title = QLabel("参考重建 · V3 阶段 2")
         title.setFont(QFont("Segoe UI", 15, QFont.Weight.Bold))
         header.addWidget(title)
         header.addStretch(1)
-        self._open = QPushButton("Load Reference")
+        self._open = QPushButton("加载参考图")
         self._open.clicked.connect(self._load_reference)
         header.addWidget(self._open)
-        self._clear = QPushButton("Clear")
+        self._clear = QPushButton("清除")
         self._clear.clicked.connect(self.clear_reference)
         header.addWidget(self._clear)
         lo.addLayout(header)
 
-        self._summary = QLabel("Load a reference photograph to compare composition and pose.")
+        self._summary = QLabel("加载参考照片，用于比较构图和姿态。")
         self._summary.setWordWrap(True)
         lo.addWidget(self._summary)
 
         split = QSplitter(Qt.Horizontal)
-        self._reference_preview = QLabel("Reference")
+        self._reference_preview = QLabel("参考图")
         self._reference_preview.setAlignment(Qt.AlignCenter)
         self._reference_preview.setMinimumWidth(360)
         self._reference_preview.setFrameShape(QFrame.StyledPanel)
-        self._current_preview = QLabel("Current")
+        self._current_preview = QLabel("当前图")
         self._current_preview.setAlignment(Qt.AlignCenter)
         self._current_preview.setMinimumWidth(360)
         self._current_preview.setFrameShape(QFrame.StyledPanel)
@@ -79,24 +73,24 @@ class ReferenceModeWidget(QWidget):
         lo.addWidget(split, 2)
 
         stats = QHBoxLayout()
-        self._composition = QLabel("Composition delta: —")
-        self._anchor = QLabel("Semantic anchor: —")
+        self._composition = QLabel("构图偏差：—")
+        self._anchor = QLabel("语义锚点：—")
         stats.addWidget(self._composition)
         stats.addStretch(1)
         stats.addWidget(self._anchor)
         lo.addLayout(stats)
 
-        target_title = QLabel("TARGET PLAN")
+        target_title = QLabel("目标方案")
         target_title.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
         lo.addWidget(target_title)
-        self._target = QLabel("Analyze a reference and current frame to generate a target shooting plan.")
+        self._target = QLabel("分析参考图和当前画面，生成目标拍摄方案。")
         self._target.setWordWrap(True)
         self._target.setFrameShape(QFrame.StyledPanel)
         lo.addWidget(self._target)
 
         self._delta_list = QListWidget()
         self._delta_list.setAlternatingRowColors(True)
-        lo.addWidget(self._delta_list, 1)
+        lo.addWidget(self._delta_list)
 
     def _image_to_pixmap(self, image):
         import cv2
@@ -110,7 +104,7 @@ class ReferenceModeWidget(QWidget):
         if image is None:
             setattr(self, attr_name, QPixmap())
             label.setPixmap(QPixmap())
-            label.setText("No image")
+            label.setText("无图片")
             return
         pixmap = self._image_to_pixmap(image)
         setattr(self, attr_name, pixmap)
@@ -149,15 +143,15 @@ class ReferenceModeWidget(QWidget):
         canvas.set_reference_target(self._reference, current, deltas, visible=True)
 
     def load_reference_path(self, path: str) -> bool:
-        """Load a reference image programmatically for reconstruction-session restore."""
+        """通过路径加载参考图，用于恢复重建会话。"""
         path = str(Path(path).expanduser())
         image = load_image(path)
         if image is None:
-            self._summary.setText(f"Reference image could not be read: {Path(path).name}")
+            self._summary.setText(f"无法读取参考图：{Path(path).name}")
             return False
         pose = self._detector.detect(image)
         if pose is None:
-            self._summary.setText(f"No person detected in reference image: {Path(path).name}")
+            self._summary.setText(f"参考图未检测到人物：{Path(path).name}")
             return False
         self._reference_path = path
         self._reference_image = image
@@ -174,8 +168,8 @@ class ReferenceModeWidget(QWidget):
 
     def _load_reference(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, "Select Reference Image", "",
-            "Images (*.jpg *.jpeg *.png *.bmp *.webp)"
+            self, "选择参考图", "",
+            "图片 (*.jpg *.jpeg *.png *.bmp *.webp)"
         )
         if path:
             self.load_reference_path(path)
@@ -188,10 +182,10 @@ class ReferenceModeWidget(QWidget):
         self._last_target = None
         self._reference_pixmap = QPixmap()
         self._delta_list.clear()
-        self._composition.setText("Composition delta: —")
-        self._anchor.setText("Semantic anchor: —")
-        self._target.setText("Analyze a reference and current frame to generate a target shooting plan.")
-        self._summary.setText("Load a reference photograph to compare composition and pose.")
+        self._composition.setText("构图偏差：—")
+        self._anchor.setText("语义锚点：—")
+        self._target.setText("分析参考图和当前画面，生成目标拍摄方案。")
+        self._summary.setText("加载参考照片，用于比较构图和姿态。")
         self._set_pixmap(self._reference_preview, None, "_reference_pixmap")
         self._sync_canvas_target()
 
@@ -203,6 +197,10 @@ class ReferenceModeWidget(QWidget):
         self._render_compare()
         self._sync_canvas_target()
 
+    # Backward-compatible alias used by MainWindow callback wiring.
+    def set_current_image(self, image, pose):
+        self.set_current(pose, image)
+
     def _render_compare(self):
         if self._reference is None or self._reference_pose is None or self._current_pose is None:
             return
@@ -210,11 +208,11 @@ class ReferenceModeWidget(QWidget):
         current = build_reference_composition(self._current_pose, width, height)
         delta = composition_delta(self._reference, current)
         self._composition.setText(
-            f"Composition delta: center Δ {abs(delta['center_dx']):.1%}×{abs(delta['center_dy']):.1%} · "
-            f"current/reference scale {delta['scale_ratio']:.0%}"
+            f"构图偏差：中心 Δ {abs(delta['center_dx']):.1%}×{abs(delta['center_dy']):.1%} · "
+            f"当前/参考比例 {delta['scale_ratio']:.0%}"
         )
         anchor = next((a for a in self._reference.anchors if a.name == "hip_center"), None)
-        self._anchor.setText(f"Semantic anchor: {anchor.name if anchor else 'bbox_center'}")
+        self._anchor.setText(f"语义锚点：{anchor.name if anchor else 'bbox_center'}")
 
         deltas = compare_pose_to_reference(self._reference_pose, self._current_pose, width, height)
         plan = build_reference_target_plan(self._reference, current, deltas)
@@ -223,14 +221,14 @@ class ReferenceModeWidget(QWidget):
 
         self._delta_list.clear()
         if not deltas:
-            self._delta_list.addItem(QListWidgetItem("Pose is already close to the reference on the visible landmarks."))
+            self._delta_list.addItem(QListWidgetItem("当前姿态与参考图的可见关键点已较为接近。"))
             return
         for item in deltas:
             self._delta_list.addItem(QListWidgetItem(item.instruction))
 
 
 def install_reference_mode(window):
-    """Attach the v3 reference workspace and keep it synchronized with analysis."""
+    """Attach the reference workspace and keep it synchronized with analysis."""
     widget = ReferenceModeWidget(window._det, window)
     window._reference_mode = widget
     window._tabs.addTab("Reference")
