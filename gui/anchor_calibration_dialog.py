@@ -1,4 +1,4 @@
-"""Image-first manual scene-anchor calibration UI for v3."""
+"""Image-first manual scene-anchor calibration UI for V3."""
 from __future__ import annotations
 
 from typing import Optional
@@ -7,9 +7,22 @@ import numpy as np
 from PySide6.QtCore import Qt, QPointF, Signal, QRectF
 from PySide6.QtGui import QBrush, QColor, QImage, QPainter, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import (
-    QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout,
-    QGroupBox, QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
-    QMessageBox, QPushButton, QScrollArea, QSpinBox, QVBoxLayout, QWidget,
+    QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QDoubleSpinBox,
+    QFormLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QListWidget,
+    QListWidgetItem,
+    QMessageBox,
+    QPushButton,
+    QScrollArea,
+    QSpinBox,
+    QVBoxLayout,
+    QWidget,
 )
 
 from reverse_engineering.anchor_calibration import estimate_camera_from_anchors
@@ -17,7 +30,7 @@ from reverse_engineering.scene_anchors import AnchorKind
 
 
 class AnchorImageCanvas(QWidget):
-    """Display the source image and visible manual anchor observations."""
+    """Image canvas used for click-to-place and drag-to-edit anchor points."""
 
     point_clicked = Signal(float, float)
     point_dragged = Signal(int, float, float)
@@ -37,9 +50,7 @@ class AnchorImageCanvas(QWidget):
     def set_image(self, image):
         if image is None:
             self._pixmap = QPixmap()
-            self.update()
-            return
-        if isinstance(image, QPixmap):
+        elif isinstance(image, QPixmap):
             self._pixmap = image
         else:
             array = np.asarray(image)
@@ -77,8 +88,10 @@ class AnchorImageCanvas(QWidget):
         iw, ih = self._pixmap.width(), self._pixmap.height()
         if rect.isEmpty() or iw <= 0 or ih <= 0:
             return QPointF()
-        x, y = float(point[0]), float(point[1])
-        return QPointF(rect.left() + x / iw * rect.width(), rect.top() + y / ih * rect.height())
+        return QPointF(
+            rect.left() + float(point[0]) / iw * rect.width(),
+            rect.top() + float(point[1]) / ih * rect.height(),
+        )
 
     def _widget_to_image(self, position):
         rect = self._image_rect()
@@ -87,7 +100,10 @@ class AnchorImageCanvas(QWidget):
         iw, ih = self._pixmap.width(), self._pixmap.height()
         x = (position.x() - rect.left()) / rect.width() * iw
         y = (position.y() - rect.top()) / rect.height() * ih
-        return float(max(0.0, min(iw - 1.0, x))), float(max(0.0, min(ih - 1.0, y)))
+        return (
+            float(np.clip(x, 0.0, max(iw - 1.0, 0.0))),
+            float(np.clip(y, 0.0, max(ih - 1.0, 0.0))),
+        )
 
     def _hit_selected_point(self, position, radius_px: float = 12.0) -> Optional[int]:
         if self.scene is None or not self.selected_anchor_id:
@@ -95,11 +111,15 @@ class AnchorImageCanvas(QWidget):
         anchor = self.scene.anchor_by_id(str(self.selected_anchor_id))
         if anchor is None or getattr(anchor, "locked", False) or not getattr(anchor, "visible", True):
             return None
+        radius2 = radius_px * radius_px
         best_index = None
-        best_distance = float(radius_px * radius_px)
+        best_distance = radius2
         for index, point in enumerate(getattr(anchor, "image_points", ())):
             widget_point = self._image_to_widget(point)
-            distance = float((widget_point.x() - position.x()) ** 2 + (widget_point.y() - position.y()) ** 2)
+            distance = float(
+                (widget_point.x() - position.x()) ** 2
+                + (widget_point.y() - position.y()) ** 2
+            )
             if distance <= best_distance:
                 best_distance = distance
                 best_index = index
@@ -124,7 +144,7 @@ class AnchorImageCanvas(QWidget):
         if self._drag_point_index is not None and (event.buttons() & Qt.LeftButton):
             point = self._widget_to_image(event.position())
             if point is not None:
-                self.point_dragged.emit(self._drag_point_index, point[0], point[1])
+                self.point_dragged.emit(self._drag_point_index, *point)
             event.accept()
             return
         super().mouseMoveEvent(event)
@@ -141,38 +161,41 @@ class AnchorImageCanvas(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         painter.fillRect(self.rect(), QColor("#111827"))
-        rect = self._image_rect()
+        image_rect = self._image_rect()
         if not self._pixmap.isNull():
-            painter.drawPixmap(rect.toRect(), self._pixmap)
+            painter.drawPixmap(image_rect.toRect(), self._pixmap)
         if self.scene is None:
             painter.end()
             return
 
         for anchor in getattr(self.scene, "anchors", ()):
-            if not getattr(anchor, "visible", True) or not anchor.image_points:
+            points = getattr(anchor, "image_points", ())
+            if not getattr(anchor, "visible", True) or not points:
                 continue
             selected = anchor.anchor_id == self.selected_anchor_id
-            points = [self._image_to_widget(p) for p in anchor.image_points]
-            if anchor.kind == AnchorKind.PLANE and len(points) == 4:
-                painter.setPen(QPen(QColor("#F59E0B") if selected else QColor("#38BDF8"), 2 if selected else 1.2))
-                painter.setBrush(QBrush(QColor(37, 99, 235, 45) if selected else QColor(56, 189, 248, 28)))
-                painter.drawPolygon(QPolygonF(points))
-            painter.setBrush(QBrush(QColor("#FFFFFF")))
-            painter.setPen(QPen(QColor("#F59E0B") if selected else QColor("#38BDF8"), 2 if selected else 1.2))
-            for index, point in enumerate(points):
+            widget_points = [self._image_to_widget(point) for point in points]
+            pen_color = QColor("#F59E0B") if selected else QColor("#38BDF8")
+            painter.setPen(QPen(pen_color, 2 if selected else 1.2))
+            if anchor.kind == AnchorKind.PLANE and len(widget_points) == 4:
+                fill = QColor(37, 99, 235, 45) if selected else QColor(56, 189, 248, 28)
+                painter.setBrush(QBrush(fill))
+                painter.drawPolygon(QPolygonF(widget_points))
+            else:
+                painter.setBrush(QBrush(QColor("#FFFFFF")))
+            for index, point in enumerate(widget_points):
                 radius = 6 if selected and index == self._drag_point_index else (5 if selected else 4)
                 painter.drawEllipse(point, radius, radius)
                 if selected:
                     painter.drawText(point + QPointF(7, -7), f"P{index + 1}")
-            if selected and anchor.kind == AnchorKind.PLANE and len(points) == 4:
+            if selected and anchor.kind == AnchorKind.PLANE and len(widget_points) == 4:
                 painter.setBrush(Qt.NoBrush)
                 painter.setPen(QPen(QColor("#F59E0B"), 2, Qt.DashLine))
-                painter.drawPolygon(QPolygonF(points))
+                painter.drawPolygon(QPolygonF(widget_points))
         painter.end()
 
 
 class AnchorCalibrationDialog(QDialog):
-    """Bind scene anchors to source-image pixels and estimate a camera hypothesis."""
+    """Bind scene anchors to image-space observations and solve a camera hypothesis."""
 
     def __init__(self, scene, image_size, image=None, parent=None):
         super().__init__(parent)
@@ -187,8 +210,8 @@ class AnchorCalibrationDialog(QDialog):
         root.setSpacing(8)
 
         intro = QLabel(
-            "在左侧原图上直接点选参考位置。已存在的当前锚点可直接拖动实时校准；"
-            "右侧坐标会同步更新。橙色为当前锚点，蓝色为其它已显示锚点。平面需要 4 个图像点。"
+            "在左侧原图上点选参考位置。已有点可直接拖动；右侧坐标会实时同步。"
+            "平面需要 4 个图像点。"
         )
         intro.setWordWrap(True)
         intro.setStyleSheet("color:#64748B;")
@@ -210,15 +233,14 @@ class AnchorCalibrationDialog(QDialog):
         panel_layout.setContentsMargins(4, 0, 4, 0)
         panel_layout.setSpacing(7)
 
-        group = QGroupBox("Manual binding")
-        form = QFormLayout(group)
+        binding = QGroupBox("Manual binding")
+        form = QFormLayout(binding)
         self.anchor_combo = QComboBox()
         self.anchor_ids: list[str] = []
         for anchor in scene.anchors:
-            if not anchor.enabled:
-                continue
-            self.anchor_ids.append(anchor.anchor_id)
-            self.anchor_combo.addItem(f"{anchor.name} · {anchor.kind.value}", anchor.anchor_id)
+            if anchor.enabled:
+                self.anchor_ids.append(anchor.anchor_id)
+                self.anchor_combo.addItem(f"{anchor.name} · {anchor.kind.value}", anchor.anchor_id)
         self.anchor_combo.currentIndexChanged.connect(self._load_anchor)
         form.addRow("Anchor", self.anchor_combo)
 
@@ -240,24 +262,31 @@ class AnchorCalibrationDialog(QDialog):
             y_box.setRange(0, max(self.height - 1, 1))
             x_box.setDecimals(1)
             y_box.setDecimals(1)
+            x_box.valueChanged.connect(lambda value, i=index: self._point_field_changed(i))
+            y_box.valueChanged.connect(lambda value, i=index: self._point_field_changed(i))
             self.x_fields.append(x_box)
             self.y_fields.append(y_box)
             form.addRow(f"P{index + 1} X", x_box)
             form.addRow(f"P{index + 1} Y", y_box)
-        panel_layout.addWidget(group)
+        panel_layout.addWidget(binding)
 
-        click_hint = QLabel("点击空白处会写入下一个 P 点；拖动已有点会立即写回锚点坐标。")
-        click_hint.setWordWrap(True)
-        click_hint.setStyleSheet("color:#64748B; font-size:9pt;")
-        panel_layout.addWidget(click_hint)
+        hint = QLabel("点击空白处会写入下一个点；拖动已有点或修改坐标都会立即更新。")
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color:#64748B; font-size:9pt;")
+        panel_layout.addWidget(hint)
 
-        bind = QPushButton("Apply points")
-        bind.clicked.connect(self._save_current_anchor)
-        panel_layout.addWidget(bind)
+        actions = QHBoxLayout()
+        apply_button = QPushButton("Apply points")
+        apply_button.clicked.connect(self._apply_points)
+        actions.addWidget(apply_button)
+        clear_button = QPushButton("Clear all points")
+        clear_button.clicked.connect(self._clear_all_points)
+        actions.addWidget(clear_button)
+        panel_layout.addLayout(actions)
 
         overlay = QGroupBox("Overlay")
         overlay_layout = QVBoxLayout(overlay)
-        overlay_hint = QLabel("显示开关只影响画面，不会改变校准参与状态。")
+        overlay_hint = QLabel("显示开关只影响画面，不改变校准数据。")
         overlay_hint.setWordWrap(True)
         overlay_hint.setStyleSheet("color:#64748B; font-size:9pt;")
         overlay_layout.addWidget(overlay_hint)
@@ -268,7 +297,6 @@ class AnchorCalibrationDialog(QDialog):
         panel_layout.addWidget(overlay)
 
         solve = QPushButton("Estimate camera hypothesis")
-        solve.setToolTip("Use all bound anchors to create a non-destructive camera hypothesis")
         solve.clicked.connect(self._solve)
         panel_layout.addWidget(solve)
 
@@ -282,9 +310,9 @@ class AnchorCalibrationDialog(QDialog):
         content.addWidget(scroll, 1)
         root.addLayout(content, 1)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
-        buttons.rejected.connect(self.reject)
-        root.addWidget(buttons)
+        close = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        close.rejected.connect(self.reject)
+        root.addWidget(close)
 
         self._populate_overlay_list()
         if self.anchor_ids:
@@ -310,8 +338,7 @@ class AnchorCalibrationDialog(QDialog):
         self.overlay_list.blockSignals(False)
 
     def _overlay_changed(self, item):
-        anchor_id = item.data(Qt.ItemDataRole.UserRole)
-        anchor = self.scene.anchor_by_id(str(anchor_id)) if anchor_id is not None else None
+        anchor = self.scene.anchor_by_id(str(item.data(Qt.ItemDataRole.UserRole)))
         if anchor is None:
             return
         anchor.visible = item.checkState() == Qt.Checked
@@ -323,61 +350,112 @@ class AnchorCalibrationDialog(QDialog):
             return
         self.canvas.set_selected_anchor(anchor.anchor_id)
         self.kind_label.setText(anchor.kind.value)
-        default_count = 4 if anchor.kind == AnchorKind.PLANE and len(anchor.image_points) == 4 else max(1, min(4, len(anchor.image_points)))
+        count = 4 if anchor.kind == AnchorKind.PLANE else max(1, min(4, len(anchor.image_points)))
         self.point_count.blockSignals(True)
-        self.point_count.setValue(default_count)
+        self.point_count.setValue(count)
         self.point_count.blockSignals(False)
-        for i, (x_box, y_box) in enumerate(zip(self.x_fields, self.y_fields)):
-            if i < len(anchor.image_points):
-                x, y = anchor.image_points[i]
-                x_box.setValue(x)
-                y_box.setValue(y)
-            else:
-                x_box.setValue(0)
-                y_box.setValue(0)
-        self._refresh_point_fields(default_count)
+        self._refresh_point_fields(count)
+        self._load_points_into_fields(anchor.image_points)
         self.canvas.update()
 
     def _refresh_point_fields(self, count):
         anchor = self._current_anchor()
-        plane = anchor is not None and anchor.kind == AnchorKind.PLANE
-        if plane:
+        is_plane = anchor is not None and anchor.kind == AnchorKind.PLANE
+        if is_plane:
             self.point_count.blockSignals(True)
             self.point_count.setValue(4)
             self.point_count.blockSignals(False)
             self.point_count.setEnabled(False)
-            effective = 4
+            count = 4
         else:
             self.point_count.setEnabled(True)
-            effective = max(1, min(4, int(count)))
-        for i, (x_box, y_box) in enumerate(zip(self.x_fields, self.y_fields)):
-            enabled = i < effective
+            count = max(1, min(4, int(count)))
+        for index, (x_box, y_box) in enumerate(zip(self.x_fields, self.y_fields)):
+            enabled = index < count
             x_box.setEnabled(enabled)
             y_box.setEnabled(enabled)
+
+    def _load_points_into_fields(self, points):
+        self._updating_fields = True
+        try:
+            for index, (x_box, y_box) in enumerate(zip(self.x_fields, self.y_fields)):
+                if index < len(points):
+                    x_box.setValue(float(points[index][0]))
+                    y_box.setValue(float(points[index][1]))
+                else:
+                    x_box.setValue(0.0)
+                    y_box.setValue(0.0)
+        finally:
+            self._updating_fields = False
+
+    def _draft_points(self):
+        """Return the current field values as a sparse point list."""
+        anchor = self._current_anchor()
+        if anchor is None:
+            return []
+        count = 4 if anchor.kind == AnchorKind.PLANE else int(self.point_count.value())
+        result = []
+        for index in range(count):
+            x = float(self.x_fields[index].value())
+            y = float(self.y_fields[index].value())
+            if index == 0 or x != 0.0 or y != 0.0 or index < len(anchor.image_points):
+                result.append((x, y))
+            else:
+                break
+        return result
+
+    def _write_fields_to_anchor(self, status: Optional[str] = None):
+        anchor = self._current_anchor()
+        if anchor is None or anchor.locked:
+            return
+        points = self._draft_points()
+        anchor.image_points = tuple(points)
+        if points:
+            anchor.visible = True
+        if status:
+            self.result_label.setText(status)
+        self.canvas.update()
+
+    def _point_field_changed(self, index):
+        if getattr(self, "_updating_fields", False):
+            return
+        anchor = self._current_anchor()
+        if anchor is None or anchor.locked:
+            return
+        # A typed point is immediately materialized. This fixes the old state in
+        # which P1 existed only in the widgets until Apply points was pressed.
+        if anchor.kind != AnchorKind.PLANE and index >= self.point_count.value() - 1 and self.point_count.value() < 4:
+            self.point_count.blockSignals(True)
+            self.point_count.setValue(index + 2)
+            self.point_count.blockSignals(False)
+            self._refresh_point_fields(self.point_count.value())
+        self._write_fields_to_anchor(f"Live calibrated P{index + 1} · {anchor.name}")
 
     def _next_point_index(self):
         anchor = self._current_anchor()
         if anchor is None:
             return 0
         count = 4 if anchor.kind == AnchorKind.PLANE else int(self.point_count.value())
-        stored = list(anchor.image_points)
-        for i in range(count):
-            if i >= len(stored) or (
-                float(self.x_fields[i].value()) == 0.0 and float(self.y_fields[i].value()) == 0.0
-            ):
-                return i
-        return count - 1
+        for index in range(count):
+            if index >= len(anchor.image_points):
+                return index
+        return min(count - 1, 3)
 
     def _canvas_point_clicked(self, x, y):
         anchor = self._current_anchor()
-        if anchor is None:
+        if anchor is None or anchor.locked:
             return
         index = self._next_point_index()
         self.x_fields[index].setValue(x)
         self.y_fields[index].setValue(y)
-        limit = 4 if anchor.kind == AnchorKind.PLANE else int(self.point_count.value())
-        if index + 1 < limit:
-            self.x_fields[index + 1].setFocus()
+        if anchor.kind != AnchorKind.PLANE and index + 1 >= self.point_count.value() and self.point_count.value() < 4:
+            self.point_count.blockSignals(True)
+            self.point_count.setValue(index + 2)
+            self.point_count.blockSignals(False)
+            self._refresh_point_fields(self.point_count.value())
+        next_index = min(index + 1, 3)
+        if next_index < len(self.x_fields) and self.x_fields[next_index].isEnabled():
+            self.x_fields[next_index].setFocus()
         self.canvas.update()
 
     def _canvas_point_dragged(self, index, x, y):
@@ -389,32 +467,36 @@ class AnchorCalibrationDialog(QDialog):
             return
         points[index] = (float(x), float(y))
         anchor.image_points = tuple(points)
-        self.x_fields[index].blockSignals(True)
-        self.y_fields[index].blockSignals(True)
-        self.x_fields[index].setValue(float(x))
-        self.y_fields[index].setValue(float(y))
-        self.x_fields[index].blockSignals(False)
-        self.y_fields[index].blockSignals(False)
-        self.result_label.setText(f"Live calibrated P{index + 1}: ({x:.1f}, {y:.1f}) px · {anchor.name}")
+        self._load_points_into_fields(anchor.image_points)
+        self.result_label.setText(f"Live calibrated P{index + 1} · {anchor.name}")
         self.canvas.update()
 
-    def _save_current_anchor(self):
+    def _apply_points(self):
         anchor = self._current_anchor()
         if anchor is None or anchor.locked:
             return
-        count = 4 if anchor.kind == AnchorKind.PLANE else int(self.point_count.value())
-        anchor.image_points = tuple(
-            (float(self.x_fields[i].value()), float(self.y_fields[i].value()))
-            for i in range(count)
-        )
+        self._write_fields_to_anchor(f"Applied {len(anchor.image_points)} image point(s) to {anchor.name}.")
+
+    def _clear_all_points(self):
+        anchor = self._current_anchor()
+        if anchor is None or anchor.locked:
+            return
+        anchor.image_points = ()
+        self._load_points_into_fields(())
+        if anchor.kind == AnchorKind.PLANE:
+            self.point_count.blockSignals(True)
+            self.point_count.setValue(4)
+            self.point_count.blockSignals(False)
+        else:
+            self.point_count.blockSignals(True)
+            self.point_count.setValue(1)
+            self.point_count.blockSignals(False)
+        self._refresh_point_fields(self.point_count.value())
+        self.result_label.setText(f"Cleared all image points · {anchor.name}")
         self.canvas.update()
-        self.result_label.setText(
-            f"Applied {len(anchor.image_points)} image point(s) to {anchor.name}. "
-            "Manual binding is retained as user-provided evidence."
-        )
 
     def _solve(self):
-        self._save_current_anchor()
+        self._write_fields_to_anchor()
         result = estimate_camera_from_anchors(
             self.scene.anchors,
             self.width,
