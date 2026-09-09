@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QFrame, QLabel, QSizePolicy, QVBoxLayout
+from PySide6.QtWidgets import QFrame, QLabel, QSizePolicy, QSplitter, QVBoxLayout, QWidget
 
 from gui.reverse_3d_reference import AnchorProjectionPreview, AnchorSceneView, CollapsibleSection, Reverse3DWorkspace as _BaseReverse3DWorkspace
 from gui.reverse_3d_reference_line import CameraVisualMatchSection, ReferenceLineProjectionPreview, install_visual_camera_match
@@ -12,15 +12,7 @@ from reverse_engineering.reference_line_calibration import ReferenceLineConstrai
 
 
 class Reverse3DWorkspace(_BaseReverse3DWorkspace):
-    """Reference-aware v3 workspace with direct visual camera matching and line evidence.
-
-    Public methods below form the application boundary. Other widgets should not
-    reach into this workspace's private controls or renderer state.
-
-    The 2D projection preview is intentionally presented as a parallel view over
-    the 3D canvas. Camera/anchor/candidate/reference controls remain consolidated
-    in the right-side inspector.
-    """
+    """Reference-aware v3 workspace with a dedicated right-side 2D preview."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -30,18 +22,20 @@ class Reverse3DWorkspace(_BaseReverse3DWorkspace):
         panel = getattr(self, "_reference_line_calibration", None)
         if panel is not None:
             panel.evidence_changed.connect(self._on_reference_line_evidence_changed)
-        self._projection_overlay = None
-        self._move_projection_preview_to_canvas()
+        self._projection_panel = None
+        self._move_projection_preview_to_right_panel()
         self._sync_visual_camera_match()
         self._sync_anchor_reference_line()
 
-    def _move_projection_preview_to_canvas(self):
-        """Move the 2D preview out of the inspector into the 3D canvas corner."""
+    def _move_projection_preview_to_right_panel(self):
+        """Make 2D preview a stable top panel above the consolidated inspector."""
         preview = getattr(self, "_preview", None)
         if preview is None:
             return
 
+        # The preview is initially inside the inspector's collapsible section.
         old_body = preview.parentWidget()
+        old_section = old_body.parentWidget() if old_body is not None else None
         if old_body is not None:
             old_layout = old_body.layout()
             if old_layout is not None:
@@ -49,78 +43,63 @@ class Reverse3DWorkspace(_BaseReverse3DWorkspace):
                 metrics = getattr(self, "_preview_metrics", None)
                 if metrics is not None:
                     old_layout.removeWidget(metrics)
+        if isinstance(old_section, CollapsibleSection):
+            old_section.setVisible(False)
 
-            section = old_body.parentWidget()
-            if isinstance(section, CollapsibleSection):
-                section.setVisible(False)
-
-        from PySide6.QtWidgets import QSplitter
         splitter = self.findChild(QSplitter)
-        if splitter is None or splitter.count() < 1:
+        if splitter is None or splitter.count() < 2:
             return
-        canvas = splitter.widget(0)
-        if canvas is None:
-            return
+        left = splitter.widget(0)
+        inspector = splitter.widget(1)
+        splitter.removeWidget(inspector)
 
-        overlay = QFrame(canvas)
-        overlay.setObjectName("projectionOverlay")
-        overlay.setFrameShape(QFrame.StyledPanel)
-        overlay.setFrameShadow(QFrame.Raised)
-        overlay.setStyleSheet(
-            "#projectionOverlay { background:#0F172A; border:1px solid #CBD5E1; "
-            "border-radius:8px; }"
-            "#projectionOverlay QLabel { color:#E2E8F0; background:transparent; }"
+        right = QWidget()
+        right_layout = QVBoxLayout(right)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(8)
+
+        projection = QFrame()
+        projection.setObjectName("projectionPanel")
+        projection.setFrameShape(QFrame.StyledPanel)
+        projection.setStyleSheet(
+            "#projectionPanel { background:#0F172A; border:1px solid #CBD5E1; border-radius:8px; }"
+            "#projectionPanel QLabel { background:transparent; color:#E2E8F0; }"
         )
-        overlay.setMinimumSize(330, 230)
-        overlay.setMaximumSize(460, 340)
-        overlay.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-
-        layout = QVBoxLayout(overlay)
-        layout.setContentsMargins(7, 6, 7, 6)
-        layout.setSpacing(4)
+        projection_layout = QVBoxLayout(projection)
+        projection_layout.setContentsMargins(8, 7, 8, 7)
+        projection_layout.setSpacing(4)
 
         header = QLabel("2D Projection Preview")
-        header.setFont(self._view.font())
         header.setStyleSheet("font-weight:600; color:#F8FAFC;")
-        layout.addWidget(header, 0)
+        projection_layout.addWidget(header, 0)
 
-        preview.setParent(overlay)
-        preview.setMinimumHeight(200)
-        preview.setMaximumHeight(290)
+        preview.setParent(projection)
+        preview.setMinimumHeight(230)
+        preview.setMaximumHeight(390)
         preview.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        layout.addWidget(preview, 1)
+        projection_layout.addWidget(preview, 1)
 
         metrics = getattr(self, "_preview_metrics", None)
         if metrics is not None:
-            metrics.setParent(overlay)
-            metrics.setMaximumHeight(34)
+            metrics.setParent(projection)
+            metrics.setMaximumHeight(38)
             metrics.setWordWrap(True)
-            layout.addWidget(metrics, 0)
+            projection_layout.addWidget(metrics, 0)
 
-        overlay.raise_()
-        overlay.show()
-        self._projection_overlay = overlay
-        self._position_projection_overlay()
+        right_layout.addWidget(projection, 0)
+        right_layout.addWidget(inspector, 1)
 
-    def _position_projection_overlay(self):
-        overlay = self._projection_overlay
-        if overlay is None:
-            return
-        parent = overlay.parentWidget()
-        if parent is None:
-            return
-        margin = 14
-        width = min(440, max(330, int(parent.width() * 0.34)))
-        width = min(width, max(330, parent.width() - margin * 2))
-        height = min(325, max(235, int(parent.height() * 0.38)))
-        height = min(height, max(235, parent.height() - 92))
-        overlay.resize(width, height)
-        overlay.move(max(margin, parent.width() - width - margin), margin)
-        overlay.raise_()
+        splitter.addWidget(right)
+        splitter.setSizes([900, 520])
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 0)
+        self._projection_panel = projection
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        self._position_projection_overlay()
+        panel = self._projection_panel
+        if panel is not None:
+            panel.updateGeometry()
 
     @property
     def scene_model(self):
@@ -140,7 +119,6 @@ class Reverse3DWorkspace(_BaseReverse3DWorkspace):
     def refresh_scene_view(self):
         self._view.update()
         self._refresh_projection()
-        self._position_projection_overlay()
 
     def set_camera_value(self, parameter: str, value: float):
         controls = {
@@ -211,6 +189,8 @@ class Reverse3DWorkspace(_BaseReverse3DWorkspace):
         if signature == self._last_ref_signature:
             return
         self._last_ref_signature = signature
+        if image is not None:
+            self.set_source_image(image)
         if ref is None or pose is None or image is None:
             self.clear_reference_context()
             return
@@ -219,6 +199,17 @@ class Reverse3DWorkspace(_BaseReverse3DWorkspace):
             pose = pose.rescaled(int(image.shape[1]), int(image.shape[0]))
         current = build_reference_composition(pose, image.shape[1], image.shape[0])
         self.set_reference_context(ref, current)
+
+    def update_results(self, bundle):
+        """Keep the preview image synchronized with the actual application image."""
+        window = self.window()
+        image = getattr(window, "_img", None)
+        if image is None:
+            reference_mode = getattr(window, "_reference_mode", None)
+            image = getattr(reference_mode, "_current_image", None)
+        if image is not None and image is not self._source_image:
+            self.set_source_image(image)
+        return super().update_results(bundle)
 
     def _update_reference_hypothesis(self):
         if not hasattr(self, "_reference_state"):
@@ -231,7 +222,13 @@ class Reverse3DWorkspace(_BaseReverse3DWorkspace):
                 self.clear_reference_context()
             return
         from reverse_engineering.reference_camera import estimate_reference_camera_hypothesis
-        self._hypothesis = estimate_reference_camera_hypothesis(self.scene, reference, current, selected_anchor=anchor, line_evidence=getattr(self, "_reference_line_evidence", None))
+        self._hypothesis = estimate_reference_camera_hypothesis(
+            self.scene,
+            reference,
+            current,
+            selected_anchor=anchor,
+            line_evidence=getattr(self, "_reference_line_evidence", None),
+        )
         h = self._hypothesis
         if not h.success:
             self._reference_state.setText(h.message)
@@ -245,10 +242,13 @@ class Reverse3DWorkspace(_BaseReverse3DWorkspace):
         self._ref_pitch.setText(f"{h.reframe_pitch_deg:+.1f}°")
         self._ref_focal.setText(f"{h.focal_length_mm:.1f} mm (same focal prior)")
         support = h.support
-        if h.line_observed_angle_deg is not None: support += f" · line obs {h.line_observed_angle_deg:+.1f}°"
-        if h.roll_correction_deg is not None: support += f" · roll {h.roll_correction_deg:+.1f}° ({h.line_constraint})"
+        if h.line_observed_angle_deg is not None:
+            support += f" · line obs {h.line_observed_angle_deg:+.1f}°"
+        if h.roll_correction_deg is not None:
+            support += f" · roll {h.roll_correction_deg:+.1f}° ({h.line_constraint})"
         self._ref_support.setText(support + (f" · selected {h.anchor_name}" if h.anchor_name else ""))
-        if self._reference_section is not None and not self._reference_section.button.isChecked(): self._reference_section.button.setChecked(True)
+        if self._reference_section is not None and not self._reference_section.button.isChecked():
+            self._reference_section.button.setChecked(True)
 
     def _on_reference_line_evidence_changed(self, evidence):
         self._reference_line_evidence = evidence
@@ -262,8 +262,19 @@ class Reverse3DWorkspace(_BaseReverse3DWorkspace):
                 anchor.reference_line_constraint = evidence.constraint.value
         panel = getattr(self, "_reference_line_calibration", None)
         controller = getattr(panel, "_roll_apply_controller", None) if panel is not None else None
-        if controller is not None: controller.refresh(evidence)
+        if controller is not None:
+            controller.refresh(evidence)
         self._update_reference_hypothesis()
 
 
-__all__ = ["AnchorProjectionPreview", "AnchorSceneView", "CameraVisualMatchSection", "CalibratedReferenceLinePreview", "CollapsibleSection", "ReferenceLineCalibrationPanel", "ReferenceLineProjectionPreview", "Reverse3DWorkspace", "RollCorrectionController"]
+__all__ = [
+    "AnchorProjectionPreview",
+    "AnchorSceneView",
+    "CameraVisualMatchSection",
+    "CalibratedReferenceLinePreview",
+    "CollapsibleSection",
+    "ReferenceLineCalibrationPanel",
+    "ReferenceLineProjectionPreview",
+    "Reverse3DWorkspace",
+    "RollCorrectionController",
+]
