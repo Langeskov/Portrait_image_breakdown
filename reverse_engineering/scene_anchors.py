@@ -19,7 +19,8 @@ class SceneAnchor:
 
     ``enabled`` controls whether an anchor participates in reconstruction logic;
     ``visible`` is presentation-only and can be switched off without changing
-    the calibration model.
+    the calibration model. ``image_points`` and ``reference_line_constraint``
+    hold optional image-space evidence associated with this scene anchor.
     """
 
     anchor_id: str
@@ -34,6 +35,7 @@ class SceneAnchor:
     enabled: bool = True
     visible: bool = True
     image_points: tuple[tuple[float, float], ...] = ()
+    reference_line_constraint: str = "free"
 
     def normalized_normal(self) -> np.ndarray:
         n = np.asarray(self.normal, dtype=float)
@@ -86,6 +88,8 @@ class SceneAnchor:
                 errors.append("plane size must contain two positive finite values")
         if not 0.0 <= float(self.confidence) <= 1.0:
             errors.append("confidence must be between 0 and 1")
+        if self.reference_line_constraint not in {"horizontal", "vertical", "free"}:
+            errors.append("reference_line_constraint must be horizontal, vertical, or free")
         return errors
 
     def to_dict(self) -> dict:
@@ -102,6 +106,7 @@ class SceneAnchor:
             "enabled": bool(self.enabled),
             "visible": bool(self.visible),
             "image_points": [[float(x), float(y)] for x, y in self.image_points],
+            "reference_line_constraint": str(self.reference_line_constraint),
         }
 
     @classmethod
@@ -124,6 +129,7 @@ class SceneAnchor:
                 for p in data.get("image_points", ())
                 if len(p) >= 2
             ),
+            reference_line_constraint=str(data.get("reference_line_constraint", "free")),
         )
 
 
