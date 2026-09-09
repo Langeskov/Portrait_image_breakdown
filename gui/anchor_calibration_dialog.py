@@ -20,14 +20,17 @@ class AnchorImageCanvas(QWidget):
     """Display the source image and visible manual anchor observations."""
 
     point_clicked = Signal(float, float)
+    point_dragged = Signal(int, float, float)
 
     def __init__(self, scene, image=None, parent=None):
         super().__init__(parent)
         self.scene = scene
         self._pixmap = QPixmap()
         self.selected_anchor_id: Optional[str] = None
+        self._drag_point_index: Optional[int] = None
         self.setMinimumSize(520, 420)
         self.setMouseTracking(True)
+        self.setCursor(Qt.CursorShape.OpenHandCursor)
         if image is not None:
             self.set_image(image)
 
@@ -57,6 +60,8 @@ class AnchorImageCanvas(QWidget):
 
     def set_selected_anchor(self, anchor_id: Optional[str]):
         self.selected_anchor_id = anchor_id
+        self._drag_point_index = None
+        self.setCursor(Qt.CursorShape.OpenHandCursor)
         self.update()
 
     def _image_rect(self) -> QRectF:
@@ -84,12 +89,53 @@ class AnchorImageCanvas(QWidget):
         y = (position.y() - rect.top()) / rect.height() * ih
         return float(max(0.0, min(iw - 1.0, x))), float(max(0.0, min(ih - 1.0, y)))
 
+    def _hit_selected_point(self, position, radius_px: float = 12.0) -> Optional[int]:
+        if self.scene is None or not self.selected_anchor_id:
+            return None
+        anchor = self.scene.anchor_by_id(str(self.selected_anchor_id))
+        if anchor is None or getattr(anchor, "locked", False) or not getattr(anchor, "visible", True):
+            return None
+        best_index = None
+        best_distance = float(radius_px * radius_px)
+        for index, point in enumerate(getattr(anchor, "image_points", ())):
+            widget_point = self._image_to_widget(point)
+            distance = float((widget_point.x() - position.x()) ** 2 + (widget_point.y() - position.y()) ** 2)
+            if distance <= best_distance:
+                best_distance = distance
+                best_index = index
+        return best_index
+
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
+            drag_index = self._hit_selected_point(event.position())
+            if drag_index is not None:
+                self._drag_point_index = drag_index
+                self.setCursor(Qt.CursorShape.ClosedHandCursor)
+                event.accept()
+                return
             point = self._widget_to_image(event.position())
             if point is not None:
                 self.point_clicked.emit(*point)
+                event.accept()
+                return
         super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self._drag_point_index is not None and (event.buttons() & Qt.LeftButton):
+            point = self._widget_to_image(event.position())
+            if point is not None:
+                self.point_dragged.emit(self._drag_point_index, point[0], point[1])
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton and self._drag_point_index is not None:
+            self._drag_point_index = None
+            self.setCursor(Qt.CursorShape.OpenHandCursor)
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -114,7 +160,7 @@ class AnchorImageCanvas(QWidget):
             painter.setBrush(QBrush(QColor("#FFFFFF")))
             painter.setPen(QPen(QColor("#F59E0B") if selected else QColor("#38BDF8"), 2 if selected else 1.2))
             for index, point in enumerate(points):
-                radius = 5 if selected else 4
+                radius = 6 if selected and index == self._drag_point_index else (5 if selected else 4)
                 painter.drawEllipse(point, radius, radius)
                 if selected:
                     painter.drawText(point + QPointF(7, -7), f"P{index + 1}")
@@ -141,8 +187,8 @@ class AnchorCalibrationDialog(QDialog):
         root.setSpacing(8)
 
         intro = QLabel(
-            "在左侧原图上直接点选参考位置。右侧只保留当前锚点与必要参数；"
-            "橙色为当前锚点，蓝色为其它已显示锚点。平面需要 4 个图像点。"
+            "在左侧原图上直接点选参考位置。已存在的当前锚点可直接拖动实时校准；"
+            "右侧坐标会同步更新。橙色为当前锚点，蓝色为其它已显示锚点。平面需要 4 个图像点。"
         )
         intro.setWordWrap(True)
         intro.setStyleSheet("color:#64748B;")
@@ -152,6 +198,7 @@ class AnchorCalibrationDialog(QDialog):
         content.setSpacing(10)
         self.canvas = AnchorImageCanvas(scene, image=image)
         self.canvas.point_clicked.connect(self._canvas_point_clicked)
+        self.canvas.point_dragged.connect(self._canvas_point_dragged)
         content.addWidget(self.canvas, 3)
 
         scroll = QScrollArea()
@@ -199,7 +246,7 @@ class AnchorCalibrationDialog(QDialog):
             form.addRow(f"P{index + 1} Y", y_box)
         panel_layout.addWidget(group)
 
-        click_hint = QLabel("图像点击会写入下一个 P 点；也可直接修改坐标。")
+        click_hint = QLabel("点击空白处会写入下一个 P 点；拖动已有点会立即写回锚点坐标。")
         click_hint.setWordWrap(True)
         click_hint.setStyleSheet("color:#64748B; font-size:9pt;")
         panel_layout.addWidget(click_hint)
@@ -331,6 +378,24 @@ class AnchorCalibrationDialog(QDialog):
         limit = 4 if anchor.kind == AnchorKind.PLANE else int(self.point_count.value())
         if index + 1 < limit:
             self.x_fields[index + 1].setFocus()
+        self.canvas.update()
+
+    def _canvas_point_dragged(self, index, x, y):
+        anchor = self._current_anchor()
+        if anchor is None or anchor.locked:
+            return
+        points = list(anchor.image_points)
+        if index < 0 or index >= len(points):
+            return
+        points[index] = (float(x), float(y))
+        anchor.image_points = tuple(points)
+        self.x_fields[index].blockSignals(True)
+        self.y_fields[index].blockSignals(True)
+        self.x_fields[index].setValue(float(x))
+        self.y_fields[index].setValue(float(y))
+        self.x_fields[index].blockSignals(False)
+        self.y_fields[index].blockSignals(False)
+        self.result_label.setText(f"Live calibrated P{index + 1}: ({x:.1f}, {y:.1f}) px · {anchor.name}")
         self.canvas.update()
 
     def _save_current_anchor(self):
