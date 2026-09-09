@@ -1,17 +1,32 @@
 """Application-owned MainWindow facade with explicit service injection."""
 from __future__ import annotations
+
 from typing import Optional
+
+from PySide6.QtCore import QSettings
+
+from core.model_config import DEFAULT_POSE_MODEL, get_pose_model
+from core.pose_detector import PoseDetector
 from gui.main_window import MainWindow as _BaseMainWindow, _resize_for_analysis, AnalysisWorker, AnalysisBundle
 from gui.cache import AnalysisCache
 
 
 class ApplicationMainWindow(_BaseMainWindow):
-    """MainWindow variant that receives engine/cache/profile services explicitly."""
+    """MainWindow variant that receives engine/cache/profile/model services explicitly."""
+
+    _SETTINGS_ORG = "PortraitImageBreakdown"
+    _SETTINGS_APP = "PortraitImageBreakdown"
+    _POSE_MODEL_SETTING = "pose_model"
 
     def __init__(self, services, parent=None):
+        settings = QSettings(self._SETTINGS_ORG, self._SETTINGS_APP)
+        configured = settings.value(self._POSE_MODEL_SETTING, DEFAULT_POSE_MODEL)
+        resolved = get_pose_model(str(configured) if configured is not None else DEFAULT_POSE_MODEL)
+        pose_model = resolved.key if hasattr(resolved, "key") else str(resolved)
+
         # MainWindow is a top-level QMainWindow and its constructor intentionally
         # owns its own application wiring; it does not accept a parent argument.
-        super().__init__()
+        super().__init__(pose_model=pose_model)
         if parent is not None:
             self.setParent(parent)
         self._services = services
@@ -20,13 +35,57 @@ class ApplicationMainWindow(_BaseMainWindow):
         self._engine_factory = services.engine_factory
         self._image_cache_key = services.image_cache_key
         self._result_cache = AnalysisCache(capacity=8)
+        self._pose_model = pose_model
 
     @property
     def current_image(self):
         return self._img
 
+    @property
+    def pose_model(self) -> str:
+        """Current configured pose model key or explicit checkpoint path."""
+        return self._pose_model
+
+    @property
+    def pose_model_name(self) -> str:
+        return self._det.model_name
+
     def set_current_image_path(self, path: str):
         self._current_path = str(path)
+
+    def set_pose_model(self, model: str) -> None:
+        """Switch the detector model and re-analyze the current image."""
+        model = str(model or DEFAULT_POSE_MODEL).strip()
+        resolved = get_pose_model(model)
+        normalized = resolved.key if hasattr(resolved, "key") else str(resolved)
+        if normalized == self._pose_model:
+            return
+
+        self._cancel_worker()
+        old_detector = self._det
+        try:
+            new_detector = PoseDetector(model=normalized)
+        except Exception:
+            # Keep the current detector intact when the new checkpoint cannot load.
+            raise
+
+        self._det = new_detector
+        self._pose_model = normalized
+        QSettings(self._SETTINGS_ORG, self._SETTINGS_APP).setValue(
+            self._POSE_MODEL_SETTING, normalized
+        )
+        self._result_cache.clear()
+        self._bundle = AnalysisBundle()
+        self._eng = None
+        try:
+            old_detector.close()
+        except Exception:
+            pass
+
+        if self._current_path:
+            self.load_image(self._current_path)
+        else:
+            self._st.showMessage(f"Pose model: {self.pose_model_name}")
 
     def set_calibration_profile(self, profile: str):
         self._calibration_profile = str(profile or "Generic")
@@ -63,7 +122,7 @@ class ApplicationMainWindow(_BaseMainWindow):
             self._apply_bundle(self._bundle)
             self._finish_progress(f"Loaded from cache | {frame_orientation(img)} | {path.split('/')[-1]}")
             return
-        self._set_progress(0, f"Preparing analysis | {frame_orientation(img)} | {path.split('/')[-1]}")
+        self._set_progress(0, f"Preparing analysis | {frame_orientation(img)} | {path.split('/')[-1]} | {self.pose_model_name}")
         self._cancel_worker()
         analysis_img = _resize_for_analysis(img, max_side=1600)
         if self._re_enabled and self._eng is None:
