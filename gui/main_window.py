@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QSplitter,
     QToolBar, QFileDialog, QLabel, QStatusBar, QMessageBox, QCheckBox,
     QComboBox, QApplication, QTabBar, QStackedWidget, QScrollArea,
-    QProgressBar, QPushButton, QGridLayout, QGroupBox,
+    QProgressBar, QPushButton, QGroupBox,
 )
 
 THEME = dict(
@@ -198,18 +198,40 @@ class Analysis2DWorkspace(Workspace):
     def __init__(self, parent=None):
         super().__init__(parent)
         lo = QVBoxLayout(self); lo.setContentsMargins(0, 0, 0, 0); lo.setSpacing(0)
+
         self._overlay_group = QGroupBox("2D Overlays")
-        self._overlay_group.setStyleSheet("QGroupBox { margin: 6px 8px 4px 8px; padding-top: 6px; border: 1px solid #E2E8F0; border-radius: 6px; } QGroupBox::title { left: 8px; padding: 0 4px; color:#475569; }")
-        grid = QGridLayout(self._overlay_group); grid.setContentsMargins(10, 12, 10, 8); grid.setHorizontalSpacing(10); grid.setVerticalSpacing(4)
+        self._overlay_group.setStyleSheet(
+            "QGroupBox { margin: 4px 8px 3px 8px; padding-top: 4px; "
+            "border: 1px solid #E2E8F0; border-radius: 5px; } "
+            "QGroupBox::title { left: 8px; padding: 0 4px; color:#475569; font-size:9pt; }"
+        )
+        row = QHBoxLayout(self._overlay_group)
+        row.setContentsMargins(8, 8, 8, 6)
+        row.setSpacing(7)
         self._overlay_controls = []
-        specs = [("Skeleton", True, "skeleton"), ("3x3 Grid", True, "thirds"), ("Center", True, "center"), ("BBox", True, "bbox"), ("Headroom", False, "headroom"), ("Reference Target", True, "reference_target"), ("Visual Weight", False, "visual_weight"), ("Reverse Evidence", False, "reverse")]
-        for i, (label, checked, key) in enumerate(specs):
-            cb = QCheckBox(label); cb.setChecked(checked); cb.stateChanged.connect(self._apply_overlay_options); cb.setProperty("overlay_key", key); self._overlay_controls.append(cb); grid.addWidget(cb, i // 4, i % 4)
+        specs = [
+            ("Skeleton", True, "skeleton"), ("3x3 Grid", True, "thirds"),
+            ("Center", True, "center"), ("BBox", True, "bbox"),
+            ("Headroom", False, "headroom"), ("Reference Target", True, "reference_target"),
+            ("Visual Weight", False, "visual_weight"), ("Reverse Evidence", False, "reverse"),
+        ]
+        for label, checked, key in specs:
+            cb = QCheckBox(label)
+            cb.setChecked(checked)
+            cb.setProperty("overlay_key", key)
+            cb.setStyleSheet("QCheckBox { font-size: 9pt; spacing: 4px; padding: 0px; }")
+            cb.stateChanged.connect(self._apply_overlay_options)
+            self._overlay_controls.append(cb)
+            row.addWidget(cb, 0, Qt.AlignmentFlag.AlignVCenter)
+        row.addStretch(1)
+
         sp = QSplitter(Qt.Horizontal)
         self._ap = AnalysisPanel(); sp.addWidget(self._ap)
         self._cv = ImageCanvas(); sp.addWidget(self._cv)
         self._sp = SuggestionPanel(); sp.addWidget(self._sp)
-        sp.setSizes([300, 700, 320]); sp.setStretchFactor(1, 1); lo.addWidget(self._overlay_group, 0); lo.addWidget(sp, 1)
+        sp.setSizes([300, 700, 320]); sp.setStretchFactor(1, 1)
+        lo.addWidget(self._overlay_group, 0)
+        lo.addWidget(sp, 1)
         self._apply_overlay_options()
 
     def set_image(self, img: np.ndarray): self._cv.set_image(img)
