@@ -46,7 +46,10 @@ class Reverse3DWorkspace(_BaseReverse3DWorkspace):
             old_section.setVisible(False)
 
         inspector = splitter.widget(1)
-        splitter.removeWidget(inspector)
+        # QSplitter in PySide6 does not expose removeWidget(). Reparenting the
+        # child out of the splitter is the supported Qt way to detach it.
+        if inspector is not None:
+            inspector.setParent(None)
 
         projection = QFrame()
         projection.setObjectName("projectionPanel")
@@ -80,7 +83,8 @@ class Reverse3DWorkspace(_BaseReverse3DWorkspace):
             projection_layout.addWidget(metrics, 0)
 
         splitter.addWidget(projection)
-        splitter.addWidget(inspector)
+        if inspector is not None:
+            splitter.addWidget(inspector)
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 0)
         splitter.setStretchFactor(2, 0)
