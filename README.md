@@ -121,7 +121,7 @@ The first v3 layer is intentionally 2D-first. A single photograph does not provi
 - per-landmark pose deltas with directional photographer instructions
 - deterministic serialization for later reference-session recording
 
-The GUI now provides a **Reference** workspace where a reference photograph can be loaded independently, with EXIF orientation normalized before pose analysis. The current analyzed image is compared automatically, making the first v3 loop usable without changing the existing v2.5 reconstruction engine.
+The GUI provides a **Reference** workspace where a reference photograph can be loaded independently, with EXIF orientation normalized before pose analysis. The current analyzed image is compared automatically, making the first v3 loop usable without changing the existing v2.5 reconstruction engine.
 
 ### v3 Phase 2 — Reference target planning
 
@@ -135,7 +135,7 @@ The Reference workspace renders this target plan under the two-image comparison.
 
 ### v3 Phase 2.2 — 2D target guides
 
-The current-photo 2D canvas now consumes the same reference target data and draws:
+The current-photo 2D canvas consumes the same reference target data and draws:
 
 - a dashed **TARGET FRAME** showing where the reference subject should occupy the current frame
 - a **TARGET CENTER** marker and arrow showing whole-subject composition movement
@@ -152,7 +152,7 @@ The `reverse_engineering/multi_person_layout.py` model turns detector multi-pers
 - **relative 3D ordering** when the local depth backend provides enough separation
 - **metric camera/person distance** remains unknown without an independent scale source
 
-The reconstruction workspace now projects every retained person through the same camera model. Primary and additional people are visually separated, and the 2D validation preview shows their independent projected bounds.
+The reconstruction workspace projects every retained person through the same camera model. Primary and additional people are visually separated, and the 2D validation preview shows their independent projected bounds.
 
 ### v3 Phase 2.4 — Editable scene anchors
 
@@ -168,18 +168,49 @@ The reconstruction workspace now projects every retained person through the same
 
 The reconstruction inspector is scrollable and deliberately sparse. **Scene people is collapsed by default**, Candidate solutions remains collapsed, and Scene anchor rows have per-anchor visibility switches. The visibility state is presentation-only and does not disable calibration participation.
 
-### v3 Phase 2.5 — Image-first manual anchor calibration
+### v3 Phase 2.5 — Image-first manual anchor calibration and full workflow
 
-The first part of Phase 2.5 is now implemented through **Anchor Calibration**:
+Phase 2.5 is now fully wired through the desktop workflow:
 
-- the source photograph is displayed directly beside the calibration controls
-- clicking the image writes the next `P1…P4` image coordinate; numeric coordinates remain available for precision work
+- the source photograph is displayed directly beside calibration controls
+- clicking the image writes `P1…P4` image coordinates; numeric coordinates remain available for precision work
 - bound point anchors and four-point plane anchors are drawn back onto the original image
 - visible anchors are controlled independently from reconstruction participation
 - all bound anchors can generate a non-destructive `CameraAnchorHypothesis` through PnP when sufficient correspondences exist
-- the active `SceneCamera` is never silently replaced by the hypothesis
+- the anchored PnP result is exposed as an explicit cross-check beside the active SceneCamera and never silently replaces it
+- the active reference composition produces a conservative **Reference Camera Hypothesis** with distance/re-aim deltas
+- plane anchors support explicit horizontal / vertical / free reference-line evidence and evidence-derived roll correction
+- plane-aware positional constraints can be applied/evaluated against the primary subject and persisted in the session
+- reconstruction sessions are versioned and integrity checked, including scene anchors, image evidence, plane constraints and reference-image metadata
+- loading a session restores the editable 3D scene, inspector state, constraints, anchor cross-check, and reference-photo context when the reference file is still available
+- composition-aware pose targets can be generated and pushed back into the same 2D reference guidance overlay
+- a Temporal workspace provides conservative pose smoothing for sampled video sequences without inventing metric camera motion
 
-The remaining Phase 2.5 work is intentionally kept separate: reference-camera comparison, plane-aware object constraints, and save/load editable reconstruction sessions.
+The V3 loop is therefore:
+
+```text
+Reference image
+  ↓
+reference pose + composition
+  ↓
+current image analysis
+  ↓
+2D target plan + landmark guidance
+  ↓
+editable 3D scene anchors
+  ↓
+image-space anchor binding
+  ↓
+anchor PnP cross-check ───────┐
+                              ├─→ compare evidence
+reference camera hypothesis ──┘
+  ↓
+plane/reference-line constraints
+  ↓
+pose / camera / framing adjustments
+  ↓
+save or restore reconstruction session
+```
 
 ## Test Organization
 
@@ -195,7 +226,9 @@ Completed: calibration profiles, EXIF + calibration separation, multi-candidate 
 
 ### v3 — Reference Reconstruction and Scene Understanding
 
-#### Completed
+**Phase 2.5 is functionally complete for the current desktop workflow.**
+
+Completed:
 - Reference-photo comparison workspace
 - Explicit reference composition and semantic body anchors
 - Pose-to-reference landmark deltas
@@ -210,16 +243,18 @@ Completed: calibration profiles, EXIF + calibration separation, multi-candidate 
 - Independent scene-anchor visibility controls
 - Image-first manual anchor binding with original-image overlay
 - Non-destructive camera hypothesis estimation from bound anchors
-- Compact scrollable reconstruction inspector with collapsible Scene people / Candidate sections
+- Reference-photo camera hypothesis from composition evidence
+- Reference-line constraints and evidence-derived roll correction
+- Plane-aware positional constraints
+- Versioned, integrity-checked reconstruction sessions
+- Composition-aware pose target generation
+- Conservative temporal pose smoothing workspace
+- Desktop integration of the complete V3 flow
 
-#### Phase 2.5 — remaining
-- Reference-photo camera hypothesis comparison against the anchored scene
-- Plane-aware room/object constraints without silently converting hypotheses into observations
-- Save/load editable reconstruction sessions
-
-#### Later v3
-- Composition-aware target pose generation rather than only corrective suggestions
-- Temporal mode for video/live camera input, smoothing pose and camera estimates over time
+### Later v3
+- Composition-aware target pose generation with richer whole-body feasibility solving
+- EvidenceObservation records for multiple observations of the same physical feature across images
+- Optional sampled per-frame camera solving for temporal sequences
 
 ### v4 — Assisted Shooting
 - Optional live camera/tether integration
