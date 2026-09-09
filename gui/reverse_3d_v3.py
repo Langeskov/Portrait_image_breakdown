@@ -5,13 +5,13 @@ from PySide6.QtWidgets import QFrame, QLabel, QSizePolicy, QSplitter, QVBoxLayou
 
 from gui.reverse_3d_reference import AnchorProjectionPreview, AnchorSceneView, CollapsibleSection, Reverse3DWorkspace as _BaseReverse3DWorkspace
 from gui.reverse_3d_reference_line import CameraVisualMatchSection, ReferenceLineProjectionPreview, install_visual_camera_match
-from gui.reference_line_calibration import CalibratedReferenceLinePreview, ReferenceLineCalibrationPanel, install_reference_line_calibration
 from gui.reference_line_apply import RollCorrectionController, install_roll_correction
+from gui.reference_line_calibration import CalibratedReferenceLinePreview, ReferenceLineCalibrationPanel, install_reference_line_calibration
 from reverse_engineering.reference_line_calibration import ReferenceLineConstraint
 
 
 class Reverse3DWorkspace(_BaseReverse3DWorkspace):
-    """Reference-aware v3 workspace with a dedicated right-side 2D preview."""
+    """Reference-aware v3 workspace with parallel 3D, 2D, and inspector columns."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -22,15 +22,17 @@ class Reverse3DWorkspace(_BaseReverse3DWorkspace):
         if panel is not None:
             panel.evidence_changed.connect(self._on_reference_line_evidence_changed)
         self._projection_panel = None
-        self._move_projection_preview_to_right_panel()
+        self._move_projection_preview_next_to_3d()
         self._sync_visual_camera_match()
         self._sync_anchor_reference_line()
 
-    def _move_projection_preview_to_right_panel(self):
-        """Make 2D preview a stable top panel above the consolidated inspector."""
+    def _move_projection_preview_next_to_3d(self):
+        """Make 3D, live 2D projection, and parameter inspector visible together."""
         preview = getattr(self, "_preview", None)
-        if preview is None:
+        splitter = self.findChild(QSplitter)
+        if preview is None or splitter is None or splitter.count() < 2:
             return
+
         old_body = preview.parentWidget()
         old_section = old_body.parentWidget() if old_body is not None else None
         if old_body is not None:
@@ -43,20 +45,15 @@ class Reverse3DWorkspace(_BaseReverse3DWorkspace):
         if isinstance(old_section, CollapsibleSection):
             old_section.setVisible(False)
 
-        splitter = self.findChild(QSplitter)
-        if splitter is None or splitter.count() < 2:
-            return
         inspector = splitter.widget(1)
         splitter.removeWidget(inspector)
-
-        right = QWidget()
-        right_layout = QVBoxLayout(right)
-        right_layout.setContentsMargins(0, 0, 0, 0)
-        right_layout.setSpacing(8)
 
         projection = QFrame()
         projection.setObjectName("projectionPanel")
         projection.setFrameShape(QFrame.StyledPanel)
+        projection.setMinimumWidth(280)
+        projection.setMaximumWidth(360)
+        projection.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
         projection.setStyleSheet(
             "#projectionPanel { background:#0F172A; border:1px solid #CBD5E1; border-radius:8px; }"
             "#projectionPanel QLabel { background:transparent; color:#E2E8F0; }"
@@ -70,24 +67,24 @@ class Reverse3DWorkspace(_BaseReverse3DWorkspace):
         projection_layout.addWidget(header, 0)
 
         preview.setParent(projection)
-        preview.setMinimumHeight(230)
-        preview.setMaximumHeight(390)
+        preview.setMinimumHeight(220)
+        preview.setMaximumHeight(420)
         preview.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         projection_layout.addWidget(preview, 1)
 
         metrics = getattr(self, "_preview_metrics", None)
         if metrics is not None:
             metrics.setParent(projection)
-            metrics.setMaximumHeight(38)
+            metrics.setMaximumHeight(42)
             metrics.setWordWrap(True)
             projection_layout.addWidget(metrics, 0)
 
-        right_layout.addWidget(projection, 0)
-        right_layout.addWidget(inspector, 1)
-        splitter.addWidget(right)
-        splitter.setSizes([900, 520])
+        splitter.addWidget(projection)
+        splitter.addWidget(inspector)
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 0)
+        splitter.setStretchFactor(2, 0)
+        splitter.setSizes([670, 320, 410])
         self._projection_panel = projection
 
     @property
@@ -190,7 +187,7 @@ class Reverse3DWorkspace(_BaseReverse3DWorkspace):
         self.set_reference_context(ref, current)
 
     def update_results(self, bundle):
-        """Keep the preview image synchronized with the actual application image."""
+        """Keep the live preview synchronized with the application image."""
         window = self.window()
         image = getattr(window, "_img", None)
         if image is None:
@@ -257,13 +254,7 @@ class Reverse3DWorkspace(_BaseReverse3DWorkspace):
 
 
 __all__ = [
-    "AnchorProjectionPreview",
-    "AnchorSceneView",
-    "CameraVisualMatchSection",
-    "CalibratedReferenceLinePreview",
-    "CollapsibleSection",
-    "ReferenceLineCalibrationPanel",
-    "ReferenceLineProjectionPreview",
-    "Reverse3DWorkspace",
-    "RollCorrectionController",
+    "AnchorProjectionPreview", "AnchorSceneView", "CameraVisualMatchSection",
+    "CalibratedReferenceLinePreview", "CollapsibleSection", "ReferenceLineCalibrationPanel",
+    "ReferenceLineProjectionPreview", "Reverse3DWorkspace", "RollCorrectionController",
 ]
