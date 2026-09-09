@@ -58,7 +58,11 @@ class MonocularDepthProvider(DepthProvider):
             try:
                 model_depth = np.asarray(self._model_fn(image), dtype=np.float32)
                 if model_depth.shape == image.shape[:2] and np.isfinite(model_depth).mean() > 0.95:
-                    self._last_depth = self._postprocess(model_depth)
+                    # A local model owns its numeric scale. Do not normalize or blur
+                    # it here: callers that need a unit interval use
+                    # estimate_relative_depth(), while direct model output should
+                    # remain lossless for projection/ranking backends.
+                    self._last_depth = model_depth.copy()
                     self.last_backend = "local_model"
                     self.last_confidence = 0.75
                     return self._last_depth
@@ -89,20 +93,12 @@ class MonocularDepthProvider(DepthProvider):
         g95 = np.percentile(gradient, 95)
         edge_term = np.clip(gradient / max(float(g95), 1e-5), 0.0, 1.0)
 
-        # Coarse vertical prior is deliberately weak and removed near the center
-        # of the subject, where portrait photography commonly breaks the outdoor
-        # "sky is far" assumption.
         y = np.linspace(0.0, 1.0, h, dtype=np.float32).reshape(-1, 1)
         vertical_prior = np.repeat(y, w, axis=1)
-
-        # Local variance is a more stable focus/texture cue than raw Laplacian.
         mean = cv2.GaussianBlur(gray, (0, 0), 2.0)
         sqmean = cv2.GaussianBlur(gray * gray, (0, 0), 2.0)
         local_var = np.maximum(sqmean - mean * mean, 0.0)
         var_norm = local_var / max(float(np.percentile(local_var, 98)), 1e-6)
-
-        # Keep the original qualitative ordering: smooth/weakly textured and
-        # upper-image regions tend to be farther away.
         depth = 0.42 * (1.0 - edge_term) + 0.22 * vertical_prior + 0.36 * (1.0 - np.clip(var_norm, 0.0, 1.0))
         depth = cv2.bilateralFilter(depth.astype(np.float32), 7, 0.08, 5.0)
         return MonocularDepthProvider._postprocess(depth)
