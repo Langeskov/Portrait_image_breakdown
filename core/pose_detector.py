@@ -14,7 +14,7 @@ from typing import Optional
 import numpy as np
 from ultralytics import YOLO
 
-from core.model_config import get_pose_model, resolve_pose_model_path, validate_pose_model
+from core.model_config import get_pose_model, resolve_pose_model_path, ensure_pose_model
 
 
 class LandmarkIndex(IntEnum):
@@ -191,8 +191,7 @@ class PoseDetector:
         model_complexity: int | None = None,
     ):
         self.model = get_pose_model(model)
-        self.model_path = resolve_pose_model_path(model)
-        validate_pose_model(model)
+        self.model_path = ensure_pose_model(model)
         self._model = YOLO(str(self.model_path))
         self._conf = conf
         self._iou = iou
