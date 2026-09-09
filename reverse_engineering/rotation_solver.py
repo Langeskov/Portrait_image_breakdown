@@ -206,7 +206,7 @@ def _estimate_line_roll(evidence: SceneGeometryEvidence) -> tuple[float | None, 
     )
 
     if not (strong_two_family or strong_single_family):
-        return None, float(np.clip(max(two_family_conf, single_family_conf) * 0.90, 0.0, 1.0)), count
+        return None, float(np.clip(max(two_family_conf, single_family_conf) * 0.65, 0.0, 1.0)), count
 
     confidence = two_family_conf if strong_two_family else single_family_conf
     return float(final_roll), float(np.clip(confidence, 0.0, 1.0)), count
