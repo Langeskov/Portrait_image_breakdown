@@ -84,12 +84,32 @@ A more detailed dependency and cleanup map is kept in [`docs/DEPENDENCY_GRAPH.md
 core/                  2D analysis, pose, composition, photographer cues
 reverse_engineering/   camera geometry, reconstruction, reference reasoning
 gui/                   desktop UI and V3 workspaces
+model/                 local YOLO pose checkpoints (ignored by git)
 tests/                 deterministic regression contracts
 docs/                  architecture and domain notes
 main.py                desktop / CLI entry point
 pyproject.toml         Python package metadata and dependencies
 uv.lock                locked environment
 ```
+
+## Pose model configuration
+
+Pose detection is centralized in `core/model_config.py`. The default is **YOLO26x Pose** and the application expects the checkpoint at:
+
+```text
+model/yolo26x-pose.pt
+```
+
+The built-in choices are `n`, `s`, `m`, `l`, and `x`. A bare custom filename is also resolved inside `model/`, while an explicit path can point to another checkpoint.
+
+For development, set `PIB_POSE_MODEL` before starting the application. Examples:
+
+```bash
+PIB_POSE_MODEL=x uv run python main.py
+PIB_POSE_MODEL=yolo26m-pose.pt uv run python main.py
+```
+
+Ultralytics currently provides YOLO26 Pose checkpoints in all five scales, with 17 COCO keypoints. See [`model/README.md`](model/README.md) for the local checkpoint layout.
 
 ## Installation
 
@@ -106,7 +126,7 @@ The deterministic test suite can be run with:
 uv run pytest
 ```
 
-Model-backed end-to-end checks may still require local YOLO weights and a suitable runtime environment; the regression suite is intentionally designed not to depend on network services.
+Model-backed end-to-end checks may require local YOLO weights and a suitable runtime environment; the regression suite is intentionally designed not to depend on network services.
 
 ## Evidence rules
 
