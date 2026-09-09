@@ -1,13 +1,74 @@
 """Canonical v3 reconstruction workspace entry point."""
 from __future__ import annotations
 
+from PySide6.QtCore import Qt, QPointF
+from PySide6.QtGui import QBrush, QColor, QPainter, QPen, QPolygonF
 from PySide6.QtWidgets import QFrame, QLabel, QSizePolicy, QSplitter, QVBoxLayout
 
-from gui.reverse_3d_reference import AnchorProjectionPreview, AnchorSceneView, CollapsibleSection, Reverse3DWorkspace as _BaseReverse3DWorkspace
+from gui.reverse_3d import ProjectionPreview
+from gui.reverse_3d_workspace import (
+    AnchorProjectionPreview as _BaseAnchorProjectionPreview,
+    AnchorSceneView,
+    CollapsibleSection,
+    Reverse3DWorkspace as _BaseReverse3DWorkspace,
+)
 from gui.reverse_3d_reference_line import CameraVisualMatchSection, ReferenceLineProjectionPreview, install_visual_camera_match
 from gui.reference_line_apply import RollCorrectionController, install_roll_correction
 from gui.reference_line_calibration import CalibratedReferenceLinePreview, ReferenceLineCalibrationPanel, install_reference_line_calibration
 from reverse_engineering.reference_line_calibration import ReferenceLineConstraint
+
+
+class AnchorProjectionPreview(_BaseAnchorProjectionPreview):
+    """Safe selected-anchor overlay for PySide6 and the live projection preview."""
+
+    def paintEvent(self, event):
+        # Call ProjectionPreview directly. The historical base implementation
+        # used QRect.size().toSize(), which is invalid for PySide6's QSize.
+        ProjectionPreview.paintEvent(self, event)
+
+        if self._scene is None or self._selected_anchor is None or self._pixmap is None:
+            return
+
+        w, h = self._pixmap.width(), self._pixmap.height()
+        points = self._project_selected(w, h)
+        if points is None or len(points) == 0:
+            return
+
+        area = self.rect().adjusted(6, 6, -6, -38)
+        target_size = area.size()
+        if target_size.width() <= 0 or target_size.height() <= 0:
+            return
+        scaled = self._pixmap.scaled(target_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        if scaled.isNull():
+            return
+
+        ox = area.x() + (area.width() - scaled.width()) * 0.5
+        oy = area.y() + (area.height() - scaled.height()) * 0.5
+        sx = scaled.width() / max(w, 1)
+        sy = scaled.height() / max(h, 1)
+        qpoints = [QPointF(ox + p[0] * sx, oy + p[1] * sy) for p in points]
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        plane = getattr(self._selected_anchor.kind, "value", None) == "plane"
+        painter.setPen(QPen(QColor("#D97706"), 2.4 if plane else 2.2, Qt.DashLine))
+        painter.setBrush(QBrush(QColor(217, 119, 6, 35)))
+
+        if plane and len(qpoints) >= 3:
+            painter.drawPolygon(QPolygonF(qpoints))
+            painter.setPen(QPen(QColor("#F59E0B"), 2))
+            for point in qpoints:
+                painter.drawEllipse(point, 5, 5)
+        else:
+            point = qpoints[0]
+            painter.setBrush(QBrush(QColor("#FFFFFF")))
+            painter.drawEllipse(point, 6, 6)
+            painter.drawLine(point.x() - 10, point.y(), point.x() + 10, point.y())
+            painter.drawLine(point.x(), point.y() - 10, point.x(), point.y() + 10)
+
+        painter.setPen(QPen(QColor("#D97706"), 2))
+        painter.drawText(qpoints[0] + QPointF(8, -9), f"SELECTED · {self._selected_anchor.name}")
+        painter.end()
 
 
 class Reverse3DWorkspace(_BaseReverse3DWorkspace):
@@ -46,8 +107,6 @@ class Reverse3DWorkspace(_BaseReverse3DWorkspace):
             old_section.setVisible(False)
 
         inspector = splitter.widget(1)
-        # QSplitter in PySide6 does not expose removeWidget(). Reparenting the
-        # child out of the splitter is the supported Qt way to detach it.
         if inspector is not None:
             inspector.setParent(None)
 
@@ -257,10 +316,3 @@ class Reverse3DWorkspace(_BaseReverse3DWorkspace):
         if controller is not None:
             controller.refresh(evidence)
         self._update_reference_hypothesis()
-
-
-__all__ = [
-    "AnchorProjectionPreview", "AnchorSceneView", "CameraVisualMatchSection",
-    "CalibratedReferenceLinePreview", "CollapsibleSection", "ReferenceLineCalibrationPanel",
-    "ReferenceLineProjectionPreview", "Reverse3DWorkspace", "RollCorrectionController",
-]
