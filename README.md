@@ -100,7 +100,7 @@ Pose detection is centralized in `core/model_config.py`. The default is **YOLO26
 model/yolo26x-pose.pt
 ```
 
-The built-in choices are `n`, `s`, `m`, `l`, and `x`. A bare custom filename is also resolved inside `model/`, while an explicit path can point to another checkpoint.
+The built-in choices are `n`, `s`, `m`, `l`, and `x`. A bare custom filename is resolved inside `model/`, while an explicit path can point to another checkpoint.
 
 For development, set `PIB_POSE_MODEL` before starting the application. Examples:
 
@@ -109,7 +109,9 @@ PIB_POSE_MODEL=x uv run python main.py
 PIB_POSE_MODEL=yolo26m-pose.pt uv run python main.py
 ```
 
-Ultralytics currently provides YOLO26 Pose checkpoints in all five scales, with 17 COCO keypoints. See [`model/README.md`](model/README.md) for the local checkpoint layout.
+The first use of a built-in checkpoint downloads the official weight into `model/` when it is missing. This keeps model assets out of the repository while making a clean checkout self-bootstrapping when network access is available.
+
+Ultralytics currently provides YOLO26 Pose checkpoints in all five scales, using the standard 17-keypoint COCO pose format. See [`model/README.md`](model/README.md) for the local checkpoint layout.
 
 ## Installation
 
