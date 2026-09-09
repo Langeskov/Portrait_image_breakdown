@@ -21,6 +21,10 @@ from PySide6.QtWidgets import (
     QProgressBar, QPushButton, QGroupBox,
 )
 
+from gui.canvas import ImageCanvas
+from gui.panels import AnalysisPanel, SuggestionPanel
+from gui.reverse_3d_v3 import Reverse3DWorkspace
+
 THEME = dict(
     window="#F5F6F8", panel="#FFFFFF", surface="#FAFBFC",
     border="#D9DDE3", text="#1F2937", text2="#6B7280",
@@ -186,28 +190,19 @@ class AnalysisWorker(QThread):
 
 
 class Workspace(QWidget):
-    def update_results(self, bundle: AnalysisBundle): pass
-
-
-from gui.canvas import ImageCanvas
-from gui.panels import AnalysisPanel, SuggestionPanel
+    """Base workspace contract for analysis tabs."""
+    def update_results(self, bundle: AnalysisBundle):
+        pass
 
 
 class Analysis2DWorkspace(Workspace):
-    """2D analysis workspace; all visual overlay controls live here."""
+    """2D analysis workspace with local visual overlay controls."""
     def __init__(self, parent=None):
         super().__init__(parent)
         lo = QVBoxLayout(self); lo.setContentsMargins(0, 0, 0, 0); lo.setSpacing(0)
-
         self._overlay_group = QGroupBox("2D Overlays")
-        self._overlay_group.setStyleSheet(
-            "QGroupBox { margin: 4px 8px 3px 8px; padding-top: 4px; "
-            "border: 1px solid #E2E8F0; border-radius: 5px; } "
-            "QGroupBox::title { left: 8px; padding: 0 4px; color:#475569; font-size:9pt; }"
-        )
-        row = QHBoxLayout(self._overlay_group)
-        row.setContentsMargins(8, 8, 8, 6)
-        row.setSpacing(7)
+        self._overlay_group.setStyleSheet("QGroupBox { margin:4px 8px 3px 8px; padding-top:4px; border:1px solid #E2E8F0; border-radius:5px; } QGroupBox::title { left:8px; padding:0 4px; color:#475569; font-size:9pt; }")
+        row = QHBoxLayout(self._overlay_group); row.setContentsMargins(8, 8, 8, 6); row.setSpacing(7)
         self._overlay_controls = []
         specs = [
             ("Skeleton", True, "skeleton"), ("3x3 Grid", True, "thirds"),
@@ -216,29 +211,18 @@ class Analysis2DWorkspace(Workspace):
             ("Visual Weight", False, "visual_weight"), ("Reverse Evidence", False, "reverse"),
         ]
         for label, checked, key in specs:
-            cb = QCheckBox(label)
-            cb.setChecked(checked)
-            cb.setProperty("overlay_key", key)
-            cb.setStyleSheet("QCheckBox { font-size: 9pt; spacing: 4px; padding: 0px; }")
-            cb.stateChanged.connect(self._apply_overlay_options)
-            self._overlay_controls.append(cb)
-            row.addWidget(cb, 0, Qt.AlignmentFlag.AlignVCenter)
+            cb = QCheckBox(label); cb.setChecked(checked); cb.setProperty("overlay_key", key); cb.setStyleSheet("QCheckBox { font-size:9pt; spacing:4px; padding:0px; }"); cb.stateChanged.connect(self._apply_overlay_options); self._overlay_controls.append(cb); row.addWidget(cb, 0, Qt.AlignmentFlag.AlignVCenter)
         row.addStretch(1)
-
-        sp = QSplitter(Qt.Horizontal)
-        self._ap = AnalysisPanel(); sp.addWidget(self._ap)
-        self._cv = ImageCanvas(); sp.addWidget(self._cv)
-        self._sp = SuggestionPanel(); sp.addWidget(self._sp)
-        sp.setSizes([300, 700, 320]); sp.setStretchFactor(1, 1)
-        lo.addWidget(self._overlay_group, 0)
-        lo.addWidget(sp, 1)
+        splitter = QSplitter(Qt.Horizontal)
+        self._ap = AnalysisPanel(); splitter.addWidget(self._ap); self._cv = ImageCanvas(); splitter.addWidget(self._cv); self._sp = SuggestionPanel(); splitter.addWidget(self._sp)
+        splitter.setSizes([300, 700, 320]); splitter.setStretchFactor(1, 1)
+        lo.addWidget(self._overlay_group, 0); lo.addWidget(splitter, 1)
         self._apply_overlay_options()
 
     def set_image(self, img: np.ndarray): self._cv.set_image(img)
 
     def _apply_overlay_options(self, _state=0):
-        values = {cb.property("overlay_key"): cb.isChecked() for cb in self._overlay_controls}
-        self._cv.set_overlay_options(**values)
+        self._cv.set_overlay_options(**{cb.property("overlay_key"): cb.isChecked() for cb in self._overlay_controls})
 
     def set_overlay_options(self, **kwargs):
         for cb in self._overlay_controls:
@@ -258,16 +242,13 @@ class Analysis2DWorkspace(Workspace):
         if bundle.reverse_result: self._cv.set_reverse_result(bundle.reverse_result)
 
 
-class Reverse3DWorkspace(Workspace):
-    def __init__(self, parent=None):
-        super().__init__(parent); lo = QVBoxLayout(self); lo.setContentsMargins(16, 16, 16, 16); title = QLabel("3D Reverse Engineering Workspace"); title.setFont(QFont("Segoe UI", 16, QFont.Weight.Bold)); title.setAlignment(Qt.AlignmentFlag.AlignCenter); lo.addWidget(title); self._info = QLabel("Displays: Subject position, Camera frustum, Ground plane, Candidate solutions\nRequires: OpenGL 3D renderer (future phase)"); self._info.setAlignment(Qt.AlignCenter); lo.addWidget(self._info)
-    def update_results(self, bundle: AnalysisBundle):
-        if bundle.reverse_result: self._info.setText(f"RE complete. Overall confidence: {bundle.reverse_result.overall_confidence:.0%}\nCandidates: {len(bundle.reverse_result._sim_candidates)}")
-
-
 class ResultsWorkspace(Workspace):
     def __init__(self, parent=None):
-        super().__init__(parent); lo = QVBoxLayout(self); lo.setContentsMargins(16, 16, 16, 16); title = QLabel("Reverse Engineering Report"); title.setFont(QFont("Segoe UI", 14, QFont.Weight.Bold)); lo.addWidget(title); self._rl = QLabel("No results yet. Waiting for analysis..."); self._rl.setFont(QFont("Consolas", 10)); self._rl.setAlignment(Qt.AlignTop); self._rl.setWordWrap(True); self._rl.setStyleSheet(f"color: {THEME['text']};"); sc = QScrollArea(); sc.setWidget(self._rl); sc.setWidgetResizable(True); sc.setStyleSheet(f"QScrollArea {{ border: 1px solid {THEME['border']}; background: {THEME['panel']}; }}"); lo.addWidget(sc)
+        super().__init__(parent)
+        lo = QVBoxLayout(self); lo.setContentsMargins(16, 16, 16, 16)
+        title = QLabel("Reverse Engineering Report"); title.setFont(QFont("Segoe UI", 14, QFont.Weight.Bold)); lo.addWidget(title)
+        self._rl = QLabel("No results yet. Waiting for analysis..."); self._rl.setFont(QFont("Consolas", 10)); self._rl.setAlignment(Qt.AlignTop); self._rl.setWordWrap(True); self._rl.setStyleSheet(f"color: {THEME['text']};")
+        sc = QScrollArea(); sc.setWidget(self._rl); sc.setWidgetResizable(True); sc.setStyleSheet(f"QScrollArea {{ border: 1px solid {THEME['border']}; background: {THEME['panel']}; }}"); lo.addWidget(sc)
     def update_results(self, bundle: AnalysisBundle): self._rl.setText(bundle.reverse_result.report() if bundle.reverse_result else "Reverse engineering not yet complete...")
 
 
@@ -277,49 +258,37 @@ class MainWindow(QMainWindow):
         from core.pose_detector import PoseDetector
         self._det = PoseDetector(); self._eng = None; self._re_enabled = True
         self._img: Optional[np.ndarray] = None; self._bundle = AnalysisBundle(); self._wk: Optional[AnalysisWorker] = None; self._result_cache: dict[str, AnalysisBundle] = {}
-        tb = QToolBar("Main"); tb.setMovable(False); self.addToolBar(tb)
-        ao = QAction("Open Image", self); ao.setShortcut(QKeySequence.Open); ao.triggered.connect(self._open); tb.addAction(ao); tb.addSeparator()
-        tb.addWidget(QLabel("  Dataset: ")); self._cb = QComboBox(); self._cb.setMinimumWidth(220); self._cb.addItem("Select folder…", ""); self._cb.currentIndexChanged.connect(self._sel); tb.addWidget(self._cb)
-        choose = QAction("Choose Folder", self); choose.triggered.connect(self._choose_dataset_folder); tb.addAction(choose); tb.addSeparator()
+        toolbar = QToolBar("Main"); toolbar.setMovable(False); self.addToolBar(toolbar)
+        open_action = QAction("Open Image", self); open_action.setShortcut(QKeySequence.Open); open_action.triggered.connect(self._open); toolbar.addAction(open_action); toolbar.addSeparator()
+        toolbar.addWidget(QLabel("  Dataset: ")); self._cb = QComboBox(); self._cb.setMinimumWidth(220); self._cb.addItem("Select folder…", ""); self._cb.currentIndexChanged.connect(self._sel); toolbar.addWidget(self._cb)
+        choose = QAction("Choose Folder", self); choose.triggered.connect(self._choose_dataset_folder); toolbar.addAction(choose); toolbar.addSeparator()
         self._dataset_folder: Optional[Path] = None
-        self._chk_skeleton = None; self._chk_thirds = None; self._chk_center = None; self._chk_bbox = None; self._chk_vweight = None; self._chk_headroom = None; self._chk_reference_target = None
         self._tabs = QTabBar(); [self._tabs.addTab(t) for t in ("2D Analysis", "3D Reverse Engineering", "Results")]; self._tabs.currentChanged.connect(self._sw)
         self._ws = QStackedWidget(); self._w2 = Analysis2DWorkspace(); self._w3 = Reverse3DWorkspace(); self._wr = ResultsWorkspace(); [self._ws.addWidget(w) for w in (self._w2, self._w3, self._wr)]
-        cen = QWidget(); ml = QVBoxLayout(cen); ml.setContentsMargins(0, 0, 0, 0); ml.setSpacing(0); ml.addWidget(self._tabs); ml.addWidget(self._ws); self.setCentralWidget(cen)
+        center = QWidget(); ml = QVBoxLayout(center); ml.setContentsMargins(0, 0, 0, 0); ml.setSpacing(0); ml.addWidget(self._tabs); ml.addWidget(self._ws); self.setCentralWidget(center)
         self._st = QStatusBar(); self.setStatusBar(self._st); self._progress = QProgressBar(); self._progress.setRange(0, 100); self._progress.setValue(0); self._progress.setTextVisible(True); self._progress.setVisible(False); self._st.addPermanentWidget(self._progress, 1); self._st.showMessage("Ready")
         self._load_dataset_folder(None); self.setAcceptDrops(True)
 
     def _choose_dataset_folder(self):
-        start = str(self._dataset_folder or Path.home())
-        path = QFileDialog.getExistingDirectory(self, "Select image folder", start)
-        if not path: return
-        self._load_dataset_folder(Path(path))
-
+        start = str(self._dataset_folder or Path.home()); path = QFileDialog.getExistingDirectory(self, "Select image folder", start)
+        if path: self._load_dataset_folder(Path(path))
     def _load_dataset_folder(self, path: Optional[Path]):
-        self._dataset_folder = Path(path) if path else None
-        self._cb.blockSignals(True); self._cb.clear(); self._cb.addItem("Select folder…", "")
+        self._dataset_folder = Path(path) if path else None; self._cb.blockSignals(True); self._cb.clear(); self._cb.addItem("Select folder…", "")
         if self._dataset_folder and self._dataset_folder.exists():
             files = [p for p in sorted(self._dataset_folder.iterdir(), key=lambda x: x.name.lower()) if p.suffix.lower() in (".jpg", ".jpeg", ".png", ".bmp", ".webp")]
             for f in files: self._cb.addItem(f.name, str(f))
             self._st.showMessage(f"Image folder: {self._dataset_folder} · {len(files)} images")
-        else:
-            self._st.showMessage("No image folder selected")
+        else: self._st.showMessage("No image folder selected")
         self._cb.blockSignals(False)
-
-    def _ld(self):
-        self._load_dataset_folder(self._dataset_folder)
-
+    def _ld(self): self._load_dataset_folder(self._dataset_folder)
     def _sel(self, index):
         path = self._cb.itemData(index)
         if path and Path(path).exists(): self._la(str(path))
-
     def _open(self):
         p, _ = QFileDialog.getOpenFileName(self, "Select Image", str(self._dataset_folder or Path.home()), "Images (*.jpg *.jpeg *.png *.bmp *.webp)")
         if p: self._la(p)
-
     def _set_progress(self, value: int, message: str): self._progress.setValue(max(0, min(100, int(value)))); self._progress.setVisible(True); self._st.showMessage(message)
     def _finish_progress(self, message: str = "Analysis complete"): self._progress.setValue(100); self._st.showMessage(message); self._progress.setVisible(False)
-
     def _la(self, path: str):
         from core.image_io import load_image, frame_orientation
         img = load_image(path)
@@ -332,20 +301,15 @@ class MainWindow(QMainWindow):
         if self._wk and self._wk.isRunning(): self._wk.terminate(); self._wk.wait()
         analysis_img = _resize_for_analysis(img, max_side=1600)
         if self._re_enabled and self._eng is None:
-            from reverse_engineering.engine import ReverseEngineeringEngine
-            self._eng = ReverseEngineeringEngine(enable_simulation=False)
+            from reverse_engineering.engine import ReverseEngineeringEngine; self._eng = ReverseEngineeringEngine(enable_simulation=False)
         self._wk = AnalysisWorker(self._det, self._eng, img, analysis_img, enable_re=self._re_enabled)
         self._wk.progress.connect(self._set_progress); self._wk.pose_ready.connect(self._on_pose_ready); self._wk.core_ready.connect(self._on_core_ready); self._wk.reverse_ready.connect(self._on_reverse_ready); self._wk.error.connect(self._err); self._wk.start()
-
     def _on_pose_ready(self, pose):
         self._bundle.pose = pose; self._w2._cv.set_pose(pose)
         if hasattr(self, "_reference_mode") and self._img is not None: self._reference_mode.set_current(pose, self._img)
         self._st.showMessage("Pose detected")
-
     def _on_core_ready(self, bundle: AnalysisBundle):
-        self._bundle = bundle; self._w2.update_results(bundle); self._result_cache[_image_hash(self._img)] = bundle if self._img is not None else bundle
-        action_name = bundle.action.category.value if bundle.action else "?"; self._st.showMessage(f"Core analysis complete | {action_name}")
-
+        self._bundle = bundle; self._w2.update_results(bundle); self._result_cache[_image_hash(self._img)] = bundle if self._img is not None else bundle; action_name = bundle.action.category.value if bundle.action else "?"; self._st.showMessage(f"Core analysis complete | {action_name}")
     def _on_reverse_ready(self, bundle: AnalysisBundle):
         self._bundle = bundle; self._w3.update_results(bundle); self._wr.update_results(bundle); self._w2.update_results(bundle)
         if hasattr(self, '_reference_mode'): self._reference_mode.set_current(bundle.pose, self._img)
@@ -353,19 +317,14 @@ class MainWindow(QMainWindow):
             confidence = float(bundle.reverse_result.overall_confidence) if bundle.reverse_result else None; self._field_mode.set_analysis(bundle.action, bundle.orientation, bundle.camera, bundle.composition, bundle.pose, confidence)
         self._finish_progress("Analysis complete")
         if self._img is not None: self._result_cache[_image_hash(self._img)] = bundle
-
     def _apply_bundle(self, bundle):
         self._w2.update_results(bundle)
         if bundle.reverse_result: self._w3.update_results(bundle); self._wr.update_results(bundle)
         if hasattr(self, '_reference_mode') and bundle.pose and self._img is not None: self._reference_mode.set_current(bundle.pose, self._img)
         if hasattr(self, '_field_mode') and bundle.action and bundle.orientation and bundle.camera and bundle.composition:
             confidence = float(bundle.reverse_result.overall_confidence) if bundle.reverse_result else None; self._field_mode.set_analysis(bundle.action, bundle.orientation, bundle.camera, bundle.composition, bundle.pose, confidence)
-
-    def _update_overlays(self):
-        self._w2._apply_overlay_options()
-
+    def _update_overlays(self): self._w2._apply_overlay_options()
     def _sw(self, i): self._ws.setCurrentIndex(i)
-
     def _err(self, msg):
         self._finish_progress("Analysis error"); dialog = QMessageBox(self); dialog.setIcon(QMessageBox.Icon.Critical); dialog.setWindowTitle("Analysis Error — diagnostic mode"); dialog.setText("Analysis failed. The exact stage and complete traceback are shown below."); dialog.setInformativeText(msg.split("\n\n----- FULL TRACEBACK -----", 1)[0]);
         if "----- FULL TRACEBACK -----" in msg: dialog.setDetailedText(msg.split("\n\n----- FULL TRACEBACK -----", 1)[1].lstrip())
