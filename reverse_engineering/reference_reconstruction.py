@@ -6,7 +6,6 @@ import math
 from core.pose_detector import LandmarkIndex as LI, PoseResult
 from reverse_engineering.reference_anchor import ReferenceImageAnchor
 
-# Compatibility alias kept for historic imports.
 SceneAnchor = ReferenceImageAnchor
 
 @dataclass(frozen=True)
@@ -64,6 +63,8 @@ def compare_pose_to_reference(reference: PoseResult, current: PoseResult, width:
     labels = {0: "nose", 5: "left_shoulder", 6: "right_shoulder", 7: "left_elbow", 8: "right_elbow", 9: "left_wrist", 10: "right_wrist", 11: "left_hip", 12: "right_hip", 13: "left_knee", 14: "right_knee", 15: "left_ankle", 16: "right_ankle"}
     deltas: list[PoseDelta] = []
     diag = max(math.hypot(width, height), 1.0)
+    ref_width = max(float(getattr(reference, "image_width", 0) or width), 1.0)
+    ref_height = max(float(getattr(reference, "image_height", 0) or height), 1.0)
     for idx, name in labels.items():
         if not (_visible(reference, idx, threshold) and _visible(current, idx, threshold)): continue
         r, c = reference.landmarks[idx], current.landmarks[idx]
@@ -72,7 +73,9 @@ def compare_pose_to_reference(reference: PoseResult, current: PoseResult, width:
         if distance < 0.015: continue
         horizontal, vertical = ("右" if dx > 0 else "左"), ("下" if dy > 0 else "上")
         instruction = f"{name} 向{horizontal}移动 {abs(dx):.0%} 画面宽度" if abs(dx) > abs(dy) * 1.6 else (f"{name} 向{vertical}移动 {abs(dy):.0%} 画面高度" if abs(dy) > abs(dx) * 1.6 else f"{name} 向{horizontal}{vertical}移动")
-        deltas.append(PoseDelta(name, float(dx), float(dy), float(distance), instruction, float(r.x), float(r.y)))
+        target_x = min(1.0, max(0.0, float(r.x) / ref_width))
+        target_y = min(1.0, max(0.0, float(r.y) / ref_height))
+        deltas.append(PoseDelta(name, float(dx), float(dy), float(distance), instruction, target_x, target_y))
     deltas.sort(key=lambda d: d.distance, reverse=True)
     return deltas[:8]
 
