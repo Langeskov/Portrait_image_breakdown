@@ -1,7 +1,7 @@
 """3D scene model for photography reverse engineering."""
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 import math
 from typing import Optional
 import numpy as np
@@ -44,8 +44,7 @@ class SceneCamera:
         position = self.position(target)
         forward = self.forward()
         along = float(np.dot(target - position, forward))
-        along = max(0.1, along)
-        return position + forward * along
+        return position + forward * max(0.1, along)
 
     def aim_error(self, target=None):
         target = np.asarray(target if target is not None else [0.0, 0.0, 0.0], dtype=float)
@@ -74,24 +73,44 @@ class SceneSubject:
         ], dtype=float) * np.array([1.0, h, 1.0])
 
 
-@dataclass
 class SceneModel:
-    camera: SceneCamera = field(default_factory=SceneCamera)
-    subject: SceneSubject = field(default_factory=SceneSubject)
-    ground_size: float = 24.0
-    candidate_solutions: list[PoseCandidate] = field(default_factory=list)
-    selected_candidate: int = 0
-    subjects: list[SceneSubject] = field(default_factory=list)
-    relative_layout: bool = False
-    anchors: list[SceneAnchor] = field(default_factory=default_scene_anchors)
+    """Canonical scene state; ``subjects`` is the sole stored people collection."""
 
-    def __post_init__(self):
+    def __init__(self, camera=None, subject=None, ground_size=24.0,
+                 candidate_solutions=None, selected_candidate=0, subjects=None,
+                 relative_layout=False, anchors=None):
+        self.camera = camera if camera is not None else SceneCamera()
+        self.ground_size = float(ground_size)
+        self.candidate_solutions = list(candidate_solutions or [])
+        self.selected_candidate = int(selected_candidate)
+        self.subjects = list(subjects or [])
+        self.relative_layout = bool(relative_layout)
+        self.anchors = list(anchors) if anchors is not None else default_scene_anchors()
+        self._primary_subject_person_index = 0
+        if subject is not None:
+            existing = next((s for s in self.subjects if s.person_index == subject.person_index), None)
+            if existing is None:
+                self.subjects.insert(0, subject)
+            self._primary_subject_person_index = int(subject.person_index)
         if not self.subjects:
-            self.subjects = [self.subject]
-        elif self.subject not in self.subjects:
-            self.subjects.insert(0, self.subject)
-        if self.anchors is None:
-            self.anchors = default_scene_anchors()
+            self.subjects = [SceneSubject()]
+
+    @property
+    def subject(self) -> SceneSubject:
+        """Compatibility accessor resolving the primary subject from ``subjects``."""
+        return next((s for s in self.subjects if s.person_index == self._primary_subject_person_index), self.subjects[0])
+
+    @subject.setter
+    def subject(self, value: SceneSubject):
+        if value is None:
+            raise ValueError("primary subject cannot be None")
+        for index, existing in enumerate(self.subjects):
+            if existing.person_index == value.person_index:
+                self.subjects[index] = value
+                self._primary_subject_person_index = int(value.person_index)
+                return
+        self.subjects.insert(0, value)
+        self._primary_subject_person_index = int(value.person_index)
 
     @classmethod
     def from_reverse_result(cls, result: Optional[ReverseEngineeringResult]) -> "SceneModel":
@@ -115,109 +134,62 @@ class SceneModel:
                 float(cp.camera_yaw.value or 0), float(cp.camera_pitch.value or 0),
                 float(cp.camera_roll.value or 0), float(fl.value or 50),
             )
-
         layout = getattr(result, "multi_person_layout", None)
         if layout is not None and getattr(layout, "people", None):
             people = list(layout.people)
             image_w, image_h = result.image_size
             primary = people[0]
             scene.subjects = []
+            scene._primary_subject_person_index = int(primary.person_index)
             base_cx, base_cy = primary.center
             for person in people:
                 kp_rows = np.asarray(person.keypoints, dtype=float)
                 if kp_rows.ndim == 2 and kp_rows.shape[0] >= 17:
-                    kp_pixels = kp_rows[:17].copy()
-                    kp_pixels[:, 0] *= image_w
-                    kp_pixels[:, 1] *= image_h
+                    kp_pixels = kp_rows[:17].copy(); kp_pixels[:, 0] *= image_w; kp_pixels[:, 1] *= image_h
                     fitted = pose_driven_person_points(kp_pixels, image_w, image_h, scene.subject.height)
                 else:
-                    kp_pixels = None
-                    fitted = None
+                    kp_pixels, fitted = None, None
                 nx, ny = person.center
                 lateral = (nx - base_cx) * 2.0 * math.tan(math.radians(scene.camera.horizontal_fov_deg) * 0.5) * scene.camera.distance
                 vertical = (base_cy - ny) * 2.0 * math.tan(math.radians(scene.camera.vertical_fov_deg) * 0.5) * scene.camera.distance
                 depth_offset = float(person.relative_z) * max(0.5, scene.camera.distance * 0.35) if person.usable_3d else 0.0
-                subject = SceneSubject(
-                    height=scene.subject.height,
-                    center_x=float(lateral),
-                    center_y=float(vertical),
-                    center_z=float(depth_offset),
-                    keypoints=kp_pixels,
-                    fitted_points_3d=fitted,
-                    person_index=int(person.person_index),
+                scene.subjects.append(SceneSubject(
+                    height=scene.subject.height, center_x=float(lateral), center_y=float(vertical), center_z=float(depth_offset),
+                    keypoints=kp_pixels, fitted_points_3d=fitted, person_index=int(person.person_index),
                     depth_is_relative=bool(layout.independent_depth and person.usable_3d),
                     depth_confidence=float(person.depth_confidence),
-                )
-                scene.subjects.append(subject)
-            if scene.subjects:
-                scene.subject = next((s for s in scene.subjects if s.person_index == primary.person_index), scene.subjects[0])
+                ))
             scene.relative_layout = bool(layout.independent_depth)
-        else:
-            scene.subjects = [scene.subject]
         return scene
 
-    def camera_position(self):
-        return self.camera.position(self.camera_target())
-
-    def camera_target(self):
-        return np.array([self.subject.center_x, self.subject.center_y, self.subject.center_z], dtype=float)
-
-    def camera_aim_target(self):
-        return self.camera.aim_point(self.camera_target())
-
-    def camera_aim_error(self):
-        return self.camera.aim_error(self.camera_target())
+    def camera_position(self): return self.camera.position(self.camera_target())
+    def camera_target(self): return np.array([self.subject.center_x, self.subject.center_y, self.subject.center_z], dtype=float)
+    def camera_aim_target(self): return self.camera.aim_point(self.camera_target())
+    def camera_aim_error(self): return self.camera.aim_error(self.camera_target())
 
     def set_candidate(self, index):
-        if not self.candidate_solutions:
-            return
-        index = max(0, min(index, len(self.candidate_solutions) - 1))
-        c = self.candidate_solutions[index]
+        if not self.candidate_solutions: return
+        index = max(0, min(index, len(self.candidate_solutions) - 1)); c = self.candidate_solutions[index]
         self.selected_candidate = index
-        self.camera.distance = float(c.distance)
-        self.camera.height = float(c.height)
-        self.camera.focal_length_mm = float(c.focal_equiv_35mm)
-        self.camera.pitch = float(getattr(c.extrinsics, 'pitch', self.camera.pitch))
-        self.camera.yaw = float(getattr(c.extrinsics, 'yaw', self.camera.yaw))
-        self.camera.roll = float(getattr(c.extrinsics, 'roll', self.camera.roll))
+        self.camera.distance = float(c.distance); self.camera.height = float(c.height); self.camera.focal_length_mm = float(c.focal_equiv_35mm)
+        self.camera.pitch = float(getattr(c.extrinsics, 'pitch', self.camera.pitch)); self.camera.yaw = float(getattr(c.extrinsics, 'yaw', self.camera.yaw)); self.camera.roll = float(getattr(c.extrinsics, 'roll', self.camera.roll))
 
     def add_anchor(self, anchor: SceneAnchor) -> None:
         errors = anchor.validate()
-        if errors:
-            raise ValueError("invalid scene anchor: " + "; ".join(errors))
-        if any(existing.anchor_id == anchor.anchor_id for existing in self.anchors):
-            raise ValueError(f"duplicate scene anchor id: {anchor.anchor_id}")
+        if errors: raise ValueError("invalid scene anchor: " + "; ".join(errors))
+        if any(existing.anchor_id == anchor.anchor_id for existing in self.anchors): raise ValueError(f"duplicate scene anchor id: {anchor.anchor_id}")
         self.anchors.append(anchor)
 
     def create_anchor(self, name: str = "Scene anchor", kind=None) -> SceneAnchor:
         from reverse_engineering.scene_anchors import AnchorKind
-        anchor = SceneAnchor(
-            anchor_id=next_anchor_id(self.anchors),
-            name=name,
-            kind=kind or AnchorKind.POINT,
-        )
-        self.add_anchor(anchor)
-        return anchor
+        anchor = SceneAnchor(anchor_id=next_anchor_id(self.anchors), name=name, kind=kind or AnchorKind.POINT)
+        self.add_anchor(anchor); return anchor
 
     def remove_anchor(self, anchor_id: str) -> bool:
-        if anchor_id == "ground":
-            return False
-        before = len(self.anchors)
-        self.anchors = [anchor for anchor in self.anchors if anchor.anchor_id != anchor_id]
-        return len(self.anchors) != before
+        if anchor_id == "ground": return False
+        before = len(self.anchors); self.anchors = [anchor for anchor in self.anchors if anchor.anchor_id != anchor_id]; return len(self.anchors) != before
 
-    def anchor_by_id(self, anchor_id: str) -> Optional[SceneAnchor]:
-        return next((anchor for anchor in self.anchors if anchor.anchor_id == anchor_id), None)
-
-    def enabled_planes(self) -> list[SceneAnchor]:
-        return [anchor for anchor in self.anchors if anchor.enabled and anchor.kind.value == "plane"]
-
-    def anchor_summary(self) -> list[dict]:
-        return [anchor.to_dict() for anchor in self.anchors]
-
-    def candidate_summary(self):
-        return [
-            {"index": i, "focal_length_mm": c.focal_equiv_35mm, "distance_m": c.distance,
-             "height_m": c.height, "score": c.score}
-            for i, c in enumerate(self.candidate_solutions)
-        ]
+    def anchor_by_id(self, anchor_id: str) -> Optional[SceneAnchor]: return next((anchor for anchor in self.anchors if anchor.anchor_id == anchor_id), None)
+    def enabled_planes(self) -> list[SceneAnchor]: return [anchor for anchor in self.anchors if anchor.enabled and anchor.kind.value == "plane"]
+    def anchor_summary(self) -> list[dict]: return [anchor.to_dict() for anchor in self.anchors]
+    def candidate_summary(self): return [{"index": i, "focal_length_mm": c.focal_equiv_35mm, "distance_m": c.distance, "height_m": c.height, "score": c.score} for i, c in enumerate(self.candidate_solutions)]
