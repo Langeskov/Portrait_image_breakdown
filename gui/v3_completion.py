@@ -5,11 +5,11 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-from PySide6.QtCore import QThread, Signal
+from PySide6.QtCore import QThread, Signal, Qt
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
-    QComboBox, QDoubleSpinBox, QFileDialog, QGroupBox, QHBoxLayout, QLabel,
-    QListWidget, QListWidgetItem, QMessageBox, QPushButton, QVBoxLayout, QWidget,
+    QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QGroupBox, QHBoxLayout,
+    QLabel, QListWidget, QListWidgetItem, QMessageBox, QPushButton, QVBoxLayout, QWidget,
 )
 
 from reverse_engineering.anchor_calibration import estimate_camera_from_anchors
@@ -17,6 +17,21 @@ from reverse_engineering.plane_constraints import PlaneConstraint, PlaneRelation
 from reverse_engineering.reference_pose_generation import generate_composition_aware_pose_target
 from reverse_engineering.reconstruction_session import load_session, save_session
 from reverse_engineering.temporal import TemporalFrameState, TemporalSmoother
+
+
+def _coerce_plane_relation(value) -> PlaneRelation:
+    """Accept either the enum or its persisted string value."""
+    if isinstance(value, PlaneRelation):
+        return value
+    try:
+        return PlaneRelation(str(value))
+    except ValueError:
+        # Older/manual callers sometimes pass the display label instead.
+        text = str(value).strip().lower()
+        labels = {r.label.lower(): r for r in PlaneRelation}
+        if text in labels:
+            return labels[text]
+        return PlaneRelation.ON_PLANE
 
 
 class PlaneConstraintPanel(QWidget):
@@ -38,7 +53,7 @@ class PlaneConstraintPanel(QWidget):
         self.plane = QComboBox()
         self.relation = QComboBox()
         for relation in (PlaneRelation.ON_PLANE, PlaneRelation.OFFSET):
-            self.relation.addItem(relation.label, relation)
+            self.relation.addItem(relation.label, relation.value)
         self.offset = QDoubleSpinBox()
         self.offset.setRange(-10.0, 10.0)
         self.offset.setSingleStep(0.05)
@@ -58,6 +73,11 @@ class PlaneConstraintPanel(QWidget):
         root.addLayout(action)
         self.refresh_planes()
 
+    @staticmethod
+    def _constraint_text(constraint: PlaneConstraint) -> str:
+        relation = _coerce_plane_relation(getattr(constraint, "relation", PlaneRelation.ON_PLANE))
+        return f"{relation.label}: {constraint.plane_anchor_id} · {float(constraint.offset_m):+.2f} m"
+
     def refresh_planes(self):
         current = self.plane.currentData()
         self.plane.blockSignals(True)
@@ -70,11 +90,48 @@ class PlaneConstraintPanel(QWidget):
             if index >= 0: self.plane.setCurrentIndex(index)
         self.plane.blockSignals(False)
 
+    def sync_from_scene(self):
+        """Synchronize calibrated plane anchors into this panel without duplicating manual constraints."""
+        self.refresh_planes()
+        by_plane = {c.plane_anchor_id: c for c in self._constraints}
+        changed = False
+        for anchor in self.workspace.scene.anchors:
+            is_plane = getattr(anchor.kind, "value", anchor.kind) == "plane"
+            calibrated = is_plane and len(getattr(anchor, "image_points", ())) >= 4
+            if not calibrated:
+                continue
+            existing = by_plane.get(anchor.anchor_id)
+            if existing is None:
+                constraint = PlaneConstraint(
+                    constraint_id=f"anchor_calibration_{anchor.anchor_id}",
+                    plane_anchor_id=str(anchor.anchor_id),
+                    relation=PlaneRelation.ON_PLANE,
+                    offset_m=0.0,
+                    source="anchor_calibration",
+                )
+                self._constraints.append(constraint)
+                by_plane[anchor.anchor_id] = constraint
+                changed = True
+            elif _coerce_plane_relation(existing.relation) != PlaneRelation.ON_PLANE and existing.source == "anchor_calibration":
+                existing.relation = PlaneRelation.ON_PLANE
+                existing.offset_m = 0.0
+                changed = True
+        if changed:
+            self._rebuild_list()
+        self.workspace.scene.plane_constraints = [c.to_dict() for c in self._constraints]
+
+    def _rebuild_list(self):
+        self._list.blockSignals(True)
+        self._list.clear()
+        for constraint in self._constraints:
+            self._list.addItem(QListWidgetItem(self._constraint_text(constraint)))
+        self._list.blockSignals(False)
+
     def _add(self):
         plane_id = self.plane.currentData()
         if not plane_id:
             return
-        relation = self.relation.currentData()
+        relation = _coerce_plane_relation(self.relation.currentData())
         constraint = PlaneConstraint(
             constraint_id=f"plane_constraint_{len(self._constraints)+1}",
             plane_anchor_id=str(plane_id),
@@ -82,7 +139,7 @@ class PlaneConstraintPanel(QWidget):
             offset_m=float(self.offset.value()),
         )
         self._constraints.append(constraint)
-        self._list.addItem(QListWidgetItem(f"{constraint.relation.label}: {constraint.plane_anchor_id} · {constraint.offset_m:+.2f} m"))
+        self._list.addItem(QListWidgetItem(self._constraint_text(constraint)))
         self.workspace.scene.plane_constraints = [c.to_dict() for c in self._constraints]
 
     def _remove(self):
@@ -125,12 +182,13 @@ class PlaneConstraintPanel(QWidget):
         for item in data or []:
             try:
                 c = PlaneConstraint.from_dict(item)
+                c.relation = _coerce_plane_relation(c.relation)
             except (ValueError, TypeError):
                 continue
-            if c.relation not in (PlaneRelation.ON_PLANE, PlaneRelation.OFFSET):
+            if _coerce_plane_relation(c.relation) not in (PlaneRelation.ON_PLANE, PlaneRelation.OFFSET):
                 continue
             self._constraints.append(c)
-            self._list.addItem(QListWidgetItem(f"{c.relation.label}: {c.plane_anchor_id} · {c.offset_m:+.2f} m"))
+            self._list.addItem(QListWidgetItem(self._constraint_text(c)))
         self.workspace.scene.plane_constraints = [c.to_dict() for c in self._constraints]
         self.refresh_planes()
 
@@ -158,6 +216,19 @@ class AnchorCameraHypothesisPanel(QWidget):
         self.status.setWordWrap(True)
         row.addWidget(self.status, 1)
         root.addLayout(row)
+
+        plane_row = QHBoxLayout()
+        plane_row.addWidget(QLabel("Plane overlay"))
+        self.plane_combo = QComboBox()
+        self.plane_combo.addItem("Auto / solved plane", "")
+        self.plane_combo.currentIndexChanged.connect(self._plane_overlay_changed)
+        plane_row.addWidget(self.plane_combo, 1)
+        self.show_plane = QCheckBox("Show")
+        self.show_plane.setChecked(True)
+        self.show_plane.toggled.connect(self._toggle_plane_overlay)
+        plane_row.addWidget(self.show_plane)
+        root.addLayout(plane_row)
+
         self.position = QLabel("Camera position: —")
         self.rmse = QLabel("Reprojection RMSE: —")
         self.delta = QLabel("Active camera: unchanged")
@@ -165,12 +236,52 @@ class AnchorCameraHypothesisPanel(QWidget):
             label.setStyleSheet("color:#475569;")
             label.setWordWrap(True)
             root.addWidget(label)
+        self._refresh_plane_choices()
+
+    def _refresh_plane_choices(self, preferred_id: str = ""):
+        current = self.plane_combo.currentData()
+        self.plane_combo.blockSignals(True)
+        self.plane_combo.clear()
+        self.plane_combo.addItem("Auto / solved plane", "")
+        for anchor in self.workspace.scene.anchors:
+            if getattr(anchor.kind, "value", anchor.kind) == "plane":
+                calibrated = len(getattr(anchor, "image_points", ())) >= 4
+                suffix = " · calibrated" if calibrated else ""
+                self.plane_combo.addItem(f"{anchor.name}{suffix}", anchor.anchor_id)
+        target = preferred_id or (current if current else "")
+        index = self.plane_combo.findData(target)
+        self.plane_combo.setCurrentIndex(index if index >= 0 else 0)
+        self.plane_combo.blockSignals(False)
+
+    def _selected_plane(self):
+        selected = self.plane_combo.currentData()
+        if selected:
+            return self.workspace.scene.anchor_by_id(str(selected))
+        for anchor in self.workspace.scene.anchors:
+            if getattr(anchor.kind, "value", anchor.kind) == "plane" and len(getattr(anchor, "image_points", ())) >= 4:
+                return anchor
+        return None
+
+    def _sync_selected_plane(self):
+        plane = self._selected_plane()
+        if plane is None:
+            return
+        plane.visible = bool(self.show_plane.isChecked())
+        self.workspace._view.update()
+        self.workspace._refresh_projection()
+
+    def _plane_overlay_changed(self, _index):
+        self._sync_selected_plane()
+
+    def _toggle_plane_overlay(self, checked):
+        self._sync_selected_plane()
 
     def solve(self):
         image = getattr(self.workspace, "_source_image", None)
         if image is None:
             self.status.setText("需要先加载当前照片。")
             return None
+        self._refresh_plane_choices()
         height, width = image.shape[:2]
         camera = self.workspace.scene.camera
         result = estimate_camera_from_anchors(
@@ -196,6 +307,7 @@ class AnchorCameraHypothesisPanel(QWidget):
             if getattr(self.workspace, "_hypothesis", None) is not None
             else "Active camera: unchanged · no reference-camera hypothesis yet"
         )
+        self._sync_selected_plane()
         return result
 
 
@@ -332,8 +444,10 @@ def install_v3_completion(window):
             panel = getattr(window._w3, "_plane_constraints_panel", None)
             if panel is not None:
                 panel.from_dicts(data.get("plane_constraints", []))
+                panel.sync_from_scene()
             anchor_panel = getattr(window._w3, "_anchor_camera_hypothesis", None)
             if anchor_panel is not None:
+                anchor_panel._refresh_plane_choices()
                 anchor_panel.solve()
             metadata = dict(data.get("metadata", {}))
             reference = getattr(window, "_reference_mode", None)
@@ -367,6 +481,21 @@ def install_v3_completion(window):
         window._w3._anchor_camera_hypothesis = anchor_panel
 
         window._w3.camera_edited.connect(anchor_panel.solve)
+
+        # Anchor calibration and any later scene edits use the same SceneModel;
+        # keep the constraints/plane overlay panels in sync with that source of truth.
+        original_anchor_selected = getattr(window._w3, "_anchor_selected", None)
+        if original_anchor_selected is not None:
+            original_anchor_selected_ref = original_anchor_selected
+            def sync_anchor_selected(row):
+                original_anchor_selected_ref(row)
+                panel.sync_from_scene()
+                anchor_panel._refresh_plane_choices()
+            window._w3._anchor_selected = sync_anchor_selected
+            window._w3._anchors.currentRowChanged.disconnect(original_anchor_selected_ref)
+            window._w3._anchors.currentRowChanged.connect(window._w3._anchor_selected)
+
+        panel.sync_from_scene()
 
     ref = getattr(window, "_reference_mode", None)
     if ref is not None:
