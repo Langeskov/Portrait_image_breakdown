@@ -23,10 +23,11 @@ build/
 .DS_Store
 Thumbs.db
 
-# Model weights (large files)
-models/*.task
-models/*.pt
-yolo26s-pose.pt
+# Local model weights (large files; keep checkpoints out of git)
+model/*.pt
+model/*.onnx
+model/*.engine
+model/*.task
 
 # Ultralytics
 runs/
