@@ -74,6 +74,8 @@ class SceneModel:
         if not self.subjects: self.subjects = [SceneSubject()]
     @property
     def subject(self) -> SceneSubject:
+        if not self.subjects:
+            self.subjects.append(SceneSubject(person_index=self._primary_subject_person_index))
         return next((s for s in self.subjects if s.person_index == self._primary_subject_person_index), self.subjects[0])
     @subject.setter
     def subject(self, value: SceneSubject):
@@ -98,17 +100,19 @@ class SceneModel:
             scene.camera = SceneCamera(float(cp.camera_distance.value or 4), float(cp.camera_height.value or 1.5), float(cp.camera_yaw.value or 0), float(cp.camera_pitch.value or 0), float(cp.camera_roll.value or 0), float(fl.value or 50))
         layout = getattr(result, "multi_person_layout", None)
         if layout is not None and getattr(layout, "people", None):
-            people = list(layout.people); image_w, image_h = result.image_size; primary = people[0]; scene.subjects = []; scene._primary_subject_person_index = int(primary.person_index); base_cx, base_cy = primary.center
+            people = list(layout.people); image_w, image_h = result.image_size; primary = people[0]
+            subject_height = float(scene.subject.height)
+            scene.subjects = []; scene._primary_subject_person_index = int(primary.person_index); base_cx, base_cy = primary.center
             for person in people:
                 kp_rows = np.asarray(person.keypoints, dtype=float)
                 if kp_rows.ndim == 2 and kp_rows.shape[0] >= 17:
-                    kp_pixels = kp_rows[:17].copy(); kp_pixels[:, 0] *= image_w; kp_pixels[:, 1] *= image_h; fitted = pose_driven_person_points(kp_pixels, image_w, image_h, scene.subject.height)
+                    kp_pixels = kp_rows[:17].copy(); kp_pixels[:, 0] *= image_w; kp_pixels[:, 1] *= image_h; fitted = pose_driven_person_points(kp_pixels, image_w, image_h, subject_height)
                 else: kp_pixels, fitted = None, None
                 nx, ny = person.center
                 lateral = (nx - base_cx) * 2.0 * math.tan(math.radians(scene.camera.horizontal_fov_deg) * 0.5) * scene.camera.distance
                 vertical = (base_cy - ny) * 2.0 * math.tan(math.radians(scene.camera.vertical_fov_deg) * 0.5) * scene.camera.distance
                 depth_offset = float(person.relative_z) * max(0.5, scene.camera.distance * 0.35) if person.usable_3d else 0.0
-                scene.subjects.append(SceneSubject(height=scene.subject.height, center_x=float(lateral), center_y=float(vertical), center_z=float(depth_offset), keypoints=kp_pixels, fitted_points_3d=fitted, person_index=int(person.person_index), depth_is_relative=bool(layout.independent_depth and person.usable_3d), depth_confidence=float(person.depth_confidence)))
+                scene.subjects.append(SceneSubject(height=subject_height, center_x=float(lateral), center_y=float(vertical), center_z=float(depth_offset), keypoints=kp_pixels, fitted_points_3d=fitted, person_index=int(person.person_index), depth_is_relative=bool(layout.independent_depth and person.usable_3d), depth_confidence=float(person.depth_confidence)))
             scene.relative_layout = bool(layout.independent_depth)
         return scene
     def camera_position(self): return self.camera.position(self.camera_target())
