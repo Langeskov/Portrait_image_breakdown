@@ -1,264 +1,130 @@
 # Portrait Image Breakdown
 
-Photography Analysis & Reverse Engineering System
+Photography analysis and camera reverse-engineering for portrait work.
 
-A native PySide6 desktop tool for analyzing portrait photographs, exploring plausible camera configurations, and turning technical analysis into practical on-set guidance.
+A native **PySide6** desktop application that combines 2D pose/composition analysis with conservative camera estimation, editable 3D scene reconstruction, and reference-image shooting guidance.
 
-## v2 Architecture
-
-v2 separates the two kinds of evidence that were previously mixed together:
+## What it does
 
 ```text
-                         ┌─ 2D Pose / BBox ──→ framing evidence
-Image → Analysis ────────┤
-                         └─ Scene Lines / VP ─→ rotation evidence
-                                      │
-                                      ↓
-                         focal + distance + height
-                         + yaw + pitch + roll
-                                      │
-                                      ↓
-                              ranked candidates
-                                      │
-                           3D scene / 2D projection
+Reference image ─┐
+                 ├─→ composition / pose deltas ─→ shooting target
+Current image  ──┘
+                        │
+                        ├─→ 2D overlays
+                        ├─→ camera candidate family
+                        ├─→ editable 3D scene
+                        ├─→ image-space anchors / PnP cross-check
+                        └─→ reference camera hypothesis
 ```
 
-The important design rule is:
+The application deliberately reports **evidence, estimates, and unknowns separately**. A single photograph cannot uniquely determine focal length, camera distance, or metric room geometry, so the system keeps ambiguous quantities as candidate families or hypotheses instead of presenting them as facts.
 
-- **Human pose constrains framing** — subject scale, image position, body shape and plausible camera distance/height.
-- **Scene geometry constrains rotation** when the image contains a reliable Manhattan structure.
-- **Focal length remains a candidate family** — a single image cannot generally determine exact focal length and distance independently.
-- **Weak/non-Manhattan scenes fall back to image-driven pose fitting and bounded refinement** instead of forcing a Manhattan solution.
-- **Roll is treated as an independent camera property** — human shoulder/body tilt is never used as a direct Dutch-angle measurement.
-- **Action labels provide context, not commands** — pose guidance is driven by body geometry, silhouette, balance, framing and visual intent.
+## Current V3 workflow
 
-## v2.5 Architecture
+1. Load a reference image and a current image.
+2. Compare pose, subject scale, center, and framing.
+3. Use the 2D target overlay to guide composition and pose changes.
+4. Open **3D Reverse Engineering** to edit Camera and Scene anchors.
+5. Bind image-space points or plane evidence to selected scene anchors.
+6. Inspect the anchor-based PnP cross-check and **Reference Camera Hypothesis**.
+7. Add horizontal / vertical / free reference-line constraints and optional roll correction.
+8. Apply plane-aware positional constraints and inspect the live 2D projection.
+9. Save or restore a versioned `.pibr.json` reconstruction session.
+10. Use the Temporal workspace for conservative pose smoothing on sampled sequences.
+
+The 3D inspector keeps **Camera** and **Scene anchors** near the top, while **Scene people** stays at the bottom. The live **2D Projection Preview** highlights the selected plane or point to keep image-space evidence tied to the scene model.
+
+## Architecture
+
+The repository separates application composition, GUI presentation, analysis, and reconstruction mathematics:
 
 ```text
-Image
-  │
-  ├─ Pose + BBox ─────────────┐
-  ├─ EXIF + calibration ──────┤
-  ├─ Scene geometry ───────────┤
-  └─ Relative / local depth ───┤
-                               ↓
-                      candidate camera family
-                               ↓
-                       constraint ranking
-                               ↓
-                    bounded image-space refine
-                               ↓
-                    3D proxy + 2D validation
-                               ↓
-               photographer cues / field mode
-                               ↓
-                    voice-ready text / SSML
+main.py
+  └─ gui.application_runtime
+      ├─ gui.application_window
+      ├─ gui.main_window
+      ├─ gui.field_mode
+      ├─ gui.reference_mode
+      ├─ gui.anchor_calibration_dialog
+      └─ gui.v3_completion
+
+GUI / V3
+  gui.reverse_3d_v3
+      ├─ gui.reverse_3d_workspace   # 3D inspector + anchor/projection workspace
+      ├─ gui.reverse_3d             # low-level 3D scene/projection rendering
+      ├─ gui.reverse_3d_reference_line
+      │   └─ reference-line / camera-match controls
+      └─ gui.reference_line_calibration
+          └─ interactive line evidence + roll correction
+
+Reverse engineering
+  reverse_engineering.engine
+      └─ reverse_engineering.engine_v2   # current 2.5 engine implementation
+          ├─ camera / geometry / projection
+          ├─ depth / support-plane evidence
+          ├─ image-space refinement
+          ├─ multi-person layout
+          └─ shooting-technique scoring
+
+Reference reconstruction
+  reference_reconstruction
+      └─ reference_anchor
+  reference_camera
+      ├─ reference_reconstruction
+      ├─ reference_line_calibration
+      └─ scene / scene_anchors
 ```
 
-### Intrinsics and Calibration
+A more detailed dependency and cleanup map is kept in [`docs/DEPENDENCY_GRAPH.md`](docs/DEPENDENCY_GRAPH.md).
 
-Reusable calibration profiles carry sensor size, principal point, pixel aspect ratio and optional focal priors. EXIF metadata and user-selected calibration remain separate evidence sources, while the active profile is applied to candidate projection intrinsics.
-
-### Depth
-
-`DepthProvider` remains the stable interface. The default provider is deterministic and offline-friendly; a local monocular-depth model can be injected through `model_fn` without changing the reconstruction pipeline. Depth remains a relative ranking signal rather than absolute metric depth.
-
-### Image-space refinement
-
-After candidate recovery, v2.5 makes only bounded corrections to yaw/pitch. Roll is intentionally frozen unless an independent scene-roll measurement is available, because human pose alone cannot distinguish camera roll from subject lean. Any independent roll evidence is reported with the candidate rather than silently hidden.
-
-### Camera roll hardening
-
-Vanishing-point fitting can produce mathematically valid Euler rotations from the wrong line families. The rotation solver now estimates roll separately from raw line orientations and requires agreement between orthogonal scene families before accepting a non-zero Dutch angle. Otherwise roll is explicitly neutralized to `0°`. This prevents diagonal architecture, hair, clothing, railings and other scene texture from becoming a false camera-roll reference.
-
-### Non-Manhattan scenes
-
-Scene-geometry fusion is gated by scene confidence and the availability of three reliable orthogonal directions. Weak or non-Manhattan scenes rely more heavily on pose framing and the bounded image-space refinement pass.
-
-### Landmark quality
-
-The field layer exposes landmark confidence, lower-body confidence, face confidence and a semantic anchor. The existing COCO 17-point detector remains backward compatible while higher-quality/extended landmark providers can be plugged in later.
-
-## Evidence State Model
+## Repository layout
 
 ```text
-OBSERVED
-  ↓ directly supported by pixels / EXIF / selected calibration input
-
-ESTIMATED
-  ↓ inferred from geometry, pose, priors or model confidence
-
-UNKNOWN
-  ↓ insufficient evidence; do not treat as measured
+core/                  2D analysis, pose, composition, photographer cues
+reverse_engineering/   camera geometry, reconstruction, reference reasoning
+gui/                   desktop UI and V3 workspaces
+tests/                 deterministic regression contracts
+docs/                  architecture and domain notes
+main.py                desktop / CLI entry point
+pyproject.toml         Python package metadata and dependencies
+uv.lock                locked environment
 ```
 
-## v2.5 Field Mode
+## Installation
 
-Field Mode is a fourth workspace designed for shooting rather than post-analysis. It uses a large primary cue, compact confidence/landmark status, secondary cues, undo/redo, and separate plain-text and SSML copy actions. The output layer is device-independent and does not require a network speech service. The UI uses the same light theme as the rest of the desktop application, including explicit popup and disabled-state styling.
+Python **3.12+** is required.
 
-## v3 Architecture
-
-v3 changes the question from **“what camera probably made this image?”** to **“what do I need to change to reproduce this reference image?”**.
-
-```text
-Reference image ──→ reference pose + composition anchors ──┐
-                                                            ├─→ target delta
-Current image   ──→ current pose + composition  ────────────┘
-                                                            │
-                                                            ↓
-                                             camera / framing / pose guidance
+```bash
+uv sync
+uv run python main.py
 ```
 
-The first v3 layer is intentionally 2D-first. A single photograph does not provide enough evidence for arbitrary metric room reconstruction, so reference reconstruction uses explicit image-space anchors and reports deltas instead of inventing absolute scene coordinates.
+The deterministic test suite can be run with:
 
-### Reference Reconstruction
-
-`reverse_engineering/reference_reconstruction.py` provides:
-
-- explicit reference composition records and editable semantic anchors
-- stable `hip_center → shoulder_center → head` anchor selection
-- reference/current subject-center and scale comparison
-- per-landmark pose deltas with directional photographer instructions
-- deterministic serialization for later reference-session recording
-
-The GUI provides a **Reference** workspace where a reference photograph can be loaded independently, with EXIF orientation normalized before pose analysis. The current analyzed image is compared automatically, making the first v3 loop usable without changing the existing v2.5 reconstruction engine.
-
-### v3 Phase 2 — Reference target planning
-
-The second tranche converts raw reference deltas into a reproducible shooting target. `reverse_engineering/reference_targets.py` separates the plan into:
-
-- **framing actions** — subject scale plus whole-subject horizontal/vertical placement
-- **pose actions** — the largest visible landmark deltas from the reference
-- **priority order** — fix composition first, then use a small number of pose changes
-
-The Reference workspace renders this target plan under the two-image comparison. It remains image-space and conservative: the system does not pretend that a single image uniquely determines physical room coordinates or a unique camera translation.
-
-### v3 Phase 2.2 — 2D target guides
-
-The current-photo 2D canvas consumes the same reference target data and draws:
-
-- a dashed **TARGET FRAME** showing where the reference subject should occupy the current frame
-- a **TARGET CENTER** marker and arrow showing whole-subject composition movement
-- up to five largest actionable landmark arrows from the current pose toward the reference-normalized targets
-- a toolbar **Reference Target** toggle so the visual guidance can be hidden without disabling the reference comparison workspace
-
-Target landmark coordinates are stored in the reference image's normalized coordinate system, so arrows remain stable when reference and current photographs have different resolutions or aspect ratios.
-
-### v3 Phase 2.3 — Multi-person layout and relative 3D
-
-The `reverse_engineering/multi_person_layout.py` model turns detector multi-person output into an explicit scene-layout record. Each detected person receives normalized framing geometry, a torso/hip depth sample, and a normalized relative depth coordinate. The system distinguishes:
-
-- **image-space only** when depth evidence is missing or weak
-- **relative 3D ordering** when the local depth backend provides enough separation
-- **metric camera/person distance** remains unknown without an independent scale source
-
-The reconstruction workspace projects every retained person through the same camera model. Primary and additional people are visually separated, and the 2D validation preview shows their independent projected bounds.
-
-### v3 Phase 2.4 — Editable scene anchors
-
-`reverse_engineering/scene_anchors.py` introduces an explicit, conservative scene scaffold for room/object reconstruction:
-
-- point and plane anchors with editable world position, normal and size
-- independent **enabled** and **visible** states, so presentation can be simplified without changing reconstruction participation
-- deterministic validation and serialization
-- a protected default **Ground plane** coordinate scaffold
-- helper construction of a plane from three manually supplied world points
-
-`SceneModel` carries these anchors independently from observed image evidence. A fresh anchor starts with zero confidence and `manual` / `scene scaffold` provenance; later calibration stages can bind anchors to selected image points and promote only the supported geometry.
-
-The reconstruction inspector is scrollable and deliberately sparse. **Scene people is collapsed by default**, Candidate solutions remains collapsed, and Scene anchor rows have per-anchor visibility switches. The visibility state is presentation-only and does not disable calibration participation.
-
-### v3 Phase 2.5 — Image-first manual anchor calibration and full workflow
-
-Phase 2.5 is now fully wired through the desktop workflow:
-
-- the source photograph is displayed directly beside calibration controls
-- clicking the image writes `P1…P4` image coordinates; numeric coordinates remain available for precision work
-- bound point anchors and four-point plane anchors are drawn back onto the original image
-- visible anchors are controlled independently from reconstruction participation
-- all bound anchors can generate a non-destructive `CameraAnchorHypothesis` through PnP when sufficient correspondences exist
-- the anchored PnP result is exposed as an explicit cross-check beside the active SceneCamera and never silently replaces it
-- the active reference composition produces a conservative **Reference Camera Hypothesis** with distance/re-aim deltas
-- plane anchors support explicit horizontal / vertical / free reference-line evidence and evidence-derived roll correction
-- plane-aware positional constraints can be applied/evaluated against the primary subject and persisted in the session
-- reconstruction sessions are versioned and integrity checked, including scene anchors, image evidence, plane constraints and reference-image metadata
-- loading a session restores the editable 3D scene, inspector state, constraints, anchor cross-check, and reference-photo context when the reference file is still available
-- composition-aware pose targets can be generated and pushed back into the same 2D reference guidance overlay
-- a Temporal workspace provides conservative pose smoothing for sampled video sequences without inventing metric camera motion
-
-The V3 loop is therefore:
-
-```text
-Reference image
-  ↓
-reference pose + composition
-  ↓
-current image analysis
-  ↓
-2D target plan + landmark guidance
-  ↓
-editable 3D scene anchors
-  ↓
-image-space anchor binding
-  ↓
-anchor PnP cross-check ───────┐
-                              ├─→ compare evidence
-reference camera hypothesis ──┘
-  ↓
-plane/reference-line constraints
-  ↓
-pose / camera / framing adjustments
-  ↓
-save or restore reconstruction session
+```bash
+uv run pytest
 ```
 
-## Test Organization
+Model-backed end-to-end checks may still require local YOLO weights and a suitable runtime environment; the regression suite is intentionally designed not to depend on network services.
 
-Regression coverage is kept deterministic and avoids requiring YOLO weights or network services. The suite covers geometry/projection conventions, camera fitting, calibration/EXIF evidence, normalized orientation, relative depth, scene constraints, image refinement, semantic anchors, evidence states, photographer cues, voice output, scene rotation, Field Mode, reference target planning, multi-person layout and scene-anchor contracts. Model-backed end-to-end tests that require real model weights or photographs remain outside the deterministic contract suite.
+## Evidence rules
 
-## Roadmap
+- **Observed** — directly supported by pixels, EXIF, or explicit user input.
+- **Estimated** — inferred from pose, geometry, priors, depth, or solver output.
+- **Unknown** — insufficient evidence; it should not be treated as measured.
 
-### v2.5 — Field Photography Assistance
+Important examples:
 
-**Functionally complete.**
+- focal length and distance are a candidate family, not a uniquely solved pair;
+- relative monocular depth is used as a soft ranking signal, not metric room scale;
+- camera roll is accepted only from independent scene-line evidence;
+- reference-camera output is a delta/hypothesis and does not silently replace the active SceneCamera.
 
-Completed: calibration profiles, EXIF + calibration separation, multi-candidate camera fitting, depth/feasibility/support-plane ranking, optical-axis diagnostics, bounded image-space refinement, conservative camera-roll handling, non-Manhattan fallback, landmark-quality layer, Field Mode, cue history, voice-ready output, and explicit EXIF image-orientation normalization.
+## Status
 
-### v3 — Reference Reconstruction and Scene Understanding
+**V2.5:** functionally complete for the current deterministic camera-analysis pipeline.
 
-**Phase 2.5 is functionally complete for the current desktop workflow.**
+**V3 Phase 2.5:** the current desktop reference-reconstruction loop is functionally complete, including reference targets, multi-person relative layout, editable scene anchors, image-space calibration, anchor PnP cross-checks, reference camera hypotheses, reference-line constraints, plane-aware constraints, reconstruction sessions, and temporal pose smoothing.
 
-Completed:
-- Reference-photo comparison workspace
-- Explicit reference composition and semantic body anchors
-- Pose-to-reference landmark deltas
-- Composition center and subject-scale deltas
-- Directional photographer instructions derived from reference deltas
-- Reference target plan and conservative action ordering
-- Orientation-normalized reference loading
-- 2D target-frame / target-center / landmark guidance overlays
-- Multi-person layout foundation with conservative relative depth
-- Multi-person 3D scene rendering and shared-camera projection
-- Editable point/plane scene-anchor scaffold
-- Independent scene-anchor visibility controls
-- Image-first manual anchor binding with original-image overlay
-- Non-destructive camera hypothesis estimation from bound anchors
-- Reference-photo camera hypothesis from composition evidence
-- Reference-line constraints and evidence-derived roll correction
-- Plane-aware positional constraints
-- Versioned, integrity-checked reconstruction sessions
-- Composition-aware pose target generation
-- Conservative temporal pose smoothing workspace
-- Desktop integration of the complete V3 flow
-
-### Later v3
-- Composition-aware target pose generation with richer whole-body feasibility solving
-- EvidenceObservation records for multiple observations of the same physical feature across images
-- Optional sampled per-frame camera solving for temporal sequences
-
-### v4 — Assisted Shooting
-- Optional live camera/tether integration
-- Near-real-time pose feedback during shooting
-- Voice output for photographer cues so the photographer does not need to look at the screen
-- Session records: image, camera hypothesis, pose state, verbal cues and operator adjustments
-- Offline-first model packaging and inference profiles for field machines without network access
+Future work focuses on richer whole-body target solving, multi-observation evidence records, sampled per-frame camera solving, and optional live camera/tether integration.
