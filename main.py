@@ -8,6 +8,7 @@ from __future__ import annotations
 # nuitka-project: --enable-plugin=pyside6
 # nuitka-project: --include-data-dir={MAIN_DIRECTORY}/model=model
 # nuitka-project: --include-data-dir={MAIN_DIRECTORY}/assets=assets
+# nuitka-project: --module-parameter=torch-disable-jit=yes
 # nuitka-project-if: {OS} == "Windows":
 #     nuitka-project: --windows-console-mode=disable
 
