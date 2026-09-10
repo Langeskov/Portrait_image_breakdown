@@ -9,10 +9,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 import urllib.parse
+import tomllib
 
 from PySide6.QtCore import QUrl
 from PySide6.QtGui import QAction, QActionGroup, QDesktopServices
 from PySide6.QtWidgets import (
+    QApplication,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -42,6 +44,21 @@ from reverse_engineering.calibration import BUILTIN_PROFILES
 from reverse_engineering.reconstruction_session import load_session, save_session
 
 FEEDBACK_EMAIL = "lolekseit@foxmail.com"
+PROJECT_URL = "https://github.com/Langeskov/Portrait_image_breakdown"
+
+
+def _read_app_version() -> str:
+    """Read the project version from pyproject.toml with a safe fallback."""
+    pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    try:
+        with pyproject.open("rb") as handle:
+            version = tomllib.load(handle).get("project", {}).get("version")
+        return str(version or "0.3.0")
+    except (OSError, tomllib.TOMLDecodeError, TypeError):
+        return "0.3.0"
+
+
+APP_VERSION = _read_app_version()
 
 
 @dataclass
@@ -67,18 +84,45 @@ def _install_settings_menu(window: ApplicationMainWindow, context: RuntimeContex
     def open_feedback() -> None:
         dialog = QDialog(window)
         dialog.setWindowTitle("Problem feedback")
-        dialog.resize(620, 430)
+        dialog.resize(680, 500)
         layout = QVBoxLayout(dialog)
         form = QFormLayout()
+
+        repository = QLineEdit(PROJECT_URL)
+        repository.setReadOnly(True)
+        repository.setToolTip("可直接选中复制项目地址")
+        version = QLineEdit(APP_VERSION)
+        version.setReadOnly(True)
+        version.setToolTip("当前应用版本号")
         subject = QLineEdit("Portrait Image Breakdown feedback")
         body = QPlainTextEdit()
         body.setPlaceholderText("请描述问题、复现步骤、期望结果，以及任何有帮助的日志信息。")
+        body.setPlainText(
+            f"项目地址：{PROJECT_URL}\n"
+            f"版本号：{APP_VERSION}\n\n"
+            "问题描述：\n"
+        )
+
+        form.addRow("项目地址", repository)
+        form.addRow("版本号", version)
         form.addRow("Subject", subject)
         form.addRow("Details", body)
         layout.addLayout(form)
+
+        copy_button = QPushButton("复制项目地址和版本号")
+
+        def copy_metadata() -> None:
+            QApplication.clipboard().setText(
+                f"Portrait Image Breakdown\n项目地址：{PROJECT_URL}\n版本号：{APP_VERSION}"
+            )
+            copy_button.setText("已复制")
+
+        copy_button.clicked.connect(copy_metadata)
+        layout.addWidget(copy_button)
+
         hint = QLabel(
             f"邮件地址：{FEEDBACK_EMAIL}\n"
-            "点击发送后会调用系统默认邮件客户端；程序不会保存邮件凭据。"
+            "项目地址和版本号会自动加入反馈正文，也可以单独复制后粘贴到 Issue。"
         )
         hint.setWordWrap(True)
         hint.setStyleSheet("color:#64748B;")
