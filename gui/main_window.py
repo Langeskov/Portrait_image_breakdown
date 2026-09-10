@@ -1,4 +1,4 @@
-"""Main window for the portrait image analysis workflow."""
+"""MainWindow - Two-phase analysis architecture (Fast + Full RE)"""
 from __future__ import annotations
 
 import hashlib
@@ -60,7 +60,7 @@ def apply_light_theme(app):
 
 @dataclass
 class AnalysisBundle:
-    """累积单张图片的全部分析结果。"""
+    """Accumulates all analysis results for a single image."""
     pose: Optional[object] = None
     orientation: Optional[object] = None
     action: Optional[object] = None
@@ -207,28 +207,20 @@ class Analysis2DWorkspace(Workspace):
         self._overlay_group.setStyleSheet("QGroupBox { margin:4px 8px 3px 8px; padding-top:4px; border:1px solid #E2E8F0; border-radius:5px; } QGroupBox::title { left:8px; padding:0 4px; color:#475569; font-size:9pt; }")
         row = QHBoxLayout(self._overlay_group); row.setContentsMargins(8, 8, 8, 6); row.setSpacing(7)
         self._overlay_controls = []
-        specs = [
-            ("Skeleton", True, "skeleton"), ("3x3 Grid", True, "thirds"),
-            ("Center", True, "center"), ("BBox", True, "bbox"),
-            ("Headroom", False, "headroom"), ("Reference Target", True, "reference_target"),
-            ("Visual Weight", False, "visual_weight"), ("Reverse Evidence", False, "reverse"),
-        ]
+        specs = [("Skeleton", True, "skeleton"), ("3x3 Grid", True, "thirds"), ("Center", True, "center"), ("BBox", True, "bbox"), ("Headroom", False, "headroom"), ("Reference Target", True, "reference_target"), ("Visual Weight", False, "visual_weight"), ("Reverse Evidence", False, "reverse")]
         for label, checked, key in specs:
             cb = QCheckBox(label); cb.setChecked(checked); cb.setProperty("overlay_key", key); cb.setStyleSheet("QCheckBox { font-size:9pt; spacing:4px; padding:0px; }"); cb.stateChanged.connect(self._apply_overlay_options); self._overlay_controls.append(cb); row.addWidget(cb, 0, Qt.AlignmentFlag.AlignVCenter)
         row.addStretch(1)
         splitter = QSplitter(Qt.Horizontal)
         self._ap = AnalysisPanel(); splitter.addWidget(self._ap); self._cv = ImageCanvas(); splitter.addWidget(self._cv); self._sp = SuggestionPanel(); splitter.addWidget(self._sp)
         splitter.setSizes([300, 700, 320]); splitter.setStretchFactor(1, 1)
-        lo.addWidget(self._overlay_group, 0); lo.addWidget(splitter, 1)
-        self._apply_overlay_options()
-
+        lo.addWidget(self._overlay_group, 0); lo.addWidget(splitter, 1); self._apply_overlay_options()
     def set_image(self, img: np.ndarray): self._cv.set_image(img)
     def _apply_overlay_options(self, _state=0): self._cv.set_overlay_options(**{cb.property("overlay_key"): cb.isChecked() for cb in self._overlay_controls})
     def set_overlay_options(self, **kwargs):
         for cb in self._overlay_controls:
             key = cb.property("overlay_key")
-            if key in kwargs:
-                cb.blockSignals(True); cb.setChecked(bool(kwargs[key])); cb.blockSignals(False)
+            if key in kwargs: cb.blockSignals(True); cb.setChecked(bool(kwargs[key])); cb.blockSignals(False)
         self._apply_overlay_options()
     def update_results(self, bundle: AnalysisBundle):
         if bundle.pose:
@@ -242,16 +234,13 @@ class Analysis2DWorkspace(Workspace):
 
 
 class ResultsWorkspace(Workspace):
-    """反向工程报告页面；与分析结果保持同一生命周期。"""
+    """反向工程报告页面，与当前分析结果保持同步。"""
     def __init__(self, parent=None):
         super().__init__(parent)
         lo = QVBoxLayout(self); lo.setContentsMargins(16, 16, 16, 16)
         title = QLabel("反向工程报告"); title.setFont(QFont("Microsoft YaHei", 14, QFont.Weight.Bold)); lo.addWidget(title)
-        self._rl = QLabel("暂无结果，等待分析……")
-        self._rl.setFont(QFont("Consolas", 10)); self._rl.setAlignment(Qt.AlignTop | Qt.AlignLeft); self._rl.setWordWrap(True); self._rl.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        self._rl.setStyleSheet(f"color: {THEME['text']};")
+        self._rl = QLabel("暂无结果，等待分析……"); self._rl.setFont(QFont("Consolas", 10)); self._rl.setAlignment(Qt.AlignTop | Qt.AlignLeft); self._rl.setWordWrap(True); self._rl.setTextInteractionFlags(Qt.TextSelectableByMouse); self._rl.setStyleSheet(f"color: {THEME['text']};")
         sc = QScrollArea(); sc.setWidget(self._rl); sc.setWidgetResizable(True); sc.setStyleSheet(f"QScrollArea {{ border: 1px solid {THEME['border']}; background: {THEME['panel']}; }}"); lo.addWidget(sc)
-
     def update_results(self, bundle: AnalysisBundle):
         if bundle.reverse_result is None:
             self._rl.setText("反向工程尚未完成……")
@@ -279,7 +268,6 @@ class MainWindow(QMainWindow):
         center = QWidget(); ml = QVBoxLayout(center); ml.setContentsMargins(0, 0, 0, 0); ml.setSpacing(0); ml.addWidget(self._tabs); ml.addWidget(self._ws); self.setCentralWidget(center)
         self._st = QStatusBar(); self.setStatusBar(self._st); self._progress = QProgressBar(); self._progress.setRange(0, 100); self._progress.setValue(0); self._progress.setTextVisible(True); self._progress.setVisible(False); self._st.addPermanentWidget(self._progress, 1); self._st.showMessage("Ready")
         self._load_dataset_folder(None); self.setAcceptDrops(True)
-
     def _choose_dataset_folder(self):
         start = str(self._dataset_folder or Path.home()); path = QFileDialog.getExistingDirectory(self, "Select image folder", start)
         if path: self._load_dataset_folder(Path(path))
@@ -325,17 +313,14 @@ class MainWindow(QMainWindow):
         self._wr.update_results(bundle)
     def _on_reverse_ready(self, bundle):
         self._bundle = bundle
-        if self._img is not None:
-            self._result_cache[_image_hash(self._img)] = bundle
+        if self._img is not None: self._result_cache[_image_hash(self._img)] = bundle
         self._w2.update_results(bundle)
         self._w3.update_results(bundle)
         self._wr.update_results(bundle)
         self._finish_progress()
-    def _apply_bundle(self, bundle):
-        self._w2.update_results(bundle); self._w3.update_results(bundle); self._wr.update_results(bundle)
+    def _apply_bundle(self, bundle): self._w2.update_results(bundle); self._w3.update_results(bundle); self._wr.update_results(bundle)
     def _err(self, message: str): self._progress.setVisible(False); QMessageBox.critical(self, "Analysis error", message)
     def _sw(self, index): self._ws.setCurrentIndex(index)
-
     def set_overlay_options(self, **kwargs): self._w2.set_overlay_options(**kwargs)
     @property
     def current_image(self): return self._img
