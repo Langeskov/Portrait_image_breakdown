@@ -26,6 +26,14 @@ def _append_evidence_state(text: str, reverse_result) -> str:
         "Unknown = insufficient evidence; do not treat as a measured value.")
 
 
+def _find_app_icon() -> Path | None:
+    """Locate the bundled application icon, preferring the scalable SVG asset."""
+    for candidate in (ROOT / "assets" / "app_icon.svg", ROOT / "assets" / "app_icon.png"):
+        if candidate.exists():
+            return candidate
+    return None
+
+
 def run_gui(image_path: str | None = None, calibration_profile: str = "Generic") -> None:
     from PySide6.QtWidgets import QApplication
     from PySide6.QtGui import QIcon
@@ -36,12 +44,12 @@ def run_gui(image_path: str | None = None, calibration_profile: str = "Generic")
     services = ApplicationServices.create(calibration_profile=calibration_profile)
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
-    icon_path = ROOT / "assets" / "app_icon.png"
-    if icon_path.exists():
+    icon_path = _find_app_icon()
+    if icon_path is not None:
         app.setWindowIcon(QIcon(str(icon_path)))
     apply_light_theme(app)
     window, context = build_window(services)
-    if icon_path.exists():
+    if icon_path is not None:
         window.setWindowIcon(QIcon(str(icon_path)))
     install_chinese_ui(window)
     context.calibration_profile = calibration_profile
