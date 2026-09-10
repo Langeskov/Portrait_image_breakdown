@@ -27,7 +27,7 @@ def _append_evidence_state(text: str, reverse_result) -> str:
 
 
 def _find_app_icon() -> Path | None:
-    """Locate the bundled application icon."""
+    """Locate the bundled Windows application icon."""
     candidate = ROOT / "assets" / "app.ico"
     return candidate if candidate.exists() else None
 
