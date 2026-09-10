@@ -78,7 +78,7 @@ ZH = {
     "Thirds alignment": "三分法对齐",
     "Symmetry": "对称度",
     "Balance": "平衡度",
-    "Photography Insight": "摄影洞察",
+    "Photography Insight": "图片分析",
     "Photographer Cue": "摄影师提示",
     "Waiting for analysis...": "等待分析……",
     "Waiting for analysis…": "等待分析……",
