@@ -1,4 +1,4 @@
-"""MainWindow - Two-phase analysis architecture (Fast + Full RE)"""
+"""Main window for the portrait image analysis workflow."""
 from __future__ import annotations
 
 import hashlib
@@ -60,7 +60,7 @@ def apply_light_theme(app):
 
 @dataclass
 class AnalysisBundle:
-    """Accumulates all analysis results for a single image."""
+    """累积单张图片的全部分析结果。"""
     pose: Optional[object] = None
     orientation: Optional[object] = None
     action: Optional[object] = None
@@ -182,7 +182,10 @@ class AnalysisWorker(QThread):
                 self._stage_begin("8/8 reverse_engineering image preparation", (55, "[8/8] Preparing 3D reconstruction input…"))
                 re_image = _resize_for_analysis(self._analysis_image, max_side=1600)
                 self._stage_begin("8/8 ReverseEngineeringEngine.analyze", (60, "[8/8] Calculating 3D camera geometry…")); re_result = self._eng.analyze(re_image, pose, pose.bbox)
-                self._bundle.reverse_result = re_result; self._stage_begin("8/8 final projection validation", (95, "[8/8] Finalizing projection validation…")); self.reverse_ready.emit(self._bundle); self.progress.emit(100, "Analysis complete")
+                self._bundle.reverse_result = re_result
+                self._stage_begin("8/8 final projection validation", (95, "[8/8] Finalizing projection validation…"))
+                self.reverse_ready.emit(self._bundle)
+                self.progress.emit(100, "Analysis complete")
             else:
                 self._stage = "reverse_engineering skipped"; self.progress.emit(100, "Analysis complete")
         except Exception as e:
@@ -220,16 +223,13 @@ class Analysis2DWorkspace(Workspace):
         self._apply_overlay_options()
 
     def set_image(self, img: np.ndarray): self._cv.set_image(img)
-
     def _apply_overlay_options(self, _state=0): self._cv.set_overlay_options(**{cb.property("overlay_key"): cb.isChecked() for cb in self._overlay_controls})
-
     def set_overlay_options(self, **kwargs):
         for cb in self._overlay_controls:
             key = cb.property("overlay_key")
             if key in kwargs:
                 cb.blockSignals(True); cb.setChecked(bool(kwargs[key])); cb.blockSignals(False)
         self._apply_overlay_options()
-
     def update_results(self, bundle: AnalysisBundle):
         if bundle.pose:
             self._cv.set_pose(bundle.pose); vis = sum(1 for lm in bundle.pose.landmarks[:17] if lm.visibility > 0.4); self._ap.update_pose(bundle.pose.detection_confidence, vis)
@@ -242,13 +242,25 @@ class Analysis2DWorkspace(Workspace):
 
 
 class ResultsWorkspace(Workspace):
+    """反向工程报告页面；与分析结果保持同一生命周期。"""
     def __init__(self, parent=None):
         super().__init__(parent)
         lo = QVBoxLayout(self); lo.setContentsMargins(16, 16, 16, 16)
-        title = QLabel("Reverse Engineering Report"); title.setFont(QFont("Segoe UI", 14, QFont.Weight.Bold)); lo.addWidget(title)
-        self._rl = QLabel("No results yet. Waiting for analysis..."); self._rl.setFont(QFont("Consolas", 10)); self._rl.setAlignment(Qt.AlignTop); self._rl.setWordWrap(True); self._rl.setStyleSheet(f"color: {THEME['text']};")
+        title = QLabel("反向工程报告"); title.setFont(QFont("Microsoft YaHei", 14, QFont.Weight.Bold)); lo.addWidget(title)
+        self._rl = QLabel("暂无结果，等待分析……")
+        self._rl.setFont(QFont("Consolas", 10)); self._rl.setAlignment(Qt.AlignTop | Qt.AlignLeft); self._rl.setWordWrap(True); self._rl.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self._rl.setStyleSheet(f"color: {THEME['text']};")
         sc = QScrollArea(); sc.setWidget(self._rl); sc.setWidgetResizable(True); sc.setStyleSheet(f"QScrollArea {{ border: 1px solid {THEME['border']}; background: {THEME['panel']}; }}"); lo.addWidget(sc)
-    def update_results(self, bundle: AnalysisBundle): self._rl.setText(bundle.reverse_result.report() if bundle.reverse_result else "Reverse engineering not yet complete...")
+
+    def update_results(self, bundle: AnalysisBundle):
+        if bundle.reverse_result is None:
+            self._rl.setText("反向工程尚未完成……")
+            return
+        try:
+            report = bundle.reverse_result.report()
+        except Exception as exc:
+            report = f"无法生成反向工程报告\n\n{type(exc).__name__}: {exc}"
+        self._rl.setText(str(report).strip() or "反向工程已完成，但报告为空。")
 
 
 class MainWindow(QMainWindow):
@@ -306,9 +318,21 @@ class MainWindow(QMainWindow):
     def _on_pose_ready(self, pose):
         self._bundle.pose = pose; self._w2._cv.set_pose(pose)
         if hasattr(self, "_reference_mode") and self._img is not None: self._reference_mode.set_current(pose, self._img)
-    def _on_core_ready(self, bundle): self._bundle = bundle; self._w2.update_results(bundle); self._w3.update_results(bundle)
-    def _on_reverse_ready(self, bundle): self._bundle = bundle; self._result_cache[_image_hash(self._img)] = bundle; self._w2.update_results(bundle); self._w3.update_results(bundle); self._finish_progress()
-    def _apply_bundle(self, bundle): self._w2.update_results(bundle); self._w3.update_results(bundle)
+    def _on_core_ready(self, bundle):
+        self._bundle = bundle
+        self._w2.update_results(bundle)
+        self._w3.update_results(bundle)
+        self._wr.update_results(bundle)
+    def _on_reverse_ready(self, bundle):
+        self._bundle = bundle
+        if self._img is not None:
+            self._result_cache[_image_hash(self._img)] = bundle
+        self._w2.update_results(bundle)
+        self._w3.update_results(bundle)
+        self._wr.update_results(bundle)
+        self._finish_progress()
+    def _apply_bundle(self, bundle):
+        self._w2.update_results(bundle); self._w3.update_results(bundle); self._wr.update_results(bundle)
     def _err(self, message: str): self._progress.setVisible(False); QMessageBox.critical(self, "Analysis error", message)
     def _sw(self, index): self._ws.setCurrentIndex(index)
 
