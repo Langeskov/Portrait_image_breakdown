@@ -27,8 +27,8 @@ def _append_evidence_state(text: str, reverse_result) -> str:
 
 
 def _find_app_icon() -> Path | None:
-    """Locate the bundled application icon, preferring the scalable SVG asset."""
-    for candidate in (ROOT / "assets" / "app_icon.svg", ROOT / "assets" / "app_icon.png"):
+    """Locate the bundled application icon, preferring the requested PNG asset."""
+    for candidate in (ROOT / "assets" / "icon.png", ROOT / "assets" / "app_icon.svg", ROOT / "assets" / "app_icon.png"):
         if candidate.exists():
             return candidate
     return None
