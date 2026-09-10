@@ -4,10 +4,22 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import os
+import sys
 from urllib.request import urlopen
 
 
-ROOT_DIR = Path(__file__).resolve().parent.parent
+def runtime_root_dir() -> Path:
+    """Return the application root in source, PyInstaller, or Nuitka builds."""
+    compiled = globals().get("__compiled__")
+    containing_dir = getattr(compiled, "containing_dir", None)
+    if containing_dir:
+        return Path(containing_dir)
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent.parent
+
+
+ROOT_DIR = runtime_root_dir()
 MODEL_DIR = ROOT_DIR / "model"
 ASSET_BASE_URL = "https://github.com/ultralytics/assets/releases/download/v8.4.0"
 
@@ -27,7 +39,12 @@ POSE_MODELS: tuple[PoseModelSpec, ...] = (
     PoseModelSpec("x", "yolo26x-pose.pt", "YOLO26x · highest accuracy"),
 )
 
-DEFAULT_POSE_MODEL = "x"
+DEFAULT_POSE_MODEL = "m"
+
+
+def is_packaged_application() -> bool:
+    """Whether the current process is a compiled/standalone distribution."""
+    return bool(globals().get("__compiled__")) or bool(getattr(sys, "frozen", False))
 
 
 def get_pose_model(key_or_path: str | None = None) -> PoseModelSpec | str:
@@ -73,6 +90,8 @@ def _download_builtin_pose_model(spec: PoseModelSpec, target: Path) -> Path:
                 if not chunk:
                     break
                 output.write(chunk)
+        if temp.stat().st_size <= 0:
+            raise OSError("Downloaded model file is empty")
         temp.replace(target)
     except Exception:
         try:
@@ -83,12 +102,22 @@ def _download_builtin_pose_model(spec: PoseModelSpec, target: Path) -> Path:
     return target
 
 
-def ensure_pose_model(key_or_path: str | None = None) -> Path:
-    """Ensure the selected checkpoint exists locally, downloading built-ins on demand."""
+def ensure_pose_model(key_or_path: str | None = None, *, allow_download: bool | None = None) -> Path:
+    """Return a local checkpoint, downloading only when explicitly allowed in source builds."""
     resolved = get_pose_model(key_or_path)
     path = resolve_pose_model_path(key_or_path)
     if path.is_file():
         return path
+
+    if allow_download is None:
+        allow_download = not is_packaged_application()
+
+    if not allow_download:
+        raise FileNotFoundError(
+            f"Pose model not found in the installed application: {path}\n\n"
+            f"Reinstall the application with the model files included."
+        )
+
     if isinstance(resolved, PoseModelSpec):
         try:
             return _download_builtin_pose_model(resolved, path)
