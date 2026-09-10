@@ -322,11 +322,19 @@ def install_v3_toolbar(window: ApplicationMainWindow, context: RuntimeContext) -
     bar = bars[0]
     bar.addWidget(QLabel("  Calibration: "))
     combo = QComboBox()
-    combo.addItems(list(BUILTIN_PROFILES.keys()))
-    combo.setCurrentText(context.calibration_profile)
+    calibration_labels = {
+        "Generic": "通用",
+        "Full Frame 36x24": "全画幅 36×24",
+        "APS-C 23.5x15.6": "APS-C 23.5×15.6",
+        "Micro Four Thirds 17.3x13": "M4/3 17.3×13",
+    }
+    for profile_name in BUILTIN_PROFILES:
+        combo.addItem(calibration_labels.get(profile_name, profile_name), profile_name)
+    combo.setCurrentIndex(max(0, list(BUILTIN_PROFILES.keys()).index(context.calibration_profile)))
 
-    def on_profile_changed(name):
-        context.calibration_profile = name or "Generic"
+    def on_profile_changed(_display_name):
+        profile_name = combo.currentData()
+        context.calibration_profile = str(profile_name or "Generic")
         window.set_calibration_profile(context.calibration_profile)
         if window._current_path:
             window.load_image(window._current_path)
