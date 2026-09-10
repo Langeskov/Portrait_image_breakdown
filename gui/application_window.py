@@ -154,7 +154,8 @@ class ApplicationMainWindow(_BaseMainWindow):
     def set_pose_model(self, model: str) -> None:
         """Switch the detector model and re-analyze the current image."""
         if not self.model_ready:
-            raise RuntimeError("Pose model is still loading")
+            self._st.showMessage(f"姿态模型正在加载：{pose_model_label(self._pose_model)}")
+            return
         model = str(model or DEFAULT_POSE_MODEL).strip()
         resolved = get_pose_model(model)
         normalized = resolved.key if hasattr(resolved, "key") else str(resolved)
@@ -166,8 +167,9 @@ class ApplicationMainWindow(_BaseMainWindow):
         try:
             from core.pose_detector import PoseDetector
             new_detector = PoseDetector(model=normalized)
-        except Exception:
-            raise
+        except Exception as exc:
+            QMessageBox.critical(self, "Pose model", f"无法切换姿态模型。\n\n{type(exc).__name__}: {exc}")
+            return
 
         self._det = new_detector
         self._pose_model = normalized
