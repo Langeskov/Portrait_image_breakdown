@@ -9,10 +9,10 @@ from core.model_config import (
 )
 
 
-def test_default_pose_model_is_yolo26x_in_model_directory():
+def test_default_pose_model_is_yolo26m_in_model_directory():
     model = get_pose_model()
-    assert model.key == DEFAULT_POSE_MODEL == "x"
-    assert resolve_pose_model_path() == MODEL_DIR / "yolo26x-pose.pt"
+    assert model.key == DEFAULT_POSE_MODEL == "m"
+    assert resolve_pose_model_path() == MODEL_DIR / "yolo26m-pose.pt"
 
 
 def test_builtin_pose_model_keys_resolve_to_local_checkpoints():
