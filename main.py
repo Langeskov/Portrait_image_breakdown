@@ -1,19 +1,6 @@
 """Portrait Image Breakdown - explicit application entry points."""
 from __future__ import annotations
 
-# Nuitka release configuration. The source build remains unchanged when run
-# normally with Python, while ``python -m nuitka main.py`` becomes the
-# standalone Windows distribution used for packaging.
-# Nuitka 4.x currently has a Torch package-config regression around
-# ``torch.utils._config_module``. The Windows release script pins the
-# compiler to Nuitka 2.8.10, which is a known-good combination for this app.
-# nuitka-project: --mode=standalone
-# nuitka-project: --enable-plugin=pyside6
-# nuitka-project: --include-data-dir={MAIN_DIRECTORY}/model=model
-# nuitka-project: --include-data-dir={MAIN_DIRECTORY}/assets=assets
-# nuitka-project-if: {OS} == "Windows":
-#     nuitka-project: --windows-console-mode=disable
-
 import argparse
 import re
 import sys
@@ -25,7 +12,7 @@ if str(ROOT) not in sys.path:
 
 
 def _strip_evidence_block(text: str) -> str:
-    text = re.sub(r"\n*={20,}\nEVIDENCE STATE\n={20,}\nObserved:\s*\d+.*?\nObserved = directly supported by image/metadata\.\nEstimated = inferred from available evidence and model confidence\.\nUnknown = insufficient evidence; do not treat as a measured value\.\s*", "", text, flags=re.DOTALL)
+    text = re.sub(r"\n*={20,}\nEVIDENCE STATE\n={20,}\nObserved:\s*\d+.*?\nObserved = directly supported by image/metadata\.\nEstimated = inferred from image, geometry, priors, and model confidence\.\nUnknown = insufficient evidence; do not treat as a measured value\.\s*", "", text, flags=re.DOTALL)
     text = re.sub(r"\n*-- Evidence State --\n\s*observed:\s*\d+\n\s*estimated:\s*\d+\n\s*unknown:\s*\d+\s*", "", text, flags=re.IGNORECASE)
     return text.rstrip()
 
@@ -40,8 +27,8 @@ def _append_evidence_state(text: str, reverse_result) -> str:
 
 
 def _find_app_icon() -> Path | None:
-    """Locate the single bundled application icon."""
-    candidate = ROOT / "assets" / "icon.png"
+    """Locate the bundled application icon."""
+    candidate = ROOT / "assets" / "app.ico"
     return candidate if candidate.exists() else None
 
 
