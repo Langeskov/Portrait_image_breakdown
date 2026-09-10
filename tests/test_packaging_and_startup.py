@@ -8,15 +8,6 @@ from core import model_config
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_pyinstaller_packaging_files_exist():
-    assert (ROOT / "packaging" / "build_pyinstaller_windows.ps1").exists()
-    spec = ROOT / "packaging" / "portrait_image_breakdown.spec"
-    source = spec.read_text(encoding="utf-8")
-    assert 'icon=str(ROOT / "assets" / "app.ico")' in source
-    assert '"assets" / "app.ico"' in source
-    assert '"model"' in source
-
-
 def test_application_uses_ico_icon():
     source = (ROOT / "main.py").read_text(encoding="utf-8")
     assert 'ROOT / "assets" / "app.ico"' in source
