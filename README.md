@@ -55,6 +55,7 @@ gui/                   桌面界面与 V3 工作区
 model/                 本地 YOLO 姿态模型权重（被 gitignore）
 tests/                 确定性回归测试
 docs/                  架构与领域说明
+assets/app.ico         Windows / Qt 应用图标
 main.py                桌面 / CLI 入口
 pyproject.toml         Python 包元数据与依赖
 uv.lock                锁定环境
@@ -105,10 +106,10 @@ GUI / V3
 
 ## 姿态模型配置
 
-姿态检测统一由 `core/model_config.py` 管理。默认模型为 **YOLO26x Pose**，程序默认查找：
+姿态检测统一由 `core/model_config.py` 管理。默认模型为 **YOLO26m Pose**，程序默认查找：
 
 ```text
-model/yolo26x-pose.pt
+model/yolo26m-pose.pt
 ```
 
 内置选择为 `n`、`s`、`m`、`l` 和 `x`。只写模型文件名时会在 `model/` 中查找；显式路径则可以指向其他 checkpoint。
@@ -124,9 +125,11 @@ PIB_POSE_MODEL=yolo26m-pose.pt uv run python main.py
 
 Ultralytics 当前为 YOLO26 Pose 提供五种尺寸，并使用标准 17 点 COCO 姿态格式。模型目录说明见 [`model/README.md`](model/README.md)。
 
-## 安装与运行
+## 开发与发布
 
-需要 Python **3.12+**。
+### 开发用户
+
+需要 Python **3.12+**。使用项目自己的环境运行：
 
 ```bash
 uv sync
@@ -139,7 +142,27 @@ uv run python main.py
 uv run pytest
 ```
 
-依赖真实 YOLO 权重的端到端检查可能需要本地模型文件和合适的运行环境；回归测试刻意不依赖网络服务。
+开发环境可以自行使用 PyInstaller 等工具构建本地发行版。仓库不再维护自动化打包脚本；发布构建所需的模型文件也由发布者自行准备。
+
+### 普通用户
+
+普通用户不需要 Python、uv 或开发依赖。发布版本直接运行发行包中的：
+
+```text
+PortraitImageBreakdown.exe
+```
+
+发行包需要同时包含 `model/` 目录及所需的 `.pt` 姿态模型权重。
+
+## Windows 图标
+
+项目统一使用 `assets/app.ico` 作为应用图标。它由 Python / Qt 运行时使用；构建 EXE 时需要在 PyInstaller 命令中显式指定：
+
+```bash
+python -m PyInstaller --noconfirm --clean --onedir --windowed --name PortraitImageBreakdown --icon=assets/app.ico --add-data "assets;assets" --add-data "model;model" --collect-submodules ultralytics main.py
+```
+
+如果 Windows 资源管理器仍显示旧的 Python 图标，请先把 EXE 输出到一个新的目录或换一个新的 EXE 文件名再检查。这可以排除 Windows 对 EXE 图标的缓存影响。
 
 ## 证据规则
 
