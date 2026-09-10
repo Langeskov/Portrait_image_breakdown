@@ -24,12 +24,20 @@ if ($missing.Count -gt 0) {
 $pyinstallerSpec = "pyinstaller==6.22.2"
 $specFile = Join-Path $Root "packaging\portrait_image_breakdown.spec"
 $distDir = Join-Path $Root "dist\PortraitImageBreakdown"
+$iconFile = Join-Path $Root "assets\app.ico"
+
+if (-not (Test-Path $iconFile)) {
+    throw "Application icon not found: $iconFile"
+}
 
 Write-Host "Building Portrait Image Breakdown with PyInstaller ($pyinstallerSpec)..."
 Write-Host "Mode: onedir"
-Write-Host "Icon: assets\app.ico"
+Write-Host "Icon: assets\app.ico (configured in the .spec file)"
 Write-Host "Models: $($requiredModels -join ', ')"
 
+# The .spec file owns build options such as the Windows icon. PyInstaller
+# ignores most command-line options when a spec file is supplied, so do not
+# pass --icon here; the icon is configured by EXE(..., icon=...) in the spec.
 & uv @(
     "run",
     "--with",
@@ -43,9 +51,10 @@ Write-Host "Models: $($requiredModels -join ', ')"
     "--workpath=$Root\build\pyinstaller",
     $specFile
 )
+$exitCode = $LASTEXITCODE
 
-if ($LASTEXITCODE -ne 0) {
-    throw "PyInstaller build failed with exit code $LASTEXITCODE"
+if ($exitCode -ne 0) {
+    throw "PyInstaller build failed with exit code $exitCode"
 }
 
 if (-not (Test-Path (Join-Path $distDir "PortraitImageBreakdown.exe"))) {
