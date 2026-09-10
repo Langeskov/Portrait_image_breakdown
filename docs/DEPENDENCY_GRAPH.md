@@ -1,6 +1,6 @@
 # Dependency graph
 
-This document records the repository's current import boundaries and the cleanup decisions made during the 2026-09 architecture pass. It is intentionally organized by runtime ownership rather than filename history.
+This document records the repository's current import boundaries and cleanup decisions. It is intentionally organized by runtime ownership rather than filename history.
 
 ## Runtime graph
 
@@ -46,6 +46,8 @@ graph TD
     RLCAL --> SCENE
     RLCAL --> ANCH
 
+    SCENE --> CSEM[reverse_engineering/camera_semantics.py]
+
     MW --> ENG[reverse_engineering/engine.py]
     ENG --> E2[reverse_engineering/engine_v2.py]
     E2 --> CAM[reverse_engineering/camera_pose.py]
@@ -68,30 +70,33 @@ graph TD
 
 `reverse_3d_reference_line.py` owns the compact projected reference-line and camera-match interaction. `reference_line_calibration.py` owns image evidence selection, semantic reference-line constraints, and roll apply/undo controls.
 
-`reverse_engineering/engine.py` is the stable public import path. `engine_v2.py` is the active 2.5 implementation behind that compatibility alias. This pair is intentionally retained until the public V2 export is migrated; deleting `engine_v2.py` without moving its implementation would break the package.
+`reverse_engineering/scene.py` uses `camera_semantics.py` for lightweight camera orbit/optical-aim value objects. `camera_semantics.py` is therefore an active scene-model dependency, not dead code.
+
+`reverse_engineering/engine.py` is the stable public import path. `engine_v2.py` is the active 2.5 implementation behind that compatibility alias. This pair is intentionally retained until the public V2 export is migrated.
 
 ## Cleanup performed
 
 | Path | Decision | Reason |
 |---|---|---|
-| `gui/reverse_3d_reference.py` | removed | Historical adapter around `reverse_3d_workspace`; the only unique behavior was the PySide6 selected-anchor overlay and polling optimization, both now owned by canonical V3 code. |
+| `gui/reverse_3d_reference.py` | removed | Historical adapter around `reverse_3d_workspace`; the only unique behavior was folded into canonical V3 code. |
 | `gui/reference_line_apply.py` | removed | Small GUI-only roll controller folded into `reference_line_calibration.py`. |
+| `tests/test_reference_line_apply.py` | removed | Redundant coverage; `tests/test_reference_line_calibration.py` covers the same backend behavior more completely. |
+| `assets/app_icon.svg` | removed | Application now uses the requested `assets/icon.png`. |
+| `reverse_engineering/camera_semantics.py` | restored | Required by `reverse_engineering.scene`; previous deletion caused `ModuleNotFoundError`. |
 | `gui/reverse_3d.py` | kept | Low-level scene/projection rendering; not a duplicate workspace. |
 | `gui/reverse_3d_workspace.py` | kept | Actual editable 3D workspace and inspector implementation. |
 | `gui/reverse_3d_reference_line.py` | kept | Actual reference-line projection and camera-match widgets. |
 | `reverse_engineering/engine.py` | kept | Stable compatibility import path used by application code. |
 | `reverse_engineering/engine_v2.py` | kept | Current V2.5 engine implementation; not dead code. |
 | `reverse_engineering/reference_anchor.py` | kept | Used by `reference_reconstruction.py`; image-space and world-space anchors must remain distinct. |
-| `reverse_engineering/camera_semantics.py` | removed | Symbol-level audit found no runtime import, package export, test dependency, or documented public API use; it was a standalone experimental data-structure module. |
-| `assets/app_icon.svg` | removed | Replaced by the requested `assets/icon.png`; runtime now uses the PNG as the sole bundled application icon. |
 
-## Files deliberately not merged
+## Localization
 
-Camera geometry, reference reconstruction, scene geometry, scene anchors, plane constraints, and projection remain separate because they represent different mathematical contracts. Likewise, the 3D renderer is kept separate from the V3 workspace; merging those files would create one oversized UI/rendering module without reducing conceptual coupling.
+The Qt translation layer covers `QTextEdit` placeholders in addition to static text-bearing widgets and accepts exact labels with intentional surrounding whitespace. Regression tests cover the previously missed Suggestions placeholder and Calibration toolbar label.
 
 ## Test dependency surface
 
-The deterministic tests cover coordinate contracts, camera/reference-camera behavior, reference-line calibration, scene model/anchors, rotation solving, regression behavior, and V3 completion. Model-backed inference remains outside the deterministic contract suite.
+The deterministic tests cover coordinate contracts, camera/reference-camera behavior, reference-line calibration, scene model/anchors, rotation solving, regression behavior, UI localization, and V3 completion. Model-backed inference remains outside the deterministic contract suite.
 
 ## Regeneration note
 
