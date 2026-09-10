@@ -8,12 +8,29 @@ from core import model_config
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_nuitka_project_options_include_release_data_dirs():
+def test_pyinstaller_release_files_exist():
+    spec = ROOT / "packaging" / "portrait_image_breakdown.spec"
+    script = ROOT / "packaging" / "build_pyinstaller_windows.ps1"
+    icon = ROOT / "assets" / "app.ico"
+
+    assert spec.exists()
+    assert script.exists()
+    assert icon.exists()
+
+
+def test_pyinstaller_spec_includes_models_and_ico():
+    source = (ROOT / "packaging" / "portrait_image_breakdown.spec").read_text(encoding="utf-8")
+    assert 'collect_submodules("ultralytics")' in source
+    assert '"assets" / "app.ico"' in source
+    assert '(ROOT / "model").glob("*.pt")' in source
+    assert "console=False" in source
+    assert "COLLECT(" in source
+
+
+def test_application_uses_ico_runtime_icon():
     source = (ROOT / "main.py").read_text(encoding="utf-8")
-    assert "# nuitka-project: --mode=standalone" in source
-    assert "# nuitka-project: --enable-plugin=pyside6" in source
-    assert "--include-data-dir={MAIN_DIRECTORY}/model=model" in source
-    assert "--include-data-dir={MAIN_DIRECTORY}/assets=assets" in source
+    assert 'ROOT / "assets" / "app.ico"' in source
+    assert 'ROOT / "assets" / "icon.png"' not in source
 
 
 def test_application_loads_pose_model_without_top_level_ultralytics_import():
