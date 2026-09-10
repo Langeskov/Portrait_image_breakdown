@@ -168,7 +168,7 @@ ZH = {
     "Apply to primary subject": "应用到主人物",
     "Evaluate": "评估",
     "No reference camera context": "暂无参考相机上下文",
-    "Field Mode": "参考复现",
+    "Field Mode": "动作复现指示",
     "Temporal": "时序分析",
 }
 
