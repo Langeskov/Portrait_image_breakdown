@@ -255,8 +255,7 @@ class ResultsWorkspace(Workspace):
 class MainWindow(QMainWindow):
     def __init__(self, pose_model: str | None = None):
         super().__init__(); self.setWindowTitle("Portrait Image Breakdown"); self.setMinimumSize(1200, 700); self.resize(1400, 800)
-        from core.pose_detector import PoseDetector
-        self._det = PoseDetector(model=pose_model); self._eng = None; self._re_enabled = True
+        self._det = self._initialize_pose_detector(pose_model); self._eng = None; self._re_enabled = True
         self._img: Optional[np.ndarray] = None; self._bundle = AnalysisBundle(); self._wk: Optional[AnalysisWorker] = None; self._result_cache: dict[str, AnalysisBundle] = {}
         toolbar = QToolBar("Main"); toolbar.setMovable(False); self.addToolBar(toolbar)
         open_action = QAction("Open Image", self); open_action.setShortcut(QKeySequence.Open); open_action.triggered.connect(self._open); toolbar.addAction(open_action); toolbar.addSeparator()
@@ -268,6 +267,12 @@ class MainWindow(QMainWindow):
         center = QWidget(); ml = QVBoxLayout(center); ml.setContentsMargins(0, 0, 0, 0); ml.setSpacing(0); ml.addWidget(self._tabs); ml.addWidget(self._ws); self.setCentralWidget(center)
         self._st = QStatusBar(); self.setStatusBar(self._st); self._progress = QProgressBar(); self._progress.setRange(0, 100); self._progress.setValue(0); self._progress.setTextVisible(True); self._progress.setVisible(False); self._st.addPermanentWidget(self._progress, 1); self._st.showMessage("Ready")
         self._load_dataset_folder(None); self.setAcceptDrops(True)
+
+    def _initialize_pose_detector(self, pose_model: str | None = None):
+        """Create the detector for the base window; application facades may override this."""
+        from core.pose_detector import PoseDetector
+        return PoseDetector(model=pose_model)
+
     def _choose_dataset_folder(self):
         start = str(self._dataset_folder or Path.home()); path = QFileDialog.getExistingDirectory(self, "Select image folder", start)
         if path: self._load_dataset_folder(Path(path))
