@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPushButton,
     QTabBar,
+    QTextEdit,
     QToolBar,
     QToolButton,
 )
@@ -84,7 +85,7 @@ ZH = {
     "Waiting for analysis…": "等待分析……",
     "Recommended Next Actions": "建议的下一步",
     "Detailed Suggestions": "详细建议",
-    "Suggestions will appear here after analysis...": "分析后显示建议……",
+    "Suggestions will appear here after analysis...": "分析后将在此显示建议……",
     "Creative Direction": "创作方向",
     "No specific direction": "暂无具体方向",
     "FIELD MODE · SHOOTING ASSISTANCE": "现场模式 · 拍摄辅助",
@@ -147,9 +148,9 @@ ZH = {
     "Open mail client": "打开邮件客户端",
     "Advanced": "高级",
     "Pose Model": "姿态模型",
-    "Current": "当前",
     "Unable to switch pose model.": "无法切换姿态模型。",
     "Pose model": "姿态模型",
+    "Calibration:": "标定：",
     "Calibration: ": "标定：",
     "Anchor Calibration": "锚点标定",
     "Save reconstruction session": "保存重建会话",
@@ -172,15 +173,34 @@ ZH = {
 
 
 def tr(text: str) -> str:
-    """Translate exact UI chrome, leaving technical/dynamic text unchanged."""
+    """Translate exact UI chrome while preserving intentional surrounding whitespace."""
     if text is None:
         return text
-    return ZH.get(str(text), str(text))
+    raw = str(text)
+    if raw in ZH:
+        return ZH[raw]
+    core = raw.strip()
+    translated = ZH.get(core)
+    if translated is None:
+        return raw
+    leading = raw[: len(raw) - len(raw.lstrip())]
+    trailing = raw[len(raw.rstrip()) :]
+    return leading + translated + trailing
 
 
 def _translate_widget(widget) -> None:
     """Translate static Qt chrome recursively without touching model output."""
-    widget_types = (QLabel, QPushButton, QCheckBox, QGroupBox, QToolButton, QLineEdit, QComboBox, QTabBar)
+    widget_types = (
+        QLabel,
+        QPushButton,
+        QCheckBox,
+        QGroupBox,
+        QToolButton,
+        QLineEdit,
+        QComboBox,
+        QTabBar,
+        QTextEdit,
+    )
     for child_type in widget_types:
         for child in widget.findChildren(child_type):
             if isinstance(child, QComboBox):
@@ -190,6 +210,8 @@ def _translate_widget(widget) -> None:
                 for i in range(child.count()):
                     child.setTabText(i, tr(child.tabText(i)))
             elif isinstance(child, QLineEdit):
+                child.setPlaceholderText(tr(child.placeholderText()))
+            elif isinstance(child, QTextEdit):
                 child.setPlaceholderText(tr(child.placeholderText()))
             else:
                 current = child.text() if hasattr(child, "text") else ""
