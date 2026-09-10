@@ -1,6 +1,6 @@
 # Windows release build
 
-The Windows release uses Nuitka standalone mode. The pose checkpoints are intentionally excluded from Git by `.gitignore`, so the release machine must have all five local `.pt` files in `model/`.
+The Windows release uses PyInstaller in onedir mode. The pose checkpoints are intentionally excluded from Git by `.gitignore`, so the release machine must have all five local `.pt` files in `model/`.
 
 Expected files:
 
@@ -10,16 +10,18 @@ Expected files:
 - `model/yolo26l-pose.pt`
 - `model/yolo26x-pose.pt`
 
+The application icon is `assets/app.ico`; the old PNG icon is no longer used.
+
 From PowerShell at the repository root:
 
 ```powershell
-.\packaging\build_nuitka_windows.ps1
+.\packaging\build_pyinstaller_windows.ps1
 ```
 
-The script uses the project options embedded in `main.py` and writes the standalone distribution to:
+The script uses `packaging/portrait_image_breakdown.spec` and writes the distribution to:
 
 ```text
-build\nuitka\PortraitImageBreakdown.dist\
+dist\PortraitImageBreakdown\
 ```
 
-Run `PortraitImageBreakdown.exe` from that directory before wrapping the directory in an MSI. The distribution includes `model\` and `assets\` as external data directories and does not download missing built-in models when running as a packaged application.
+Run `PortraitImageBreakdown.exe` from that directory before wrapping the directory in an MSI or other installer. The distribution includes all local pose checkpoints and the `app.ico` asset. Packaged applications do not download missing built-in models.
