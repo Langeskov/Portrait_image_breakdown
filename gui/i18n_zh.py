@@ -150,8 +150,7 @@ ZH = {
     "Pose Model": "姿态模型",
     "Unable to switch pose model.": "无法切换姿态模型。",
     "Pose model": "姿态模型",
-    "Calibration:": "标定：",
-    "Calibration: ": "标定：",
+    "Calibration:": "相机画幅：",
     "Anchor Calibration": "锚点标定",
     "Save reconstruction session": "保存重建会话",
     "Load reconstruction session": "加载重建会话",
@@ -169,6 +168,8 @@ ZH = {
     "Apply to primary subject": "应用到主人物",
     "Evaluate": "评估",
     "No reference camera context": "暂无参考相机上下文",
+    "Field Mode": "参考复现",
+    "Temporal": "时序分析",
 }
 
 
