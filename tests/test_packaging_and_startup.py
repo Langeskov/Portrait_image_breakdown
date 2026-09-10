@@ -31,5 +31,5 @@ def test_packaged_missing_model_never_attempts_download(monkeypatch):
         "resolve_pose_model_path",
         lambda key=None: ROOT / "model" / "definitely-missing-release-model.pt",
     )
-    with pytest.raises(FileNotFoundError, match="安装应用程序"):
+    with pytest.raises(FileNotFoundError, match="installed application"):
         model_config.ensure_pose_model("m")
