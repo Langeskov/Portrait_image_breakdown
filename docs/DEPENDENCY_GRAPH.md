@@ -82,7 +82,8 @@ graph TD
 | `reverse_engineering/engine.py` | kept | Stable compatibility import path used by application code. |
 | `reverse_engineering/engine_v2.py` | kept | Current V2.5 engine implementation; not dead code. |
 | `reverse_engineering/reference_anchor.py` | kept | Used by `reference_reconstruction.py`; image-space and world-space anchors must remain distinct. |
-| `reverse_engineering/camera_semantics.py` | retained pending symbol-level audit | Small semantics module with no runtime entry-point dependency found during this pass; kept rather than risk removing a public/experimental import path. |
+| `reverse_engineering/camera_semantics.py` | removed | Symbol-level audit found no runtime import, package export, test dependency, or documented public API use; it was a standalone experimental data-structure module. |
+| `assets/app_icon.svg` | removed | Replaced by the requested `assets/icon.png`; runtime now uses the PNG as the sole bundled application icon. |
 
 ## Files deliberately not merged
 
