@@ -21,19 +21,26 @@ if ($missing.Count -gt 0) {
     exit 1
 }
 
+# Nuitka 4.0 had a known regression in the Torch package configuration around
+# torch.utils._config_module. Use the current stable 4.2 series explicitly,
+# and disable Torch JIT for standalone distribution as recommended by Nuitka.
+$nuitkaSpec = "nuitka>=4.2,<4.3"
+
 $pythonArgs = @(
     "run",
     "--with",
-    "nuitka",
+    $nuitkaSpec,
     "python",
     "-m",
     "nuitka",
+    "--module-parameter=torch-disable-jit=yes",
     "--output-dir=$Root\build\nuitka",
     "--output-filename=PortraitImageBreakdown.exe",
     "$Root\main.py"
 )
 
-Write-Host "Building Portrait Image Breakdown with Nuitka..."
+Write-Host "Building Portrait Image Breakdown with Nuitka ($nuitkaSpec)..."
+Write-Host "Torch JIT: disabled for standalone distribution"
 Write-Host "Models: $($requiredModels -join ', ')"
 
 & uv @pythonArgs
