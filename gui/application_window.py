@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Optional
 
 from PySide6.QtCore import QSettings, QThread, QTimer, Signal
+from PySide6.QtWidgets import QMessageBox
 
 from core.model_config import DEFAULT_POSE_MODEL, get_pose_model, pose_model_label
 from gui.main_window import MainWindow as _BaseMainWindow, _resize_for_analysis, AnalysisWorker, AnalysisBundle
@@ -11,7 +12,7 @@ from gui.cache import AnalysisCache
 
 
 class PoseModelLoadWorker(QThread):
-    """Load Ultralytics and the selected checkpoint outside the Qt GUI thread."""
+    """Legacy worker kept for API compatibility; startup loading is synchronous."""
 
     loaded = Signal(object)
     failed = Signal(str)
@@ -22,8 +23,6 @@ class PoseModelLoadWorker(QThread):
 
     def run(self) -> None:
         try:
-            # Keep the heavyweight Ultralytics import and YOLO construction off
-            # the GUI thread, including the first-time package initialization.
             from core.pose_detector import PoseDetector
             detector = PoseDetector(model=self._model)
         except Exception as exc:
@@ -40,17 +39,16 @@ class ApplicationMainWindow(_BaseMainWindow):
 
     _SETTINGS_ORG = "PortraitImageBreakdown"
     _SETTINGS_APP = "PortraitImageBreakdown"
-    _POSE_MODEL_SETTING = "pose_model"
+    _POSE_MODEL_SETTING = "pose_model_selection_v2"
 
     def __init__(self, services, parent=None):
+        # Deliberately use M as the release/default model. The v2 settings key
+        # avoids inheriting an older locally stored L/X/etc. selection.
         settings = QSettings(self._SETTINGS_ORG, self._SETTINGS_APP)
         configured = settings.value(self._POSE_MODEL_SETTING, DEFAULT_POSE_MODEL)
         resolved = get_pose_model(str(configured) if configured is not None else DEFAULT_POSE_MODEL)
         pose_model = resolved.key if hasattr(resolved, "key") else str(resolved)
 
-        # The base constructor builds all widgets but delegates detector
-        # construction to _initialize_pose_detector(), which this facade
-        # overrides so the heavy import/model load can happen asynchronously.
         super().__init__(pose_model=pose_model)
         if parent is not None:
             self.setParent(parent)
@@ -65,13 +63,10 @@ class ApplicationMainWindow(_BaseMainWindow):
         self._model_ready = False
         self._pending_image_path: Optional[str] = None
 
-        # The zero-delay timer runs after QApplication enters its event loop,
-        # so the first paint of the window is not blocked by model startup.
-        QTimer.singleShot(0, self.start_model_loading)
+        QTimer.singleShot(50, self.start_model_loading)
         QTimer.singleShot(0, lambda: self._set_model_controls_enabled(False))
 
     def _initialize_pose_detector(self, pose_model: str | None = None):
-        """Do not import Ultralytics in the GUI thread; load it in PoseModelLoadWorker."""
         return None
 
     def _set_model_controls_enabled(self, enabled: bool) -> None:
@@ -89,7 +84,6 @@ class ApplicationMainWindow(_BaseMainWindow):
 
     @property
     def pose_model(self) -> str:
-        """Current configured pose model key or explicit checkpoint path."""
         return self._pose_model
 
     @property
@@ -99,27 +93,29 @@ class ApplicationMainWindow(_BaseMainWindow):
         return pose_model_label(self._pose_model)
 
     def start_model_loading(self) -> None:
-        """Start the initial model load exactly once, without blocking the GUI."""
-        if self._det is not None or self._model_loader is not None:
+        """Load the initial detector in the GUI process after the window is visible."""
+        if self._det is not None or self._model_ready:
             return
         self._model_ready = False
-        self._set_progress(0, f"正在后台加载姿态模型：{pose_model_label(self._pose_model)}")
-        worker = PoseModelLoadWorker(self._pose_model)
-        self._model_loader = worker
-        worker.loaded.connect(self._on_model_loaded)
-        worker.failed.connect(self._on_model_load_failed)
-        worker.finished.connect(worker.deleteLater)
-        worker.finished.connect(self._on_model_loader_finished)
-        worker.start()
-
-    def _on_model_loader_finished(self) -> None:
-        # The active worker reference is cleared by the GUI thread after the
-        # result/error signal has been delivered.
-        self._model_loader = None
+        label = pose_model_label(self._pose_model)
+        self._set_progress(0, f"正在加载姿态模型：{label}")
+        from PySide6.QtWidgets import QApplication
+        QApplication.processEvents()
+        try:
+            # PyTorch/Ultralytics model construction is intentionally kept in
+            # the main process. This avoids Windows frozen-app hangs observed
+            # when initializing the PyTorch runtime from a QThread.
+            from core.pose_detector import PoseDetector
+            detector = PoseDetector(model=self._pose_model)
+        except Exception as exc:
+            self._on_model_load_failed(f"{type(exc).__name__}: {exc}")
+            return
+        self._on_model_loaded(detector)
 
     def _on_model_loaded(self, detector) -> None:
         self._det = detector
         self._model_ready = True
+        self._model_loader = None
         self._set_model_controls_enabled(True)
         label = pose_model_label(self._pose_model)
         self._finish_progress(f"姿态模型已就绪：{label}")
@@ -131,6 +127,7 @@ class ApplicationMainWindow(_BaseMainWindow):
 
     def _on_model_load_failed(self, message: str) -> None:
         self._model_ready = False
+        self._model_loader = None
         self._set_model_controls_enabled(True)
         self._progress.setVisible(False)
         QMessageBox.critical(
@@ -138,7 +135,7 @@ class ApplicationMainWindow(_BaseMainWindow):
             "Pose model",
             "无法加载姿态模型。\n\n"
             f"{message}\n\n"
-            "发布版不会在启动时自动下载模型，请确认安装目录中的 model\\*.pt 文件完整。",
+            "请确认安装目录中的 model\\yolo26m-pose.pt 文件存在且可读。",
         )
 
     def _stop_model_loader(self) -> None:
@@ -170,7 +167,6 @@ class ApplicationMainWindow(_BaseMainWindow):
             from core.pose_detector import PoseDetector
             new_detector = PoseDetector(model=normalized)
         except Exception:
-            # Keep the current detector intact when the new checkpoint cannot load.
             raise
 
         self._det = new_detector
@@ -212,13 +208,12 @@ class ApplicationMainWindow(_BaseMainWindow):
     def _la(self, path: str):
         if not self.model_ready:
             self._pending_image_path = str(path)
-            self._st.showMessage("正在后台加载姿态模型，模型就绪后将自动开始分析。")
+            self._st.showMessage("正在加载姿态模型，模型就绪后将自动开始分析。")
             return
 
         from core.image_io import load_image, frame_orientation
         img = load_image(path)
         if img is None:
-            from PySide6.QtWidgets import QMessageBox
             QMessageBox.warning(self, "Error", "Cannot read image")
             return
         self.set_current_image_path(path)
