@@ -32,19 +32,81 @@ def _find_app_icon() -> Path | None:
     return candidate if candidate.exists() else None
 
 
+def _show_startup_splash(app):
+    """Show an immediate startup splash before heavyweight application initialization."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QPixmap
+    from PySide6.QtWidgets import QSplashScreen
+
+    icon_path = _find_app_icon()
+    if icon_path is None:
+        return None
+
+    pixmap = QPixmap(str(icon_path))
+    if pixmap.isNull():
+        return None
+
+    # Keep the existing application artwork, but give it enough size to feel like a
+    # real desktop splash screen rather than a tiny application icon.
+    pixmap = pixmap.scaled(
+        360,
+        360,
+        Qt.AspectRatioMode.KeepAspectRatio,
+        Qt.TransformationMode.SmoothTransformation,
+    )
+    splash = QSplashScreen(pixmap, Qt.WindowType.WindowStaysOnTopHint)
+    splash.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
+    splash.show()
+    splash.showMessage(
+        "Portrait Image Breakdown\n正在启动…",
+        Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignBottom,
+        Qt.GlobalColor.white,
+    )
+    app.processEvents()
+    return splash
+
+
+def _splash_message(splash, text: str) -> None:
+    if splash is None:
+        return
+    from PySide6.QtCore import Qt
+    splash.showMessage(
+        text,
+        Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignBottom,
+        Qt.GlobalColor.white,
+    )
+    splash.repaint()
+    splash.windowHandle()
+    splash.screen()
+    splash.raise_()
+
+
 def run_gui(image_path: str | None = None, calibration_profile: str = "Generic") -> None:
+    # Create the Qt application first so the user gets immediate visual feedback.
+    # Heavy model/service imports and initialization happen only after the splash is visible.
     from PySide6.QtWidgets import QApplication
     from PySide6.QtGui import QIcon
+
+    app = QApplication(sys.argv)
+    app.setStyle("Fusion")
+
+    icon_path = _find_app_icon()
+    if icon_path is not None:
+        app.setWindowIcon(QIcon(str(icon_path)))
+
+    splash = _show_startup_splash(app)
+    _splash_message(splash, "正在加载应用服务…")
+
     from core.application_services import ApplicationServices
     from gui.application_runtime import build_window
     from gui.main_window import apply_light_theme
     from gui.i18n_zh_extra import install_chinese_ui
+
+    _splash_message(splash, "正在初始化分析引擎…")
     services = ApplicationServices.create(calibration_profile=calibration_profile)
-    app = QApplication(sys.argv)
-    app.setStyle("Fusion")
-    icon_path = _find_app_icon()
-    if icon_path is not None:
-        app.setWindowIcon(QIcon(str(icon_path)))
+    app.processEvents()
+
+    _splash_message(splash, "正在构建用户界面…")
     apply_light_theme(app)
     window, context = build_window(services)
     if icon_path is not None:
@@ -52,9 +114,20 @@ def run_gui(image_path: str | None = None, calibration_profile: str = "Generic")
     install_chinese_ui(window)
     context.calibration_profile = calibration_profile
     context.current_path = str(image_path) if image_path else None
+
+    _splash_message(splash, "正在完成启动…")
     window.show()
+    app.processEvents()
+
     if image_path and Path(image_path).exists():
+        _splash_message(splash, "正在加载照片…")
         window.load_image(image_path)
+        app.processEvents()
+
+    if splash is not None:
+        splash.finish(window)
+    window.raise_()
+    window.activateWindow()
     sys.exit(app.exec())
 
 
