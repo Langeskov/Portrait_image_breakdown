@@ -31,6 +31,10 @@ def _find_app_icon() -> Path | None:
     candidate = ROOT / "assets" / "app.ico"
     return candidate if candidate.exists() else None
 
+def _find_splash_image() -> Path | None:
+    candidate = ROOT / "assets" / "splash.png"
+    return candidate if candidate.exists() else None
+
 
 def _show_startup_splash(app):
     """Show an immediate startup splash before heavyweight application initialization."""
@@ -38,19 +42,19 @@ def _show_startup_splash(app):
     from PySide6.QtGui import QPixmap
     from PySide6.QtWidgets import QSplashScreen
 
-    icon_path = _find_app_icon()
-    if icon_path is None:
+    splash_path = _find_splash_image()
+    if splash_path is None:
         return None
 
-    pixmap = QPixmap(str(icon_path))
+    pixmap = QPixmap(str(splash_path))
     if pixmap.isNull():
         return None
 
     # Keep the existing application artwork, but give it enough size to feel like a
     # real desktop splash screen rather than a tiny application icon.
     pixmap = pixmap.scaled(
-        360,
-        360,
+        600,
+        600,
         Qt.AspectRatioMode.KeepAspectRatio,
         Qt.TransformationMode.SmoothTransformation,
     )
