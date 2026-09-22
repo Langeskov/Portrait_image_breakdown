@@ -18,12 +18,11 @@ from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QSplitter,
     QToolBar, QFileDialog, QLabel, QStatusBar, QMessageBox, QCheckBox,
     QComboBox, QApplication, QTabBar, QStackedWidget, QScrollArea,
-    QProgressBar, QPushButton, QGroupBox,
+    QProgressBar, QPushButton, QGroupBox, QDialog, QDialogButtonBox,
 )
 
 from gui.canvas import ImageCanvas
 from gui.panels import AnalysisPanel, SuggestionPanel
-from gui.reverse_3d_v3 import Reverse3DWorkspace
 
 THEME = dict(
     window="#F5F6F8", panel="#FFFFFF", surface="#FAFBFC",
@@ -211,6 +210,12 @@ class Analysis2DWorkspace(Workspace):
         for label, checked, key in specs:
             cb = QCheckBox(label); cb.setChecked(checked); cb.setProperty("overlay_key", key); cb.setStyleSheet("QCheckBox { font-size:9pt; spacing:4px; padding:0px; }"); cb.stateChanged.connect(self._apply_overlay_options); self._overlay_controls.append(cb); row.addWidget(cb, 0, Qt.AlignmentFlag.AlignVCenter)
         row.addStretch(1)
+        self._reconstruct_button = QPushButton("3D 重建")
+        self._reconstruct_button.setToolTip("可选功能：在独立窗口中打开 3D 场景重建，不影响 2D 分析流程")
+        self._reconstruct_button.clicked.connect(
+            lambda: getattr(self.window(), "open_3d_reconstruction", lambda: None)()
+        )
+        row.addWidget(self._reconstruct_button)
         splitter = QSplitter(Qt.Horizontal)
         self._ap = AnalysisPanel(); splitter.addWidget(self._ap); self._cv = ImageCanvas(); splitter.addWidget(self._cv); self._sp = SuggestionPanel(); splitter.addWidget(self._sp)
         splitter.setSizes([300, 700, 320]); splitter.setStretchFactor(1, 1)
@@ -255,15 +260,18 @@ class ResultsWorkspace(Workspace):
 class MainWindow(QMainWindow):
     def __init__(self, pose_model: str | None = None):
         super().__init__(); self.setWindowTitle("Portrait Image Breakdown"); self.setMinimumSize(1200, 700); self.resize(1400, 800)
-        self._det = self._initialize_pose_detector(pose_model); self._eng = None; self._re_enabled = True
+        # The primary product loop is deliberately 2D-only. 3D reconstruction
+        # is created on demand from the button in the 2D workspace.
+        self._det = self._initialize_pose_detector(pose_model); self._eng = None; self._re_enabled = False
         self._img: Optional[np.ndarray] = None; self._bundle = AnalysisBundle(); self._wk: Optional[AnalysisWorker] = None; self._result_cache: dict[str, AnalysisBundle] = {}
         toolbar = QToolBar("Main"); toolbar.setMovable(False); self.addToolBar(toolbar)
         open_action = QAction("Open Image", self); open_action.setShortcut(QKeySequence.Open); open_action.triggered.connect(self._open); toolbar.addAction(open_action); toolbar.addSeparator()
         toolbar.addWidget(QLabel("  Dataset: ")); self._cb = QComboBox(); self._cb.setMinimumWidth(220); self._cb.addItem("Select folder…", ""); self._cb.currentIndexChanged.connect(self._sel); toolbar.addWidget(self._cb)
         choose = QAction("Choose Folder", self); choose.triggered.connect(self._choose_dataset_folder); toolbar.addAction(choose); toolbar.addSeparator()
         self._dataset_folder: Optional[Path] = None
-        self._tabs = QTabBar(); [self._tabs.addTab(t) for t in ("2D Analysis", "3D Reverse Engineering", "Results")]; self._tabs.currentChanged.connect(self._sw)
-        self._ws = QStackedWidget(); self._w2 = Analysis2DWorkspace(); self._w3 = Reverse3DWorkspace(); self._wr = ResultsWorkspace(); [self._ws.addWidget(w) for w in (self._w2, self._w3, self._wr)]
+        self._tabs = QTabBar(); self._tabs.addTab("2D Analysis"); self._tabs.currentChanged.connect(self._sw)
+        self._ws = QStackedWidget(); self._w2 = Analysis2DWorkspace(); self._w3 = None; self._wr = ResultsWorkspace(); self._ws.addWidget(self._w2)
+        self._reconstruction_dialog = None
         center = QWidget(); ml = QVBoxLayout(center); ml.setContentsMargins(0, 0, 0, 0); ml.setSpacing(0); ml.addWidget(self._tabs); ml.addWidget(self._ws); self.setCentralWidget(center)
         self._st = QStatusBar(); self.setStatusBar(self._st); self._progress = QProgressBar(); self._progress.setRange(0, 100); self._progress.setValue(0); self._progress.setTextVisible(True); self._progress.setVisible(False); self._st.addPermanentWidget(self._progress, 1); self._st.showMessage("Ready")
         self._load_dataset_folder(None); self.setAcceptDrops(True)
@@ -304,8 +312,6 @@ class MainWindow(QMainWindow):
         self._set_progress(0, f"Preparing analysis | {frame_orientation(img)} | {os.path.basename(path)}")
         if self._wk and self._wk.isRunning(): self._wk.terminate(); self._wk.wait()
         analysis_img = _resize_for_analysis(img, max_side=1600)
-        if self._re_enabled and self._eng is None:
-            from reverse_engineering.engine import ReverseEngineeringEngine; self._eng = ReverseEngineeringEngine(enable_simulation=False)
         self._wk = AnalysisWorker(self._det, self._eng, img, analysis_img, enable_re=self._re_enabled)
         self._wk.progress.connect(self._set_progress); self._wk.pose_ready.connect(self._on_pose_ready); self._wk.core_ready.connect(self._on_core_ready); self._wk.reverse_ready.connect(self._on_reverse_ready); self._wk.error.connect(self._err); self._wk.start()
     def _on_pose_ready(self, pose):
@@ -314,18 +320,73 @@ class MainWindow(QMainWindow):
     def _on_core_ready(self, bundle):
         self._bundle = bundle
         self._w2.update_results(bundle)
-        self._w3.update_results(bundle)
-        self._wr.update_results(bundle)
+        if self._w3 is not None:
+            self._w3.update_results(bundle)
     def _on_reverse_ready(self, bundle):
         self._bundle = bundle
         if self._img is not None: self._result_cache[_image_hash(self._img)] = bundle
         self._w2.update_results(bundle)
-        self._w3.update_results(bundle)
-        self._wr.update_results(bundle)
+        if self._w3 is not None:
+            self._w3.update_results(bundle)
         self._finish_progress()
-    def _apply_bundle(self, bundle): self._w2.update_results(bundle); self._w3.update_results(bundle); self._wr.update_results(bundle)
+    def _apply_bundle(self, bundle):
+        self._w2.update_results(bundle)
+        if self._w3 is not None:
+            self._w3.update_results(bundle)
     def _err(self, message: str): self._progress.setVisible(False); QMessageBox.critical(self, "Analysis error", message)
     def _sw(self, index): self._ws.setCurrentIndex(index)
+    def _make_reconstruction_engine(self):
+        factory = getattr(self, "_engine_factory", None)
+        if factory is not None:
+            return factory(enable_simulation=False)
+        from reverse_engineering.engine import ReverseEngineeringEngine
+        return ReverseEngineeringEngine(enable_simulation=False)
+    def open_3d_reconstruction(self):
+        """Open the optional reconstruction tool without making it part of 2D flow."""
+        if self._img is None or self._bundle.pose is None:
+            QMessageBox.information(self, "3D 重建", "请先打开一张包含人物的图片并完成 2D 分析。")
+            return
+        if self._w3 is None:
+            # Keep all 3D imports and widget construction out of the normal
+            # analysis path. This is an optional tool, not an application layer.
+            from gui.reverse_3d_v3 import Reverse3DWorkspace
+            self._w3 = Reverse3DWorkspace()
+        if self._reconstruction_dialog is None:
+            dialog = QDialog(self)
+            dialog.setWindowTitle("3D 重建（可选功能）")
+            dialog.resize(1280, 820)
+            layout = QVBoxLayout(dialog)
+            hint = QLabel("3D 重建用于探索照片可能的拍摄空间与相机假设；它不会改变 2D 分析、现场指令或图片对比结果。")
+            hint.setWordWrap(True)
+            hint.setStyleSheet("color:#64748B; padding: 4px;")
+            layout.addWidget(hint)
+            layout.addWidget(self._w3, 1)
+            buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+            buttons.rejected.connect(dialog.close)
+            buttons.accepted.connect(dialog.close)
+            layout.addWidget(buttons)
+            self._reconstruction_dialog = dialog
+        self._reconstruction_dialog.show()
+        self._reconstruction_dialog.raise_()
+        self._reconstruction_dialog.activateWindow()
+        if self._bundle.reverse_result is None:
+            self._start_3d_reconstruction()
+    def _start_3d_reconstruction(self):
+        if self._wk is not None and self._wk.isRunning():
+            self._st.showMessage("正在完成当前分析，随后可重新打开 3D 重建。")
+            return
+        self._eng = self._make_reconstruction_engine()
+        image = self._img
+        if image is None:
+            return
+        self._set_progress(50, "正在准备可选 3D 重建…")
+        worker = AnalysisWorker(self._det, self._eng, image, _resize_for_analysis(image, max_side=1600), enable_re=True)
+        self._wk = worker
+        worker.progress.connect(self._set_progress)
+        worker.core_ready.connect(self._on_core_ready)
+        worker.reverse_ready.connect(self._on_reverse_ready)
+        worker.error.connect(self._err)
+        worker.start()
     def set_overlay_options(self, **kwargs): self._w2.set_overlay_options(**kwargs)
     @property
     def current_image(self): return self._img

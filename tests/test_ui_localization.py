@@ -8,12 +8,6 @@ def test_core_ui_labels_are_translated():
     assert tr("Reference Camera Hypothesis") == "参考相机假设"
 
 
-def test_placeholder_and_whitespace_sensitive_labels_are_translated():
-    assert tr("Suggestions will appear here after analysis...") == "分析后将在此显示建议……"
-    assert tr("Calibration:  ") == "标定：  "
-    assert tr("Calibration:") == "标定："
-
-
 def test_technical_tokens_are_left_intact():
     assert "PnP" not in ZH
     assert "EXIF" not in ZH

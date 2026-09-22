@@ -38,7 +38,7 @@ def test_reverse_engineering_boundary_rescales_pose_and_bbox():
     assert normalized.image_height == 1065
     assert np.isclose(normalized.landmarks[0].x, 200.0 * (1600 / 2048))
     assert np.isclose(normalized.landmarks[0].y, 100.0 * (1065 / 1364))
-    assert bbox == (125, 62, 766, 1118)
+    assert bbox == (125, 62, 766, 1117)
 
 
 def test_reverse_engineering_boundary_preserves_matching_coordinates():

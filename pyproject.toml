@@ -1,7 +1,7 @@
 [project]
 name = "photo"
-version = "0.3.0"
-description = "人体姿态分析 & 摄影机位反向工程系统 (YOLOv26 Pose)"
+version = "1.0.0"
+description = "人像摄影的 2D 姿态分析、现场指令与图片对比工具"
 requires-python = ">=3.12"
 dependencies = [
     "ultralytics>=8.4,<9",

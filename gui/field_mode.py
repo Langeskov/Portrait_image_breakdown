@@ -222,7 +222,7 @@ class FieldModeWidget(QWidget):
 def install_field_mode(window):
     field = FieldModeWidget(window)
     window._field_mode = field
-    window._tabs.addTab("Field Mode")
+    window._tabs.addTab("现场指令")
     window._ws.addWidget(field)
     old_update = window._w2.update_results
 

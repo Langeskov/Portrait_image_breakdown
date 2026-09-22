@@ -41,7 +41,7 @@ class ReferenceModeWidget(QWidget):
         lo.setSpacing(9)
 
         header = QHBoxLayout()
-        title = QLabel("参考重建 · V3 阶段 2")
+        title = QLabel("图片对比")
         title.setFont(QFont("Segoe UI", 15, QFont.Weight.Bold))
         header.addWidget(title)
         header.addStretch(1)
@@ -149,7 +149,11 @@ class ReferenceModeWidget(QWidget):
         if image is None:
             self._summary.setText(f"无法读取参考图：{Path(path).name}")
             return False
-        pose = self._detector.detect(image)
+        detector = self._detector() if callable(self._detector) else self._detector
+        if detector is None:
+            self._summary.setText("姿态模型仍在加载，请稍后再试。")
+            return False
+        pose = detector.detect(image)
         if pose is None:
             self._summary.setText(f"参考图未检测到人物：{Path(path).name}")
             return False
@@ -229,9 +233,11 @@ class ReferenceModeWidget(QWidget):
 
 def install_reference_mode(window):
     """Attach the reference workspace and keep it synchronized with analysis."""
-    widget = ReferenceModeWidget(window._det, window)
+    # The release UI loads the pose model after the window is visible, so use
+    # a late lookup instead of capturing the startup ``None`` value.
+    widget = ReferenceModeWidget(lambda: window._det, window)
     window._reference_mode = widget
-    window._tabs.addTab("Reference")
+    window._tabs.addTab("图片对比")
     window._ws.addWidget(widget)
 
     old_update = window._w2.update_results
