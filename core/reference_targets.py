@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from reverse_engineering.reference_reconstruction import PoseDelta, ReferenceComposition
+from core.reference_reconstruction import PoseDelta, ReferenceComposition
 
 
 @dataclass(frozen=True)
@@ -49,3 +49,4 @@ def build_reference_target_plan(
     else:
         headline = "构图和可见姿态已经接近参考状态。"
     return ReferenceTargetPlan(headline, tuple(framing), tuple(pose_actions))
+

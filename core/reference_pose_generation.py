@@ -6,7 +6,7 @@ from typing import Optional
 
 import numpy as np
 
-from reverse_engineering.reference_reconstruction import ReferenceComposition
+from core.reference_reconstruction import ReferenceComposition
 
 
 @dataclass(frozen=True)
@@ -85,3 +85,4 @@ def generate_composition_aware_pose_target(
         visible_count=int(visible_count),
     )
     return PoseTargetGenerationResult(True, target, f"Generated {visible_count}/17 visible target landmarks in current image space.")
+

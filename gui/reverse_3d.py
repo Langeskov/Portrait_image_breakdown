@@ -629,7 +629,7 @@ class Reverse3DWorkspace(QWidget):
         self._preview_metrics.setText(self._preview._metrics)
 
     def update_results(self, bundle):
-        if getattr(bundle, "reverse_result", None):
+        if getattr(bundle, "reverse_result", None) is not None:
             pose = getattr(bundle, "pose", None)
             if pose is not None:
                 people = getattr(pose, "persons", None) or [pose]
@@ -654,3 +654,4 @@ class Reverse3DWorkspace(QWidget):
             ]
             self._observed_bbox = getattr(people[0], "bbox", None)
             self._refresh_projection()
+

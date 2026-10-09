@@ -12,7 +12,7 @@ from enum import IntEnum
 from typing import Optional
 
 import numpy as np
-from ultralytics import YOLO
+
 
 from core.model_config import get_pose_model, resolve_pose_model_path, ensure_pose_model
 
@@ -192,6 +192,7 @@ class PoseDetector:
     ):
         self.model = get_pose_model(model)
         self.model_path = ensure_pose_model(model)
+        from ultralytics import YOLO
         self._model = YOLO(str(self.model_path))
         self._conf = conf
         self._iou = iou

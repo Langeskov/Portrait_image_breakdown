@@ -6,22 +6,25 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QFont, QImage, QPixmap
+from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFileDialog,
     QSplitter, QListWidget, QListWidgetItem, QFrame,
 )
 
 from core.image_io import load_image, frame_orientation
-from reverse_engineering.reference_reconstruction import (
+from core.reference_reconstruction import (
     build_reference_composition,
     compare_pose_to_reference,
     composition_delta,
     reference_summary,
 )
-from reverse_engineering.reference_targets import build_reference_target_plan
+from core.reference_targets import build_reference_target_plan
 
 
 class ReferenceModeWidget(QWidget):
+    reference_changed = Signal()
+
     def __init__(self, detector, parent=None):
         super().__init__(parent)
         self._detector = detector
@@ -42,13 +45,20 @@ class ReferenceModeWidget(QWidget):
 
         header = QHBoxLayout()
         title = QLabel("图片对比")
-        title.setFont(QFont("Segoe UI", 15, QFont.Weight.Bold))
+        title.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
+        title.setStyleSheet("color: #1F2937;")
         header.addWidget(title)
         header.addStretch(1)
+        self._swap = QPushButton("交换 A/B")
+        self._swap.setStyleSheet("QPushButton { padding: 4px 8px; border: 1px solid #D9DDE3; background: #FFFFFF; color: #1F2937; font-size: 9pt; }")
+        self._swap.clicked.connect(self._swap_images)
+        header.addWidget(self._swap)
         self._open = QPushButton("加载参考图")
+        self._open.setStyleSheet(self._swap.styleSheet())
         self._open.clicked.connect(self._load_reference)
         header.addWidget(self._open)
         self._clear = QPushButton("清除")
+        self._clear.setStyleSheet(self._swap.styleSheet())
         self._clear.clicked.connect(self.clear_reference)
         header.addWidget(self._clear)
         lo.addLayout(header)
@@ -58,16 +68,42 @@ class ReferenceModeWidget(QWidget):
         lo.addWidget(self._summary)
 
         split = QSplitter(Qt.Horizontal)
-        self._reference_preview = QLabel("参考图")
-        self._reference_preview.setAlignment(Qt.AlignCenter)
-        self._reference_preview.setMinimumWidth(360)
-        self._reference_preview.setFrameShape(QFrame.StyledPanel)
-        self._current_preview = QLabel("当前图")
-        self._current_preview.setAlignment(Qt.AlignCenter)
-        self._current_preview.setMinimumWidth(360)
-        self._current_preview.setFrameShape(QFrame.StyledPanel)
-        split.addWidget(self._reference_preview)
-        split.addWidget(self._current_preview)
+        # Reference image A
+        ref_container = QWidget()
+        ref_lo = QVBoxLayout(ref_container)
+        ref_lo.setContentsMargins(0, 0, 0, 0)
+        ref_lo.setSpacing(2)
+        ref_label = QLabel("参考图 (A)")
+        ref_label.setFont(QFont("Segoe UI", 9, QFont.Weight.DemiBold))
+        ref_label.setStyleSheet("color: #6B7280;")
+        ref_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        ref_lo.addWidget(ref_label)
+        self._reference_preview = QLabel("无图片")
+        self._reference_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._reference_preview.setMinimumWidth(320)
+        self._reference_preview.setFrameShape(QFrame.Shape.StyledPanel)
+        self._reference_preview.setStyleSheet("border: 1px solid #D9DDE3; color: #9CA3AF;")
+        ref_lo.addWidget(self._reference_preview, 1)
+        split.addWidget(ref_container)
+
+        # Current image B
+        cur_container = QWidget()
+        cur_lo = QVBoxLayout(cur_container)
+        cur_lo.setContentsMargins(0, 0, 0, 0)
+        cur_lo.setSpacing(2)
+        cur_label = QLabel("当前图 (B)")
+        cur_label.setFont(QFont("Segoe UI", 9, QFont.Weight.DemiBold))
+        cur_label.setStyleSheet("color: #6B7280;")
+        cur_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        cur_lo.addWidget(cur_label)
+        self._current_preview = QLabel("无图片")
+        self._current_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._current_preview.setMinimumWidth(320)
+        self._current_preview.setFrameShape(QFrame.Shape.StyledPanel)
+        self._current_preview.setStyleSheet("border: 1px solid #D9DDE3; color: #9CA3AF;")
+        cur_lo.addWidget(self._current_preview, 1)
+        split.addWidget(cur_container)
+
         split.setStretchFactor(0, 1)
         split.setStretchFactor(1, 1)
         lo.addWidget(split, 2)
@@ -85,7 +121,7 @@ class ReferenceModeWidget(QWidget):
         lo.addWidget(target_title)
         self._target = QLabel("分析参考图和当前画面，生成目标拍摄方案。")
         self._target.setWordWrap(True)
-        self._target.setFrameShape(QFrame.StyledPanel)
+        self._target.setFrameShape(QFrame.Shape.StyledPanel)
         lo.addWidget(self._target)
 
         self._delta_list = QListWidget()
@@ -143,7 +179,6 @@ class ReferenceModeWidget(QWidget):
         canvas.set_reference_target(self._reference, current, deltas, visible=True)
 
     def load_reference_path(self, path: str) -> bool:
-        """通过路径加载参考图，用于恢复重建会话。"""
         path = str(Path(path).expanduser())
         image = load_image(path)
         if image is None:
@@ -168,6 +203,7 @@ class ReferenceModeWidget(QWidget):
         )
         self._render_compare()
         self._sync_canvas_target()
+        self.reference_changed.emit()
         return True
 
     def _load_reference(self):
@@ -192,16 +228,34 @@ class ReferenceModeWidget(QWidget):
         self._summary.setText("加载参考照片，用于比较构图和姿态。")
         self._set_pixmap(self._reference_preview, None, "_reference_pixmap")
         self._sync_canvas_target()
+        self.reference_changed.emit()
+
+    def _swap_images(self):
+        if self._reference_image is None or self._current_image is None:
+            return
+        ref_img, cur_img = self._reference_image, self._current_image
+        ref_pose, cur_pose = self._reference_pose, self._current_pose
+        self._reference_image = cur_img
+        self._reference_pose = cur_pose
+        self._reference = build_reference_composition(cur_pose, cur_img.shape[1], cur_img.shape[0])
+        self._set_pixmap(self._reference_preview, cur_img, "_reference_pixmap")
+        self._current_image = ref_img
+        self._current_pose = ref_pose
+        self._current_image_size = ref_img.shape[:2][::-1]
+        self._set_pixmap(self._current_preview, ref_img, "_current_pixmap")
+        self._render_compare()
+        self._sync_canvas_target()
+        self.reference_changed.emit()
 
     def set_current(self, pose, image):
         self._current_pose = pose
         self._current_image = image
+        self.reference_changed.emit()
         self._current_image_size = image.shape[:2][::-1] if image is not None else (1, 1)
         self._set_pixmap(self._current_preview, image, "_current_pixmap")
         self._render_compare()
         self._sync_canvas_target()
 
-    # Backward-compatible alias used by MainWindow callback wiring.
     def set_current_image(self, image, pose):
         self.set_current(pose, image)
 
@@ -232,19 +286,22 @@ class ReferenceModeWidget(QWidget):
 
 
 def install_reference_mode(window):
-    """Attach the reference workspace and keep it synchronized with analysis."""
-    # The release UI loads the pose model after the window is visible, so use
-    # a late lookup instead of capturing the startup ``None`` value.
+    """Install reference mode widget into the pre-registered container.
+
+    MainWindow.__init__ already created _w_ref_container and added it as page 2.
+    This function creates the ReferenceModeWidget and wires the data flow.
+    """
     widget = ReferenceModeWidget(lambda: window._det, window)
     window._reference_mode = widget
-    window._tabs.addTab("图片对比")
-    window._ws.addWidget(widget)
+    window._w_ref_lo.addWidget(widget)
 
+    # Hook into analysis results — reference mode needs pose + image updates
     old_update = window._w2.update_results
 
     def update_results(bundle):
         old_update(bundle)
         if bundle.pose and window._img is not None:
             widget.set_current(bundle.pose, window._img)
+
     window._w2.update_results = update_results
     return widget

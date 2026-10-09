@@ -5,13 +5,14 @@ from typing import Optional
 
 import cv2
 import numpy as np
-from PySide6.QtCore import Qt, QRect, QPoint
-from PySide6.QtGui import QImage, QPixmap, QPainter, QPen, QColor, QFont, QBrush
+from PySide6.QtCore import Qt, QRect, QPoint, QPointF
+from PySide6.QtGui import QImage, QPixmap, QPainter, QPen, QColor, QFont, QBrush, QWheelEvent
 from PySide6.QtWidgets import QWidget
 
 from core.pose_detector import PoseResult, POSE_CONNECTIONS, LandmarkIndex as LI
 from core.camera_analyzer import CameraResult
 from core.composition import CompositionResult
+from core.guidance import Direction
 from reverse_engineering.data_types import ReverseEngineeringResult
 
 COLOR_SKELETON = QColor(34, 197, 94)
@@ -31,6 +32,9 @@ COLOR_TARGET = QColor(14, 116, 144, 230)
 COLOR_TARGET_SOFT = QColor(14, 116, 144, 90)
 COLOR_TARGET_FILL = QColor(14, 116, 144, 26)
 COLOR_TARGET_TEXT = QColor(8, 82, 101)
+COLOR_GUIDE = QColor(16, 185, 129, 220)       # correction guide arrow
+COLOR_GUIDE_TIP = QColor(16, 185, 129, 40)     # correction guide arrow fill
+COLOR_GUIDE_TEXT = QColor(6, 95, 70)
 CANVAS_BG = QColor(250, 251, 252)
 CANVAS_TEXT = QColor(107, 114, 128)
 
@@ -62,12 +66,22 @@ class ImageCanvas(QWidget):
         self._show_reverse_vp = True
         self._show_reverse_axis = True
         self._show_reference_target = False
+        self._show_guidance_corrections = False
+        self._guidance_corrections: list = []  # list of GuidanceAction
         self._scale = 1.0
         self._offset = QPoint(0, 0)
+        # Zoom/pan state
+        self._zoom = 1.0
+        self._pan_offset = QPointF(0.0, 0.0)
+        self._panning = False
+        self._pan_start = QPointF(0.0, 0.0)
+        self.setMouseTracking(True)
 
     def set_image(self, image: np.ndarray):
         self._original_image = image.copy()
         self._update_pixmap()
+        # Clear stale guidance corrections when image changes
+        self._guidance_corrections = []
         if self._pose is not None:
             self._set_pose_collection(self._pose)
 
@@ -120,7 +134,7 @@ class ImageCanvas(QWidget):
                             bbox=True, visual_weight=False, headroom=False,
                             reverse=False, reverse_lines=True,
                             reverse_vp=True, reverse_axis=True,
-                            reference_target=None):
+                            reference_target=None, guidance_corrections=False):
         self._show_skeleton = skeleton
         self._show_thirds = thirds
         self._show_center = center
@@ -131,8 +145,14 @@ class ImageCanvas(QWidget):
         self._show_reverse_lines = reverse_lines
         self._show_reverse_vp = reverse_vp
         self._show_reverse_axis = reverse_axis
+        self._show_guidance_corrections = guidance_corrections
         if reference_target is not None:
             self._show_reference_target = bool(reference_target and self._reference_target is not None)
+        self.update()
+
+    def set_guidance_corrections(self, corrections: list):
+        """Set guidance-based correction arrows (from guidance engine)."""
+        self._guidance_corrections = list(corrections or [])
         self.update()
 
     def _update_pixmap(self):
@@ -141,9 +161,75 @@ class ImageCanvas(QWidget):
             self.update()
             return
         rgb = cv2.cvtColor(self._original_image, cv2.COLOR_BGR2RGB)
+        rgb = np.ascontiguousarray(rgb)
         h, w, ch = rgb.shape
-        self._pixmap = QPixmap.fromImage(QImage(rgb.data, w, h, ch * w, QImage.Format_RGB888))
+        self._pixmap = QPixmap.fromImage(QImage(rgb.data, w, h, ch * w, QImage.Format_RGB888).copy())
+        self._fit_to_view()
         self.update()
+
+    def _fit_to_view(self):
+        """Reset zoom/pan to fit image in widget."""
+        self._zoom = 1.0
+        self._pan_offset = QPointF(0.0, 0.0)
+
+    def reset_view(self):
+        """Public API to reset zoom/pan."""
+        self._fit_to_view()
+        self.update()
+
+    def wheelEvent(self, event: QWheelEvent):
+        """Zoom with mouse wheel, centered on cursor position."""
+        if self._pixmap is None:
+            return
+        delta = event.angleDelta().y()
+        if delta == 0:
+            return
+        factor = 1.15 if delta > 0 else 1.0 / 1.15
+        new_zoom = max(0.1, min(20.0, self._zoom * factor))
+        # Zoom toward cursor position
+        cursor = QPointF(event.position())
+        # Convert cursor to image-space before zoom
+        pw, ph = self._pixmap.width(), self._pixmap.height()
+        ww, wh = self.width(), self.height()
+        base_scale = min(ww / pw, wh / ph) * 0.95
+        ox = (ww - pw * base_scale * self._zoom) / 2.0 + self._pan_offset.x()
+        oy = (wh - ph * base_scale * self._zoom) / 2.0 + self._pan_offset.y()
+        # Image-space coordinate under cursor
+        img_x = (cursor.x() - ox) / (base_scale * self._zoom)
+        img_y = (cursor.y() - oy) / (base_scale * self._zoom)
+        self._zoom = new_zoom
+        # Adjust pan so the same image point stays under cursor
+        new_ox = cursor.x() - img_x * base_scale * self._zoom
+        new_oy = cursor.y() - img_y * base_scale * self._zoom
+        self._pan_offset = QPointF(
+            new_ox - (ww - pw * base_scale * self._zoom) / 2.0,
+            new_oy - (wh - ph * base_scale * self._zoom) / 2.0,
+        )
+        self.update()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and self._pixmap is not None:
+            self._panning = True
+            self._pan_start = QPointF(event.position())
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+
+    def mouseMoveEvent(self, event):
+        if self._panning:
+            pos = QPointF(event.position())
+            delta = pos - self._pan_start
+            self._pan_offset += delta
+            self._pan_start = pos
+            self.update()
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._panning = False
+            self.setCursor(Qt.CursorShape.ArrowCursor)
+
+    def mouseDoubleClickEvent(self, event):
+        """Double-click to reset view."""
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.reset_view()
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -152,16 +238,18 @@ class ImageCanvas(QWidget):
         if self._pixmap is None:
             painter.setPen(CANVAS_TEXT)
             painter.setFont(QFont("Microsoft YaHei", 14))
-            painter.drawText(self.rect(), Qt.AlignCenter, "Drag an image here or click Open Image")
+            painter.drawText(self.rect(), Qt.AlignCenter, "拖入图片或点击 Open Image")
             painter.end()
             return
 
         pw, ph = self._pixmap.width(), self._pixmap.height()
         ww, wh = self.width(), self.height()
-        self._scale = min(ww / pw, wh / ph) * 0.95
+        base_scale = min(ww / pw, wh / ph) * 0.95
+        self._scale = base_scale * self._zoom
         dw, dh = int(pw * self._scale), int(ph * self._scale)
-        self._offset = QPoint((ww - dw) // 2, (wh - dh) // 2)
-        ox, oy = self._offset.x(), self._offset.y()
+        ox = int((ww - dw) / 2.0 + self._pan_offset.x())
+        oy = int((wh - dh) / 2.0 + self._pan_offset.y())
+        self._offset = QPoint(ox, oy)
         painter.drawPixmap(QRect(ox, oy, dw, dh), self._pixmap)
         if self._show_thirds:
             self._draw_thirds_grid(painter, ox, oy, dw, dh)
@@ -181,6 +269,8 @@ class ImageCanvas(QWidget):
         if self._show_bbox:
             for pose in self._poses or ([self._pose] if self._pose else []):
                 self._draw_bbox(painter, ox, oy, dw, dh, pose)
+        if self._show_guidance_corrections and self._guidance_corrections and self._pose:
+            self._draw_guidance_corrections(painter, ox, oy, dw, dh)
         if self._show_visual_weight and self._composition:
             vw_x, vw_y = self._composition.visual_weight
             mx, my = ox + int(dw * vw_x), oy + int(dh * vw_y)
@@ -419,3 +509,49 @@ class ImageCanvas(QWidget):
         if not visible:
             return 0.5, 0.5
         return float(np.mean([p[0] for p in visible])), float(np.mean([p[1] for p in visible]))
+
+    # Direction → (landmark index, dx, dy) in normalized image coords
+    _GUIDE_OFFSETS: dict = {
+        # (target_landmark, dx, dy) — positive dx = right in image, positive dy = down
+        Direction.SHIFT:     (LI.LEFT_HIP,   0.0, -0.04),
+        Direction.STAGGER:   (LI.LEFT_KNEE,  0.03, 0.02),
+        Direction.OUTWARD:   (LI.LEFT_ELBOW, -0.04, 0.0),
+        Direction.CURVE:     (LI.LEFT_SHOULDER, 0.02, -0.03),
+        Direction.TILT:      (LI.NOSE,       0.03, -0.02),
+        Direction.TURN_BACK: (LI.NOSE,       0.0, -0.03),
+        Direction.SUBJECT_LEFT:  (11, -0.04, 0.0),   # mid-hip
+        Direction.SUBJECT_RIGHT: (11,  0.04, 0.0),
+    }
+
+    def _draw_guidance_corrections(self, painter, ox, oy, dw, dh):
+        """Draw green arrows showing guidance-based pose corrections."""
+        pose = self._pose
+        if pose is None:
+            return
+        for action in self._guidance_corrections:
+            spec = self._GUIDE_OFFSETS.get(action.direction)
+            if spec is None:
+                continue
+            lm_idx, dx, dy = spec
+            if lm_idx >= len(pose.landmarks):
+                continue
+            lm = pose.landmarks[lm_idx]
+            if lm.visibility < 0.3:
+                continue
+            sx = ox + int(lm.world_x * dw)
+            sy = oy + int(lm.world_y * dy)
+            # Flip dx for subject_left (image-right for subject)
+            actual_dx = dx
+            if action.direction == Direction.SUBJECT_LEFT:
+                actual_dx = -abs(dx)
+            elif action.direction == Direction.SUBJECT_RIGHT:
+                actual_dx = abs(dx)
+            ex = ox + int((lm.world_x + actual_dx) * dw)
+            ey = oy + int((lm.world_y + dy) * dh)
+            start = QPoint(sx, sy)
+            end = QPoint(ex, ey)
+            self._draw_arrow(painter, start, end, COLOR_GUIDE, 2)
+            painter.setFont(QFont("Consolas", 7, QFont.Bold))
+            painter.setPen(COLOR_GUIDE_TEXT)
+            label = action.cue[:12] + "…" if len(action.cue) > 12 else action.cue
+            painter.drawText(end.x() + 6, end.y() + 4, label)

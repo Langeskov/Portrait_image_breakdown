@@ -1,7 +1,7 @@
 """Application composition for the desktop GUI.
 
 Runtime owns application-level actions such as Settings and session I/O.
-Reconstruction-specific widgets are installed by ``v3_completion``.
+Reconstruction-specific widgets are loaded lazily when the user opens the3D tool.
 """
 from __future__ import annotations
 
@@ -185,33 +185,19 @@ def _install_settings_menu(window: ApplicationMainWindow, context: RuntimeContex
 
     model_group.triggered.connect(on_model_triggered)
 
-    results = QAction("Results", window)
-
-    def show_results() -> None:
-        index = getattr(window, "_results_tab_index", -1)
-        if index < 0:
-            return
-        window._ws.setCurrentIndex(index)
-        window._tabs.blockSignals(True)
-        window._tabs.setCurrentIndex(index)
-        window._tabs.blockSignals(False)
-
-    results.triggered.connect(show_results)
-    advanced.addAction(results)
     button.setMenu(menu)
     bar.addWidget(button)
     window._settings_menu = menu
     window._feedback_action = feedback
-    window._advanced_results_action = results
     window._pose_model_menu = model_menu
     window._pose_model_actions = model_actions
     window._pose_model_group = model_group
     window._pose_model_current_action = current_action
 
 
-def build_window(services: ApplicationServices) -> tuple[ApplicationMainWindow, RuntimeContext]:
+def build_window(services: ApplicationServices, preloaded_detector=None) -> tuple[ApplicationMainWindow, RuntimeContext]:
     context = RuntimeContext(services=services)
-    window = ApplicationMainWindow(services)
+    window = ApplicationMainWindow(services, preloaded_detector=preloaded_detector)
     window._runtime_context = context
     window._calibration_profile = context.calibration_profile
     context.pose_model = window.pose_model
@@ -219,3 +205,4 @@ def build_window(services: ApplicationServices) -> tuple[ApplicationMainWindow, 
     install_reference_mode(window)
     _install_settings_menu(window, context)
     return window, context
+

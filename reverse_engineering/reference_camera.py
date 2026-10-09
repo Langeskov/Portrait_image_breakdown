@@ -12,7 +12,7 @@ from dataclasses import dataclass
 import math
 from typing import Optional
 
-from reverse_engineering.reference_reconstruction import ReferenceComposition
+from core.reference_reconstruction import ReferenceComposition
 from reverse_engineering.reference_line_calibration import ReferenceLineEvidence
 from reverse_engineering.scene import SceneModel
 from reverse_engineering.scene_anchors import AnchorKind, SceneAnchor
@@ -152,3 +152,4 @@ def estimate_reference_camera_hypothesis(
         line_observed_angle_deg=line_observed,
         line_confidence=line_confidence,
     )
+

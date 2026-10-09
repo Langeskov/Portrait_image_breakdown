@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Optional
 
 import numpy as np
-from PySide6.QtCore import Qt, QPointF, QTimer
+from PySide6.QtCore import Qt, QPointF
 from PySide6.QtGui import QPainter, QPen, QBrush, QColor, QFont, QPolygonF
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QToolButton, QScrollArea,
@@ -26,6 +26,15 @@ from reverse_engineering.reference_camera import (
 )
 from reverse_engineering.scene import SceneCamera, SceneModel
 from reverse_engineering.scene_anchors import AnchorKind, SceneAnchor
+from gui.reverse_3d_reference_line import CameraVisualMatchSection, ReferenceLineProjectionPreview, install_visual_camera_match
+from gui.reference_line_calibration import (
+    CalibratedReferenceLinePreview,
+    ReferenceLineCalibrationPanel,
+    RollCorrectionController,
+    install_reference_line_calibration,
+    install_roll_correction,
+)
+from reverse_engineering.reference_line_calibration import ReferenceLineConstraint
 
 
 ACCENT = QColor("#2563EB")
@@ -37,8 +46,10 @@ REF = QColor("#7C3AED")
 
 
 class CollapsibleSection(QWidget):
-    def __init__(self, title: str, expanded: bool = True, parent=None):
+    def __init__(self, title: str, expanded: bool = True, parent=None, lazy_builder=None):
         super().__init__(parent)
+        self._lazy_builder = lazy_builder
+        self._built = lazy_builder is None
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(4)
@@ -63,8 +74,17 @@ class CollapsibleSection(QWidget):
             "text-align: left; font-weight: 600; }"
             "QToolButton:hover { background: #F3F4F6; }"
         )
+        if expanded and not self._built:
+            self._ensure_built()
+
+    def _ensure_built(self):
+        if not self._built and self._lazy_builder is not None:
+            self._built = True
+            self._lazy_builder(self.body_layout)
 
     def _toggle(self, checked: bool):
+        if checked and not self._built:
+            self._ensure_built()
         self.body.setVisible(checked)
         self.button.setArrowType(Qt.DownArrow if checked else Qt.RightArrow)
 
@@ -223,26 +243,36 @@ class Reverse3DWorkspace(QWidget):
         splitter.addWidget(left)
 
         splitter.addWidget(self._build_inspector())
-        splitter.setSizes([980, 430])
+        splitter.setSizes([800, 400])
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 0)
         root.addWidget(splitter)
 
-        self._reference_poll = QTimer(self)
-        self._reference_poll.setInterval(500)
-        self._reference_poll.timeout.connect(self._poll_reference_mode)
-        self._reference_poll.start()
+        # Connect to reference_mode signal when available (lazy — on first show)
+        self._reference_signal_connected = False
+
+        # v3 additions: visual camera match, reference line calibration, roll correction
+        install_visual_camera_match(self)
+        install_reference_line_calibration(self)
+        install_roll_correction(self)
+        panel = getattr(self, "_reference_line_calibration", None)
+        if panel is not None:
+            panel.evidence_changed.connect(self._on_reference_line_evidence_changed)
+        self._projection_panel = None
+        self._move_projection_preview_next_to_3d()
+        self._sync_visual_camera_match()
+        self._sync_anchor_reference_line()
 
     def _build_inspector(self):
         outer = QScrollArea()
         outer.setWidgetResizable(True)
         outer.setFrameShape(QFrame.NoFrame)
         outer.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        outer.setMinimumWidth(390)
+        outer.setMinimumWidth(200)
         outer.setStyleSheet("QScrollArea { background:#F8FAFC; border:0; }")
 
         panel = QWidget()
-        panel.setMinimumWidth(370)
+        panel.setMinimumWidth(200)
         panel.setStyleSheet("QGroupBox { border:1px solid #E2E8F0; border-radius:6px; margin-top:5px; padding-top:4px; } QGroupBox::title { subcontrol-origin:margin; left:8px; padding:0 4px; color:#475569; }")
         lo = QVBoxLayout(panel)
         lo.setContentsMargins(10, 10, 10, 14)
@@ -304,7 +334,7 @@ class Reverse3DWorkspace(QWidget):
         section.body_layout.addWidget(hint)
 
         self._anchors = QListWidget()
-        self._anchors.setMaximumHeight(118)
+        self._anchors.setMaximumHeight(75)
         self._anchors.currentRowChanged.connect(self._anchor_selected)
         self._anchors.itemChanged.connect(self._anchor_visibility_changed)
         section.body_layout.addWidget(self._anchors)
@@ -354,7 +384,7 @@ class Reverse3DWorkspace(QWidget):
     def _build_candidates_section(self):
         section = CollapsibleSection("Candidate solutions", expanded=False)
         self._candidates = QListWidget()
-        self._candidates.setMaximumHeight(145)
+        self._candidates.setMaximumHeight(110)
         self._candidates.currentRowChanged.connect(self._select_candidate)
         section.body_layout.addWidget(self._candidates)
         return section
@@ -399,7 +429,7 @@ class Reverse3DWorkspace(QWidget):
     def _build_people_section(self):
         section = CollapsibleSection("Scene people", expanded=False)
         self._people = QListWidget()
-        self._people.setMaximumHeight(120)
+        self._people.setMaximumHeight(90)
         section.body_layout.addWidget(self._people)
         hint = QLabel("附加人物只有在存在独立深度证据时才获得 relative-3D；否则标为 2D-only。")
         hint.setWordWrap(True)
@@ -645,7 +675,18 @@ class Reverse3DWorkspace(QWidget):
         if self._reference_section is not None and not self._reference_section.button.isChecked():
             self._reference_section.button.setChecked(True)
 
+    def _ensure_reference_signal(self):
+        """Connect to reference_mode.reference_changed signal on first call."""
+        if self._reference_signal_connected:
+            return
+        window = self.window()
+        widget = getattr(window, "_reference_mode", None)
+        if widget is not None and hasattr(widget, "reference_changed"):
+            widget.reference_changed.connect(self._poll_reference_mode)
+            self._reference_signal_connected = True
+
     def _poll_reference_mode(self):
+        self._ensure_reference_signal()
         window = self.window()
         widget = getattr(window, "_reference_mode", None)
         if widget is None:
@@ -654,7 +695,7 @@ class Reverse3DWorkspace(QWidget):
         cur = None
         if ref is not None:
             try:
-                from reverse_engineering.reference_reconstruction import build_reference_composition
+                from core.reference_reconstruction import build_reference_composition
                 pose = getattr(widget, "_current_pose", None)
                 image = getattr(widget, "_current_image", None)
                 if pose is not None and image is not None:
@@ -671,7 +712,7 @@ class Reverse3DWorkspace(QWidget):
             self.set_reference_context(ref, cur)
 
     def update_results(self, bundle):
-        if getattr(bundle, "reverse_result", None):
+        if getattr(bundle, "reverse_result", None) is not None:
             pose = getattr(bundle, "pose", None)
             if pose is not None:
                 people = getattr(pose, "persons", None) or [pose]
@@ -690,3 +731,315 @@ class Reverse3DWorkspace(QWidget):
             self._observed_points = [[[lm.x, lm.y] for lm in p.landmarks[:17]] for p in people]
             self._observed_bbox = getattr(people[0], "bbox", None)
             self._refresh_projection()
+
+
+
+    # --- v3 merged methods: visual camera match, reference line, roll ---
+
+    def _move_projection_preview_next_to_3d(self):
+        """Make 3D, live 2D projection, and parameter inspector visible together."""
+        preview = getattr(self, "_preview", None)
+        splitter = self.findChild(QSplitter)
+        if preview is None or splitter is None or splitter.count() < 2:
+            return
+
+        old_body = preview.parentWidget()
+        old_section = old_body.parentWidget() if old_body is not None else None
+        if old_body is not None:
+            old_layout = old_body.layout()
+            if old_layout is not None:
+                old_layout.removeWidget(preview)
+                metrics = getattr(self, "_preview_metrics", None)
+                if metrics is not None:
+                    old_layout.removeWidget(metrics)
+        if isinstance(old_section, CollapsibleSection):
+            old_section.setVisible(False)
+
+        inspector = splitter.widget(1)
+        if inspector is not None:
+            inspector.setParent(None)
+
+        projection = QFrame()
+        projection.setObjectName("projectionPanel")
+        projection.setFrameShape(QFrame.StyledPanel)
+        projection.setMinimumWidth(240)
+        projection.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+        projection.setStyleSheet(
+            "#projectionPanel { background:#0F172A; border:1px solid #CBD5E1; border-radius:8px; }"
+            "#projectionPanel QLabel { background:transparent; color:#E2E8F0; }"
+        )
+        projection_layout = QVBoxLayout(projection)
+        projection_layout.setContentsMargins(8, 7, 8, 7)
+        projection_layout.setSpacing(4)
+
+        header = QLabel("2D Projection Preview")
+        header.setStyleSheet("font-weight:600; color:#F8FAFC;")
+        projection_layout.addWidget(header, 0)
+
+        preview.setParent(projection)
+        preview.setMinimumHeight(220)
+        preview.setMaximumHeight(300)
+        preview.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        projection_layout.addWidget(preview, 1)
+
+        metrics = getattr(self, "_preview_metrics", None)
+        if metrics is not None:
+            metrics.setParent(projection)
+            metrics.setMaximumHeight(42)
+            metrics.setWordWrap(True)
+            projection_layout.addWidget(metrics, 0)
+
+        splitter.addWidget(projection)
+        if inspector is not None:
+            splitter.addWidget(inspector)
+        splitter.setStretchFactor(0, 3)
+        splitter.setStretchFactor(1, 2)
+        splitter.setStretchFactor(2, 2)
+        splitter.setSizes([600, 260, 300])
+        self._projection_panel = projection
+
+    @property
+    def scene_model(self):
+        return self.scene
+
+    @property
+    def source_image(self):
+        return self._source_image
+
+    def set_source_image(self, image):
+        self._source_image = image
+        preview = getattr(self, "_preview", None)
+        if preview is not None and hasattr(preview, "set_image"):
+            preview.set_image(image)
+        self._refresh_projection()
+
+    def refresh_scene_view(self):
+        self._view.update()
+        self._refresh_projection()
+
+    def set_camera_value(self, parameter: str, value: float):
+        controls = {
+            "distance": "_distance", "height": "_height", "yaw": "_yaw",
+            "pitch": "_pitch", "roll": "_roll", "focal_length_mm": "_focal",
+        }
+        control_name = controls.get(parameter)
+        if control_name is None or not hasattr(self, control_name):
+            raise ValueError(f"unsupported camera parameter: {parameter}")
+        getattr(self, control_name).setValue(float(value))
+
+    def _sync_visual_camera_match(self):
+        section = getattr(self, "_camera_visual_match", None)
+        if section is not None:
+            section.sync_from_camera()
+
+    def _sync_controls(self):
+        super()._sync_controls() if hasattr(super(), '_sync_controls') else None
+        c = self.scene.camera
+        for box, value in ((self._distance, c.distance), (self._height, c.height), (self._yaw, c.yaw), (self._pitch, c.pitch), (self._roll, c.roll), (self._focal, c.focal_length_mm)):
+            box.blockSignals(True)
+            box.setValue(float(value))
+            box.blockSignals(False)
+        self._sync_visual_camera_match()
+
+    def _camera_spin_changed(self):
+        self.scene.camera = SceneCamera(
+            distance=float(self._distance.value()),
+            height=float(self._height.value()),
+            yaw=float(self._yaw.value()),
+            pitch=float(self._pitch.value()),
+            roll=float(self._roll.value()),
+            focal_length_mm=float(self._focal.value()),
+            sensor_width_mm=self.scene.camera.sensor_width_mm,
+        )
+        self._view.set_scene(self.scene)
+        self._refresh_projection()
+        self._update_reference_hypothesis()
+        self._sync_visual_camera_match()
+        self.camera_edited.emit()
+
+    def _select_candidate(self, row):
+        if row < 0 or not self.scene.candidate_solutions:
+            return
+        self.scene.set_candidate(row)
+        self._sync_controls()
+        self._view.update()
+        self._refresh_projection()
+        self._update_reference_hypothesis()
+        self._sync_visual_camera_match()
+        self.camera_edited.emit()
+
+    def _anchor_selected(self, row):
+        if not 0 <= row < len(self._anchor_ids):
+            self._anchor_name.setText("—")
+            if hasattr(self, "_preview"):
+                self._preview.set_selected_anchor(self.scene, None)
+            self._sync_anchor_reference_line()
+            self._update_reference_hypothesis()
+            return
+        anchor = self.scene.anchor_by_id(self._anchor_ids[row])
+        if anchor is None:
+            return
+        self._anchor_name.setText(anchor.name)
+        self._anchor_kind.blockSignals(True)
+        self._anchor_kind.setCurrentText(anchor.kind.value)
+        self._anchor_kind.blockSignals(False)
+        values = ((self._ax, anchor.position[0]), (self._ay, anchor.position[1]), (self._az, anchor.position[2]), (self._nx, anchor.normal[0]), (self._ny, anchor.normal[1]), (self._nz, anchor.normal[2]), (self._aw, anchor.size[0]), (self._ah, anchor.size[1]))
+        for box, value in values:
+            box.blockSignals(True)
+            box.setValue(float(value))
+            box.blockSignals(False)
+        plane = anchor.kind == AnchorKind.PLANE
+        for box in (self._nx, self._ny, self._nz, self._aw, self._ah):
+            box.setEnabled(plane)
+        if hasattr(self, "_preview"):
+            self._preview.set_selected_anchor(self.scene, anchor)
+            self._refresh_projection()
+        self._sync_anchor_reference_line()
+        self._update_reference_hypothesis()
+
+    def _sync_anchor_reference_line(self):
+        preview = getattr(self, "_preview", None)
+        if not isinstance(preview, CalibratedReferenceLinePreview):
+            return
+        anchor = self._current_anchor()
+        if anchor is None:
+            preview.clear_evidence()
+            return
+        constraint_value = getattr(anchor, "reference_line_constraint", ReferenceLineConstraint.FREE.value)
+        try:
+            constraint = ReferenceLineConstraint(constraint_value)
+        except ValueError:
+            constraint = ReferenceLineConstraint.FREE
+        panel = getattr(self, "_reference_line_calibration", None)
+        if panel is not None:
+            panel.constraint.blockSignals(True)
+            panel.constraint.setCurrentIndex(panel.constraint.findData(constraint))
+            panel.constraint.blockSignals(False)
+        preview.set_constraint(constraint)
+        preview.set_evidence_points(getattr(anchor, "image_points", ()))
+        self._reference_line_evidence = preview.evidence()
+        controller = getattr(panel, "_roll_apply_controller", None) if panel is not None else None
+        if controller is not None:
+            controller.refresh(self._reference_line_evidence)
+
+    def _ensure_reference_signal(self):
+        """Connect to reference_mode.reference_changed signal on first call."""
+        if self._reference_signal_connected:
+            return
+        window = self.window()
+        widget = getattr(window, "_reference_mode", None)
+        if widget is not None and hasattr(widget, "reference_changed"):
+            widget.reference_changed.connect(self._poll_reference_mode)
+            self._reference_signal_connected = True
+
+    def _poll_reference_mode(self):
+        self._ensure_reference_signal()
+        window = self.window()
+        widget = getattr(window, "_reference_mode", None)
+        if widget is None:
+            return
+        ref = getattr(widget, "_reference", None)
+        pose = getattr(widget, "_current_pose", None)
+        image = getattr(window, "_img", None)
+        if image is None:
+            image = getattr(widget, "_current_image", None)
+        signature = (id(ref), id(pose), id(image), tuple(image.shape[:2]) if image is not None else None)
+        if signature == self._last_ref_signature:
+            return
+        self._last_ref_signature = signature
+        if image is not None:
+            self.set_source_image(image)
+        if ref is None or pose is None or image is None:
+            self.clear_reference_context()
+            return
+        from core.reference_reconstruction import build_reference_composition
+        if int(getattr(pose, "image_width", 0) or 0) != int(image.shape[1]) or int(getattr(pose, "image_height", 0) or 0) != int(image.shape[0]):
+            pose = pose.rescaled(int(image.shape[1]), int(image.shape[0]))
+        current = build_reference_composition(pose, image.shape[1], image.shape[0])
+        self.set_reference_context(ref, current)
+
+    def update_results(self, bundle):
+        """Keep the live preview synchronized with the application image."""
+        window = self.window()
+        image = getattr(window, "_img", None)
+        if image is None:
+            reference_mode = getattr(window, "_reference_mode", None)
+            image = getattr(reference_mode, "_current_image", None)
+        if image is not None and image is not self._source_image:
+            self.set_source_image(image)
+        # Call the original update_results logic
+        if getattr(bundle, "reverse_result", None) is not None:
+            pose = getattr(bundle, "pose", None)
+            if pose is not None:
+                people = getattr(pose, "persons", None) or [pose]
+                if self._source_image is not None:
+                    tw, th = self._source_image.shape[1], self._source_image.shape[0]
+                    people = [p.rescaled(tw, th) if (p.image_width, p.image_height) != (tw, th) else p for p in people]
+                self._observed_points = [[[lm.x, lm.y] for lm in p.landmarks[:17]] for p in people]
+                self._observed_bbox = getattr(people[0], "bbox", None)
+            self.set_result(bundle.reverse_result, self._observed_bbox, self._observed_points)
+        elif getattr(bundle, "pose", None):
+            pose = bundle.pose
+            people = getattr(pose, "persons", None) or [pose]
+            if self._source_image is not None:
+                tw, th = self._source_image.shape[1], self._source_image.shape[0]
+                people = [p.rescaled(tw, th) if (p.image_width, p.image_height) != (tw, th) else p for p in people]
+            self._observed_points = [[[lm.x, lm.y] for lm in p.landmarks[:17]] for p in people]
+            self._observed_bbox = getattr(people[0], "bbox", None)
+            self._refresh_projection()
+
+    def _update_reference_hypothesis(self):
+        if not hasattr(self, "_reference_state"):
+            return
+        anchor = self._current_anchor()
+        reference = getattr(self, "_reference", None)
+        current = getattr(self, "_current_composition", None)
+        if reference is None or current is None:
+            if reference is None and current is None:
+                self.clear_reference_context()
+            return
+        from reverse_engineering.reference_camera import estimate_reference_camera_hypothesis
+        self._hypothesis = estimate_reference_camera_hypothesis(
+            self.scene,
+            reference,
+            current,
+            selected_anchor=anchor,
+            line_evidence=getattr(self, "_reference_line_evidence", None),
+        )
+        h = self._hypothesis
+        if not h.success:
+            self._reference_state.setText(h.message)
+            self._reference_conf.setText("low confidence")
+            return
+        self._reference_state.setText("Reference context active")
+        self._reference_conf.setText(f"{h.confidence:.0%}")
+        self._ref_distance.setText(f"{h.reference_distance_m:.2f} m")
+        self._ref_delta.setText(f"{h.distance_delta_m:+.2f} m")
+        self._ref_yaw.setText(f"{h.reframe_yaw_deg:+.1f}°")
+        self._ref_pitch.setText(f"{h.reframe_pitch_deg:+.1f}°")
+        self._ref_focal.setText(f"{h.focal_length_mm:.1f} mm (same focal prior)")
+        support = h.support
+        if h.line_observed_angle_deg is not None:
+            support += f" · line obs {h.line_observed_angle_deg:+.1f}°"
+        if h.roll_correction_deg is not None:
+            support += f" · roll {h.roll_correction_deg:+.1f}° ({h.line_constraint})"
+        self._ref_support.setText(support + (f" · selected {h.anchor_name}" if h.anchor_name else ""))
+        if self._reference_section is not None and not self._reference_section.button.isChecked():
+            self._reference_section.button.setChecked(True)
+
+    def _on_reference_line_evidence_changed(self, evidence):
+        self._reference_line_evidence = evidence
+        anchor = self._current_anchor()
+        if anchor is not None:
+            if evidence is None:
+                anchor.image_points = ()
+                anchor.reference_line_constraint = ReferenceLineConstraint.FREE.value
+            else:
+                anchor.image_points = (tuple(evidence.p1), tuple(evidence.p2))
+                anchor.reference_line_constraint = evidence.constraint.value
+        panel = getattr(self, "_reference_line_calibration", None)
+        controller = getattr(panel, "_roll_apply_controller", None) if panel is not None else None
+        if controller is not None:
+            controller.refresh(evidence)
+        self._update_reference_hypothesis()
+

@@ -1,60 +1,71 @@
 # Portrait Image Breakdown
 
-一个为人像拍摄现场设计的桌面工具。它只回答三个问题：
+人像拍摄现场桌面工具。回答三个问题：
 
-1. **这张图片中的人物姿态是怎样的？** — 通过 2D 姿态、朝向、取景与构图分析回答。
-2. **我该怎样向模特下指令？** — 将分析转化为短、具体、可直接说出口的现场指令。
-3. **对比图片需要怎样调整？** — 以参考图与当前图的姿态、主体位置和构图差异生成调整建议。
+1. **姿态是怎样的？** — 2D 姿态、朝向、取景与构图分析。
+2. **该怎样下指令？** — 将分析转化为可直接说出口的现场指导。
+3. **对比参考图差在哪？** — 参考图与当前图的姿态、构图差异及调整建议。
 
 ## 工作流
 
 ```text
-打开当前照片 → 2D 分析 → 现场指令
-                     ↓
-              加载参考照片 → 图片对比 → 再拍 / 再调整
+打开照片 → 2D 分析 → 现场指令
+                 ↓
+          加载参考图 → 图片对比 → 调整
 ```
 
-主界面只有三个页面：**2D 分析**、**现场指令**、**图片对比**。这条路径优先服务于拍摄时的即时判断，而非摄影参数的理论推导。
+三个主页面：**2D 分析**、**现场指令**、**图片对比**。
 
-## 可选：3D 重建
+## 功能
 
-**3D 重建**位于 2D 分析页右上方，是独立打开的额外工具。它用于探索图片可能对应的相机与场景假设，不会阻塞、改变或扩展主工作流。
-
-3D 结果属于估计而非测量：单张图片无法唯一确定焦距、距离或空间尺度。应用会区分 **Observed（观测）**、**Estimated（估计）** 与 **Unknown（未知）**。
+- YOLO 姿态检测（17 关键点、多人）
+- 动作分类、身体朝向、构图分析
+- 统一指导引擎（优先级排序、HOLD/ADJUST 状态）
+- 现场指令模式（主指令 + 辅助指令、语气切换、姿态修正辅助线）
+- 图片对比（A/B 并排、构图偏差、姿态差异）
+- 画布缩放平移、骨架/BBox/构图叠加层
+- 可选 3D 重建（独立窗口，不影响主流程）
 
 ## 使用
 
-需要 Python **3.12+**：
+Python **3.12+**：
 
 ```bash
 uv sync
 uv run python main.py
 ```
 
-支持 `.jpg`、`.jpeg`、`.png`、`.bmp` 和 `.webp`。在 2D 页面可点击画布或直接拖入照片。
+CLI 模式：
 
-## 打包 Windows 发行版
+```bash
+uv run python main.py --cli --image path/to/photo.jpg
+```
 
-发行包需要包含 `model/` 目录和姿态模型权重：
+支持格式：`.jpg` `.jpeg` `.png` `.bmp` `.webp`
+
+## 打包
 
 ```bash
 uv run pyinstaller --noconfirm --clean main.spec
 ```
 
-输出位于 `dist/PortraitImageBreakdown/`，其中的 `PortraitImageBreakdown.exe` 为可执行程序。
+输出：`dist/PortraitImageBreakdown/PortraitImageBreakdown.exe`
+
+需要 `model/` 目录中的姿态模型权重。
 
 ## 项目结构
 
 ```text
-core/                  2D 姿态、构图与现场指令
-gui/                   三个主页面与可选 3D 窗口
-reverse_engineering/   与主流程隔离的可选 3D 推理模块
-assets/                应用图标与启动资源
-main.py                桌面 / CLI 入口
+core/                  姿态分析、构图、指导引擎、参考图对比
+gui/                   桌面界面（2D 分析、现场指令、图片对比、3D 窗口）
+reverse_engineering/   可选 3D 推理（与主流程隔离）
+assets/                图标与启动资源
+tests/                 测试
+main.py                入口
 ```
 
 ## 验证
 
 ```bash
-uv run --with pytest pytest -q
+uv run pytest -q
 ```

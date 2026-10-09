@@ -4,7 +4,7 @@ from dataclasses import dataclass
 import math
 
 from core.pose_detector import LandmarkIndex as LI, PoseResult
-from reverse_engineering.reference_anchor import ReferenceImageAnchor
+from core.reference_anchor import ReferenceImageAnchor
 
 SceneAnchor = ReferenceImageAnchor
 
@@ -86,3 +86,4 @@ def composition_delta(reference: ReferenceComposition, current: ReferenceComposi
 def reference_summary(reference: ReferenceComposition) -> str:
     x, y = reference.subject_center
     return f"Reference {reference.width}×{reference.height} · subject center ({x / max(reference.width, 1):.0%}, {y / max(reference.height, 1):.0%}) · scale {reference.subject_scale:.0%}"
+

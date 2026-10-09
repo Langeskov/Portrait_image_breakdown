@@ -1,5 +1,5 @@
 from reverse_engineering.reference_camera import estimate_reference_camera_hypothesis
-from reverse_engineering.reference_reconstruction import ReferenceComposition
+from core.reference_reconstruction import ReferenceComposition
 from reverse_engineering.scene import SceneModel
 
 
@@ -54,3 +54,4 @@ def test_reference_hypothesis_does_not_require_or_mutate_scene_camera():
     assert result.success
     after = (scene.camera.distance, scene.camera.yaw, scene.camera.pitch, scene.camera.focal_length_mm)
     assert before == after
+

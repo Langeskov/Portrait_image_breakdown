@@ -7,7 +7,7 @@ from PySide6.QtCore import QSettings, QThread, QTimer, Signal
 from PySide6.QtWidgets import QMessageBox
 
 from core.model_config import DEFAULT_POSE_MODEL, get_pose_model, pose_model_label
-from gui.main_window import MainWindow as _BaseMainWindow, _resize_for_analysis, AnalysisWorker, AnalysisBundle
+from gui.main_window import MainWindow as _BaseMainWindow, _resize_for_analysis, Analysis2DWorker, Analysis2DBundle, AnalysisBundle
 from gui.cache import AnalysisCache
 
 
@@ -41,7 +41,7 @@ class ApplicationMainWindow(_BaseMainWindow):
     _SETTINGS_APP = "PortraitImageBreakdown"
     _POSE_MODEL_SETTING = "pose_model_selection_v2"
 
-    def __init__(self, services, parent=None):
+    def __init__(self, services, parent=None, preloaded_detector=None):
         # Deliberately use M as the release/default model. The v2 settings key
         # avoids inheriting an older locally stored L/X/etc. selection.
         settings = QSettings(self._SETTINGS_ORG, self._SETTINGS_APP)
@@ -63,8 +63,13 @@ class ApplicationMainWindow(_BaseMainWindow):
         self._model_ready = False
         self._pending_image_path: Optional[str] = None
 
-        QTimer.singleShot(50, self.start_model_loading)
-        QTimer.singleShot(0, lambda: self._set_model_controls_enabled(False))
+        if preloaded_detector is not None:
+            self._det = preloaded_detector
+            self._model_ready = True
+            QTimer.singleShot(0, lambda: self._set_model_controls_enabled(True))
+        else:
+            QTimer.singleShot(50, self.start_model_loading)
+            QTimer.singleShot(0, lambda: self._set_model_controls_enabled(False))
 
     def _initialize_pose_detector(self, pose_model: str | None = None):
         return None
@@ -222,6 +227,7 @@ class ApplicationMainWindow(_BaseMainWindow):
         self._img = img
         self._bundle = AnalysisBundle()
         self._w2.set_image(img)
+        self._w_field.set_image(img)
         cache_key = self._image_cache_key(img)
         if cache_key in self._result_cache:
             self._bundle = self._result_cache[cache_key]
@@ -231,13 +237,11 @@ class ApplicationMainWindow(_BaseMainWindow):
         self._set_progress(0, f"Preparing analysis | {frame_orientation(img)} | {path.split('/')[-1]} | {self.pose_model_name}")
         self._cancel_worker()
         analysis_img = _resize_for_analysis(img, max_side=1600)
-        if self._re_enabled and self._eng is None:
-            self._eng = self._engine_factory(enable_simulation=False)
-        self._wk = AnalysisWorker(self._det, self._eng, img, analysis_img, enable_re=self._re_enabled)
+        # 2D worker only — no engine, no 3D
+        self._wk = Analysis2DWorker(self._det, img, analysis_img)
         self._wk.progress.connect(self._set_progress)
         self._wk.pose_ready.connect(self._on_pose_ready)
         self._wk.core_ready.connect(self._on_core_ready)
-        self._wk.reverse_ready.connect(self._on_reverse_ready)
         self._wk.error.connect(self._err)
         self._wk.start()
 
@@ -249,3 +253,5 @@ class ApplicationMainWindow(_BaseMainWindow):
                 self._det.close()
         finally:
             super().closeEvent(event)
+
+

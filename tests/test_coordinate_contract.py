@@ -4,7 +4,7 @@ from __future__ import annotations
 import numpy as np
 
 from core.pose_detector import PoseLandmark, PoseResult
-from reverse_engineering.engine_v2 import _normalize_pose_input
+from reverse_engineering.engine import _normalize_pose_input
 
 
 def _pose(width=2048, height=1364):
@@ -47,3 +47,4 @@ def test_reverse_engineering_boundary_preserves_matching_coordinates():
     assert changed is False
     assert normalized is pose
     assert bbox == pose.bbox
+

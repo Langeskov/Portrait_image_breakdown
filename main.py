@@ -110,9 +110,20 @@ def run_gui(image_path: str | None = None, calibration_profile: str = "Generic")
     services = ApplicationServices.create(calibration_profile=calibration_profile)
     app.processEvents()
 
+    # Pre-load pose model during splash so the window opens with detector ready.
+    # PyTorch init must stay in the main process (Windows QThread hangs).
+    _splash_message(splash, "正在加载姿态模型…")
+    app.processEvents()
+    from core.model_config import DEFAULT_POSE_MODEL
+    from core.pose_detector import PoseDetector
+    try:
+        _preloaded_detector = PoseDetector(model=DEFAULT_POSE_MODEL)
+    except Exception:
+        _preloaded_detector = None
+
     _splash_message(splash, "正在构建用户界面…")
     apply_light_theme(app)
-    window, context = build_window(services)
+    window, context = build_window(services, preloaded_detector=_preloaded_detector)
     if icon_path is not None:
         window.setWindowIcon(QIcon(str(icon_path)))
     install_chinese_ui(window)

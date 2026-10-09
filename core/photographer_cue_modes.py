@@ -23,7 +23,11 @@ def format_cues(cues: list[PhotographerCue], mode: CueMode = CueMode.NORMAL) -> 
         return ["先保持自然，我根据画面继续调整。"]
 
     if mode is CueMode.CONCISE:
-        return [cues[0].cue]
+        # Primary + one secondary for the list
+        items = [cues[0].cue]
+        if len(cues) > 1:
+            items.append(cues[1].cue)
+        return items
 
     if mode is CueMode.TECHNICAL:
         return [f"{cue.cue}（原因：{cue.reason}）" for cue in cues[:4]]

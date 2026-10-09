@@ -9,7 +9,7 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
-    QFrame, QHBoxLayout, QLabel, QListWidget,
+    QHBoxLayout, QLabel, QListWidget,
     QListWidgetItem, QPushButton, QComboBox, QVBoxLayout, QWidget, QApplication,
 )
 
@@ -21,12 +21,12 @@ from core.voice_output import voice_ready_text, ssml
 
 
 class FieldModeWidget(QWidget):
-    """Light-theme field UI with an isolated, predictable palette."""
+    """Right-panel field guidance widget."""
 
     _THEME = {
         "bg": "#F5F6F8", "surface": "#FFFFFF", "surface2": "#FAFBFC",
         "border": "#D9DDE3", "border2": "#C6CBD3", "text": "#1F2937",
-        "text2": "#6B7280", "muted": "#6B7280", "accent": "#2563EB",
+        "text2": "#6B7280", "muted": "#9CA3AF", "accent": "#2563EB",
         "accent_text": "#FFFFFF", "disabled": "#9CA3AF", "hover": "#F3F4F6",
         "pressed": "#E8EEF9", "selected": "#2563EB",
     }
@@ -35,115 +35,91 @@ class FieldModeWidget(QWidget):
         super().__init__(parent)
         self.history = CueHistory(capacity=30)
         self._cues = []
-        t = self._THEME
+        self.setMinimumWidth(240)
+        self.setMaximumWidth(360)
         self.setObjectName("fieldMode")
-        self.setAttribute(Qt.WA_StyledBackground, True)
+
+        t = self._THEME
         self.setStyleSheet(f"""
-            QWidget#fieldMode {{ background: {t['bg']}; color: {t['text']}; }}
             QWidget#fieldMode QLabel {{ color: {t['text']}; background: transparent; }}
-            QWidget#fieldMode QLabel#eyebrow {{ color: {t['muted']}; font-size: 11px; letter-spacing: 1px; }}
-            QWidget#fieldMode QLabel#status {{ color: {t['text2']}; }}
-            QWidget#fieldMode QLabel#metric {{ color: {t['text']}; padding: 5px 8px; background: {t['surface']}; border-radius: 5px; }}
-            QWidget#fieldMode QLabel#primaryCue {{ color: {t['text']}; background: {t['surface']}; border: 1px solid {t['border']}; border-radius: 8px; padding: 14px; }}
-            QWidget#fieldMode QFrame#statusCard {{ background: {t['surface']}; border: 1px solid {t['border']}; border-radius: 8px; }}
-            QWidget#fieldMode QListWidget {{ color: {t['text']}; background: {t['surface2']}; border: 1px solid {t['border']}; border-radius: 6px; padding: 4px; outline: 0; alternate-background-color: {t['surface']}; }}
-            QWidget#fieldMode QListWidget::item {{ color: {t['text']}; padding: 9px 8px; border-radius: 4px; }}
-            QWidget#fieldMode QListWidget::item:hover {{ background: {t['hover']}; }}
-            QWidget#fieldMode QListWidget::item:selected {{ color: {t['accent_text']}; background: {t['selected']}; }}
-            QWidget#fieldMode QPushButton {{ color: {t['text']}; padding: 7px 12px; border: 1px solid {t['border2']}; border-radius: 5px; background: {t['surface']}; }}
-            QWidget#fieldMode QPushButton:hover {{ background: {t['hover']}; }}
-            QWidget#fieldMode QPushButton:pressed {{ background: {t['pressed']}; }}
-            QWidget#fieldMode QPushButton:disabled {{ color: {t['disabled']}; background: {t['surface2']}; border-color: {t['border']}; }}
-            QWidget#fieldMode QComboBox {{ color: {t['text']}; padding: 6px 10px; border: 1px solid {t['border2']}; border-radius: 5px; background: {t['surface']}; selection-color: {t['accent_text']}; selection-background-color: {t['selected']}; }}
-            QWidget#fieldMode QComboBox:hover {{ border-color: {t['accent']}; }}
-            QWidget#fieldMode QComboBox:focus {{ border: 1px solid {t['accent']}; }}
-            QWidget#fieldMode QComboBox QAbstractItemView {{ color: {t['text']}; background: {t['surface']}; border: 1px solid {t['border2']}; selection-background-color: {t['selected']}; selection-color: {t['accent_text']}; padding: 4px; outline: 0; }}
-            QWidget#fieldMode QComboBox QAbstractItemView::item {{ color: {t['text']}; padding: 6px 8px; min-height: 26px; }}
-            QWidget#fieldMode QComboBox QAbstractItemView::item:hover {{ color: {t['text']}; background: {t['hover']}; }}
-            QWidget#fieldMode QComboBox QAbstractItemView::item:selected {{ color: {t['accent_text']}; background: {t['selected']}; }}
+            QWidget#fieldMode QLabel#primaryCue {{ color: {t['text']}; background: {t['surface']}; border: 1px solid {t['border']}; padding: 10px; }}
+            QWidget#fieldMode QComboBox QAbstractItemView {{ color: {t['text']}; background: {t['surface']}; border: 1px solid {t['border2']}; selection-background-color: {t['selected']}; selection-color: {t['accent_text']}; }}
         """)
 
         lo = QVBoxLayout(self)
-        lo.setContentsMargins(20, 18, 20, 18)
-        lo.setSpacing(12)
+        lo.setContentsMargins(10, 10, 10, 10)
+        lo.setSpacing(6)
 
+        # Header
         header = QHBoxLayout()
-        eyebrow = QLabel("FIELD MODE · SHOOTING ASSISTANCE")
-        eyebrow.setObjectName("eyebrow")
+        eyebrow = QLabel("现场指令")
+        eyebrow.setFont(QFont("Segoe UI", 10, QFont.Weight.DemiBold))
+        eyebrow.setStyleSheet(f"color: {t['text']};")
         header.addWidget(eyebrow)
         header.addStretch(1)
-        output_label = QLabel("Output")
-        header.addWidget(output_label)
         self._mode = QComboBox()
         self._mode.addItems([m.value for m in CueMode])
         self._mode.setCurrentText(CueMode.NORMAL.value)
-        self._mode.setMinimumWidth(90)
+        self._mode.setMinimumWidth(80)
         header.addWidget(self._mode)
         lo.addLayout(header)
 
-        card = QFrame()
-        card.setObjectName("statusCard")
-        card_lo = QVBoxLayout(card)
-        card_lo.setContentsMargins(12, 10, 12, 10)
-        self._status = QLabel("Waiting for analysis…")
-        self._status.setObjectName("status")
-        self._status.setWordWrap(True)
-        card_lo.addWidget(self._status)
+        # Status metrics
         metrics = QHBoxLayout()
-        self._confidence = QLabel("Confidence —")
-        self._confidence.setObjectName("metric")
-        self._landmarks = QLabel("Landmarks —")
-        self._landmarks.setObjectName("metric")
-        self._pose_state = QLabel("Pose —")
-        self._pose_state.setObjectName("metric")
+        self._confidence = QLabel("置信度 —")
+        self._confidence.setStyleSheet(f"color: {t['text2']}; font-size: 9pt;")
+        self._landmarks = QLabel("关键点 —")
+        self._landmarks.setStyleSheet(f"color: {t['text2']}; font-size: 9pt;")
         metrics.addWidget(self._confidence)
         metrics.addWidget(self._landmarks)
-        metrics.addWidget(self._pose_state)
         metrics.addStretch(1)
-        card_lo.addLayout(metrics)
-        lo.addWidget(card)
+        lo.addLayout(metrics)
 
-        cue_label = QLabel("SAY THIS NOW")
-        cue_label.setObjectName("eyebrow")
+        # Primary cue
+        cue_label = QLabel("当前指令")
+        cue_label.setFont(QFont("Segoe UI", 9, QFont.Weight.DemiBold))
+        cue_label.setStyleSheet(f"color: {t['text2']};")
         lo.addWidget(cue_label)
         self._primary = QLabel("保持自然，我会根据画面继续调整。")
         self._primary.setObjectName("primaryCue")
         self._primary.setWordWrap(True)
-        self._primary.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        self._primary.setFont(QFont("Segoe UI", 27, QFont.Weight.Bold))
-        self._primary.setMinimumHeight(150)
+        self._primary.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        self._primary.setFont(QFont("Microsoft YaHei", 16, QFont.Weight.Bold))
+        self._primary.setMinimumHeight(80)
         lo.addWidget(self._primary)
 
+        # Undo/redo + copy
         actions = QHBoxLayout()
-        self._undo = QPushButton("Undo")
-        self._redo = QPushButton("Redo")
-        self._copy = QPushButton("Copy voice output")
-        self._ssml = QPushButton("Copy SSML")
+        self._undo = QPushButton("撤销")
+        self._undo.setStyleSheet(f"QPushButton {{ padding: 4px 8px; border: 1px solid {t['border']}; background: {t['surface']}; color: {t['text']}; font-size: 9pt; }}")
+        self._redo = QPushButton("重做")
+        self._redo.setStyleSheet(self._undo.styleSheet())
+        self._copy = QPushButton("复制")
+        self._copy.setStyleSheet(self._undo.styleSheet())
         actions.addWidget(self._undo)
         actions.addWidget(self._redo)
         actions.addStretch(1)
         actions.addWidget(self._copy)
-        actions.addWidget(self._ssml)
         lo.addLayout(actions)
 
-        secondary_header = QHBoxLayout()
-        secondary_label = QLabel("SECONDARY CUES")
-        secondary_label.setObjectName("eyebrow")
-        secondary_header.addWidget(secondary_label)
-        secondary_header.addStretch(1)
-        self._count = QLabel("0")
-        self._count.setObjectName("metric")
-        secondary_header.addWidget(self._count)
-        lo.addLayout(secondary_header)
+        # Secondary cues
+        secondary_label = QLabel("辅助指令")
+        secondary_label.setFont(QFont("Segoe UI", 9, QFont.Weight.DemiBold))
+        secondary_label.setStyleSheet(f"color: {t['text2']};")
+        lo.addWidget(secondary_label)
         self._detail = QListWidget()
-        self._detail.setMinimumHeight(150)
+        self._detail.setStyleSheet(
+            f"QListWidget {{ background: {t['surface2']}; border: 1px solid {t['border']}; "
+            f"color: {t['text']}; font-size: 9pt; padding: 2px; }}"
+            f"QListWidget::item {{ padding: 5px 6px; }}"
+            f"QListWidget::item:selected {{ background: {t['accent']}; color: white; }}"
+        )
         lo.addWidget(self._detail, 1)
 
         self._mode.currentTextChanged.connect(self._render_current)
         self._undo.clicked.connect(self._on_undo)
         self._redo.clicked.connect(self._on_redo)
         self._copy.clicked.connect(self._copy_voice)
-        self._ssml.clicked.connect(self._copy_ssml)
         self._refresh_buttons()
 
     def set_analysis(self, action, orientation, camera, composition, pose=None, confidence=None):
@@ -158,14 +134,11 @@ class FieldModeWidget(QWidget):
         if current is None or current.cue_text != candidate_text:
             self.history.push(cue_list)
         self._cues = cue_list
-        self._status.setText("Analysis ready · cue history records only meaningful changes")
-        self._confidence.setText(f"Confidence {confidence:.0%}" if confidence is not None else "Confidence —")
+        self._confidence.setText(f"置信度 {confidence:.0%}" if confidence is not None else "置信度 —")
         if quality is not None:
-            self._landmarks.setText(f"Landmarks {quality.visible_count}/17")
-            self._pose_state.setText(f"Pose {quality.pose_state}")
+            self._landmarks.setText(f"关键点 {quality.visible_count}/17")
         else:
-            self._landmarks.setText("Landmarks —")
-            self._pose_state.setText("Pose —")
+            self._landmarks.setText("关键点 —")
         self._render_current()
 
     def _mode_enum(self):
@@ -182,15 +155,14 @@ class FieldModeWidget(QWidget):
         self._detail.clear()
         if snap is None:
             self._primary.setText("保持自然，我会根据画面继续调整。")
-            self._count.setText("0")
             self._refresh_buttons()
             return
-        self._primary.setText(snap.summary)
         formatted = self._display_cues_for_snapshot(snap)
-        secondary = formatted[1:6]
+        # Primary text must respect the selected tone mode
+        self._primary.setText(formatted[0] if formatted else snap.summary)
+        secondary = formatted[1:]
         for line in secondary:
             self._detail.addItem(QListWidgetItem(line))
-        self._count.setText(str(len(secondary)))
         self._refresh_buttons()
 
     def _on_undo(self):
@@ -209,28 +181,32 @@ class FieldModeWidget(QWidget):
         snap = self.history.current
         QApplication.clipboard().setText(voice_ready_text(snap.summary if snap else ""))
 
-    def _copy_ssml(self):
-        snap = self.history.current
-        QApplication.clipboard().setText(ssml(snap.summary if snap else ""))
-
-    def voice_payload(self):
-        snap = self.history.current
-        text = voice_ready_text(snap.summary if snap else "")
-        return {"text": text, "ssml": ssml(text)}
-
 
 def install_field_mode(window):
-    field = FieldModeWidget(window)
+    """Install field mode widget into the pre-registered field workspace.
+
+    MainWindow.__init__ already created _w_field and added it as page 1.
+    This function creates the FieldModeWidget and connects it to the
+    analysis data pipeline so guidance cues update when analysis completes.
+    """
+    field = FieldModeWidget()
     window._field_mode = field
-    window._tabs.addTab("现场指令")
-    window._ws.addWidget(field)
-    old_update = window._w2.update_results
 
-    def update_results(bundle):
-        old_update(bundle)
+    # Add to the field workspace's right-side container
+    window._w_field._field_lo.addWidget(field)
+
+    # Wire into analysis results: when _w2.update_results is called,
+    # also feed the same bundle to the field mode widget for cue generation.
+    original_update = window._w2.update_results
+
+    def _update_with_field(bundle):
+        original_update(bundle)
         if bundle.action and bundle.orientation and bundle.camera and bundle.composition:
-            confidence = float(bundle.reverse_result.overall_confidence) if bundle.reverse_result else None
-            field.set_analysis(bundle.action, bundle.orientation, bundle.camera, bundle.composition, bundle.pose, confidence)
+            confidence = float(bundle.action.confidence) if bundle.action else None
+            field.set_analysis(
+                bundle.action, bundle.orientation, bundle.camera,
+                bundle.composition, bundle.pose, confidence,
+            )
 
-    window._w2.update_results = update_results
+    window._w2.update_results = _update_with_field
     return field

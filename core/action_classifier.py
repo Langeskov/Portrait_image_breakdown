@@ -203,7 +203,7 @@ def classify_action(pose: PoseResult) -> ActionResult:
         scores[ActionCategory.ARMS_RAISED] += 0.5
         # 双手都高
         lw_above = lw_y < features["shoulder_y"] - 0.05
-        rw_above = rw_y < features["shoulder_y"] - 0.5
+        rw_above = rw_y < features["shoulder_y"] - 0.05
         if lw_above and rw_above:
             scores[ActionCategory.ARMS_RAISED] += 0.3
 
@@ -283,3 +283,4 @@ def classify_action(pose: PoseResult) -> ActionResult:
         joint_angles=angles,
         features=features,
     )
+

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from reverse_engineering.reference_camera import estimate_reference_camera_hypothesis
 from reverse_engineering.reference_line_calibration import ReferenceLineConstraint, ReferenceLineEvidence
-from reverse_engineering.reference_reconstruction import ReferenceComposition
+from core.reference_reconstruction import ReferenceComposition
 from reverse_engineering.scene import SceneModel
 from reverse_engineering.scene_anchors import AnchorKind, SceneAnchor
 
@@ -50,3 +50,4 @@ def test_free_reference_line_does_not_change_roll_hypothesis():
 
     assert constrained.roll_correction_deg is None
     assert constrained.confidence == base.confidence
+

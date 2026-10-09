@@ -1,5 +1,5 @@
-from reverse_engineering.reference_anchor import ReferenceImageAnchor
-from reverse_engineering.reference_reconstruction import ReferenceComposition
+from core.reference_anchor import ReferenceImageAnchor
+from core.reference_reconstruction import ReferenceComposition
 from reverse_engineering.reconstruction_session import SCHEMA, SCHEMA_VERSION, migrate_session, scene_from_dict, scene_to_dict
 from reverse_engineering.scene import SceneModel, SceneSubject
 
@@ -47,3 +47,4 @@ def test_new_session_contains_independent_image_evidence():
     payload = scene_to_dict(scene)
     assert payload["schema_version"] == SCHEMA_VERSION
     assert payload["image_evidence"][0]["anchor_id"] == "ground"
+

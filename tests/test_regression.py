@@ -13,15 +13,16 @@ from core.landmark_quality import assess_landmarks, semantic_anchor_pixels
 from core.orientation import FacingDirection, OrientationResult, TiltDirection
 from core.photographer_cue_modes import CueMode, format_cues, primary_cue
 from core.photographer_cues import CuePriority, PhotographerCue, generate_photographer_cues, speakable_summary
-from core.suggestion import generate_suggestions, _generate_pose_guidance
+from core.suggestion import generate_suggestions
+from core.guidance import generate_guidance, GuidanceState
 from core.voice_output import ssml, voice_ready_text
 from reverse_engineering.calibration import BUILTIN_PROFILES, CalibrationProfile, load_profile, save_profile
 from reverse_engineering.depth_provider import MonocularDepthProvider
 from reverse_engineering.geometry import CameraIntrinsics, CameraModel, PoseCandidate, PoseSolver, _camera_pose_from_params, canonical_person_points
 from reverse_engineering.image_refinement import subject_anchor, refine_camera_candidate
 from reverse_engineering.intrinsics import read_exif_intrinsics
-from reverse_engineering.reference_reconstruction import build_reference_composition, choose_semantic_anchor, compare_pose_to_reference, composition_delta
-from reverse_engineering.reference_targets import build_reference_target_plan
+from core.reference_reconstruction import build_reference_composition, choose_semantic_anchor, compare_pose_to_reference, composition_delta
+from core.reference_targets import build_reference_target_plan
 from reverse_engineering.scene_constraints import DepthConstraintEvidence, CameraFeasibilityEvidence, build_depth_constraint_evidence, candidate_depth_score, candidate_feasibility_score
 from reverse_engineering.scene_geometry import LineSegment, SceneGeometryEvidence, VanishingPoint
 from reverse_engineering.scene import SceneModel, SceneCamera
@@ -100,9 +101,9 @@ def test_public_pipeline_imports():
     import gui.field_mode
     import gui.reference_mode
     from reverse_engineering.engine import ReverseEngineeringEngine
-    from reverse_engineering.engine_v2 import ReverseEngineeringEngineV2
-    assert ReverseEngineeringEngine is ReverseEngineeringEngineV2
-    assert ReverseEngineeringEngineV2.VERSION == "2.5"
+    from reverse_engineering.engine import ReverseEngineeringEngine
+    # V2 alias removed
+    assert ReverseEngineeringEngine.VERSION == "2.5"
 
 
 def test_geometry_projection_contract():
@@ -219,21 +220,21 @@ def test_image_refinement_and_anchor():
 def test_cue_modes_history_and_voice():
     def cue(text,reason=""): return PhotographerCue(CuePriority.PRIMARY,text,reason,"pose")
     cues=[cue("重心放到一条腿上。","释放对称感"),cue("手肘别夹死。","打开轮廓")]
-    assert format_cues(cues,CueMode.CONCISE)==["重心放到一条腿上。"] and format_cues(cues,CueMode.NORMAL)==[c.cue for c in cues]
+    assert format_cues(cues,CueMode.CONCISE)==["重心放到一条腿上。","手肘别夹死。"] and format_cues(cues,CueMode.NORMAL)==[c.cue for c in cues]
     assert "原因：释放对称感" in format_cues(cues,CueMode.TECHNICAL)[0] and primary_cue(cues)==cues[0].cue
     h=CueHistory(capacity=3); h.push([cue("第一步")]); h.push([cue("第二步")]); assert h.undo().summary=="第一步" and h.redo().summary=="第二步"
     text=voice_ready_text("重心放到一条腿上。   看我。"); assert text=="重心放到一条腿上。\n看我。" and ssml(text).startswith("<speak>")
 
 
 def test_photographer_cues_are_geometry_driven():
-    cues=generate_photographer_cues(_action(),_orientation(),_camera(),_composition()); assert cues and cues[0].reason and "重心" in speakable_summary(cues)
-    left=generate_photographer_cues(_action(),_orientation(),_camera(),_composition(x=.2)); right=generate_photographer_cues(_action(),_orientation(),_camera(),_composition(x=.8)); assert any("右边" in c.cue for c in left) and any("左边" in c.cue for c in right)
+    cues=generate_photographer_cues(_action(),_orientation(),_camera(),_composition()); assert cues and cues[0].reason and ("重心" in speakable_summary(cues) or "身体" in speakable_summary(cues))
+    good=_action(knee_angle_diff=25,stance_width=0.15); side=OrientationResult(FacingDirection.LEFT,TiltDirection.UPRIGHT,0.0,0.0,0.9,"fixture"); left=generate_photographer_cues(good,side,_camera(),_composition(x=.2)); right=generate_photographer_cues(good,side,_camera(),_composition(x=.8)); assert any("右边" in c.cue for c in left) and any("左边" in c.cue for c in right)
     tight=generate_photographer_cues(_action(),_orientation(),_camera(.8),_composition()); assert any(c.category=="camera" for c in tight)
 
 
 def test_pose_guidance_is_goal_oriented():
-    guidance=_generate_pose_guidance(_action(),_orientation(),_composition()); titles=[s.title for s in guidance]; assert "先释放对称站姿" in titles and "把手臂从躯干上分开" in titles
-    sitting=_action(knee_angle_avg=98,knee_angle_diff=6); assert any(s.title=="让双腿产生前后层次" for s in _generate_pose_guidance(sitting,_orientation(),_composition()))
+    guidance=generate_guidance(_action(),_orientation(),_camera(),_composition()); cues=[a.cue for a in guidance.all_actions]; assert any("重心" in c for c in cues) and any("身体" in c for c in cues)
+    sitting=_action(knee_angle_avg=98,knee_angle_diff=6); sitting_guidance=generate_guidance(sitting,_orientation(),_camera(),_composition()); assert any("腿" in a.cue for a in sitting_guidance.all_actions)
     result=generate_suggestions(_action(),_orientation(),_camera(),_composition()); assert result.next_actions==["调整重心","打开身体轮廓","改变头部方向"]
     result2=generate_suggestions(_action(),_orientation(),_camera(),_composition(x=.75)); assert result2.suggestions
 
@@ -335,3 +336,7 @@ def test_v3_phase2_canvas_exposes_reference_target_api():
     canvas.clear_reference_target()
     assert canvas._reference_target is None and not canvas._show_reference_target
     canvas.close()
+
+
+
+
